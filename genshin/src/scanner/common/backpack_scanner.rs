@@ -838,6 +838,12 @@ const OCCUPANCY_PANEL_RECT: (f64, f64, f64, f64) = (1310.0, 110.0, 480.0, 860.0)
 
 /// Fast timeout for duplicate items in Fingerprint mode (e.g., identical weapons).
 const PANEL_LOAD_FAST_TIMEOUT_MS: u64 = 100;
+/// Extra wait after a page-turn wheel burst before verifying scroll position:
+/// Genshin keeps gliding for a few hundred ms after the last tick.
+const SCROLL_GLYPH_SETTLE_MS: u32 = 400;
+/// Stability samples for post-scroll captures (spans ~1 s with the interval
+/// below) — the view must hold still this long before the advance is measured.
+const SCROLL_STABLE_RETRIES: u32 = 8;
 /// Clicks allowed per grid cell before its panel is accepted as-is.
 const PANEL_CLICK_ATTEMPTS: u32 = 2;
 /// Time budget for re-baselining the detail panel right after a page turn.
@@ -1057,6 +1063,9 @@ impl<'a> BackpackScanner<'a> {
             if !self.send_scroll_ticks(ticks, settle_ms) {
                 return Ok(VerifiedScrollOutcome::Cancelled);
             }
+            // The wheel burst makes the list glide for a few hundred ms; let
+            // the animation finish before sampling for stability.
+            utils::sleep(SCROLL_GLYPH_SETTLE_MS);
             let after = self.capture_stable_scroll_state()?;
             match classify_scroll_advance(&before, &after, requested_rows) {
                 Some(ScrollAdvance::AdvancedRows(advanced_rows)) => {
@@ -1172,7 +1181,7 @@ impl<'a> BackpackScanner<'a> {
 
     fn capture_stable_scroll_state(&self) -> Result<ScrollVisualState> {
         let mut previous = self.capture_scroll_state_with_retry()?;
-        for _ in 0..3 {
+        for _ in 0..SCROLL_STABLE_RETRIES {
             utils::sleep(SCROLL_STABLE_INTERVAL_MS);
             let current = self.capture_scroll_state_with_retry()?;
             match scroll_states_similar(&previous, &current) {
