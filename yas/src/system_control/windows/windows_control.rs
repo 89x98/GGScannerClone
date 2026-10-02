@@ -17,6 +17,15 @@ impl WindowsSystemControl {
         anyhow::Ok(())
     }
 
+    /// Click at absolute screen coordinates: move, settle, then click. The
+    /// settle mirrors the delay game_controller used to apply between
+    /// SetCursorPos and SendInput under WGC capture load.
+    pub fn mouse_click_at(&mut self, x: i32, y: i32) -> anyhow::Result<()> {
+        self.mouse_move_to(x, y)?;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        self.mouse_click()
+    }
+
     pub fn mouse_click(&mut self) -> anyhow::Result<()> {
         // Use explicit down/up with a hold delay — enigo's mouse_click sends
         // down+up back-to-back with zero delay. Some game UI elements (especially

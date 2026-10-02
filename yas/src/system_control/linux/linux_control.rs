@@ -2,17 +2,20 @@
 //!
 //! - **XTEST** (X11 sessions): fake input through the X server. Zero external
 //!   dependencies, exact absolute positioning.
-//! - **ydotool** (Wayland sessions): compositors such as KWin/Mutter ignore
-//!   XTEST fake input, so injection goes through the ydotoold uinput daemon.
+//! - **uinput** (Wayland sessions, X11 fallback): compositors such as KWin
+//!   ignore XTEST fake input, so the scanner creates its own virtual pointer
+//!   and touchscreen directly on `/dev/uinput` (see `uinput_dev.rs`) — no
+//!   ydotoold daemon required.
 //!
 //! The backend is picked on first use: an X11 session prefers XTEST (with a
-//! live effectiveness check), a Wayland session prefers ydotool and falls
-//! back to XTEST only if the compositor happens to honor it. The public
-//! method surface mirrors `WindowsSystemControl`; `enigo::Key` stays the key
-//! type so callers remain platform-independent.
+//! live effectiveness check, exact absolute positioning), then falls back to
+//! uinput; a Wayland session goes straight to uinput and only tries XTEST if
+//! `/dev/uinput` is inaccessible. The public method surface mirrors
+//! `WindowsSystemControl`; `enigo::Key` stays the key type so callers remain
+//! platform-independent.
 //!
 //! Key resolution: the XTEST path always asks the X server's own keymap
-//! (`keysym_to_keycode`), so it follows the session layout. The ydotool path
+//! (`keysym_to_keycode`), so it follows the session layout. The uinput path
 //! prefers the same keymap via XWayland (X keycodes are evdev keycodes + 8)
 //! and falls back to a US-QWERTY table when X is unreachable.
 
@@ -25,7 +28,7 @@ use x11rb::protocol::xproto::{
 };
 use xkeysym::{key as xk, Keysym};
 
-use crate::system_control::linux::ydotool::{qwerty_evdev_code, YdotoolClient};
+use crate::system_control::linux::uinput_dev::{qwerty_evdev_code, UinputDevices};
 use crate::utils;
 
 // X buttons: 1=left, 3=right; wheel is 4 (up) / 5 (down).
@@ -35,66 +38,62 @@ const BUTTON_WHEEL_DOWN: u8 = 5;
 
 enum InputBackend {
     XTest,
-    Ydotool(YdotoolClient),
+    Uinput(UinputDevices),
 }
 
 impl InputBackend {
-    /// Pick a working backend: X11 session → XTEST; Wayland session →
-    /// ydotool first (most compositors ignore XTEST), XTEST as fallback.
+    /// Pick a working backend: on X11 prefer XTEST (exact absolute motion),
+    /// then our own uinput devices; on Wayland go straight to uinput (XTEST
+    /// is typically swallowed) and only try XTEST if `/dev/uinput` is
+    /// inaccessible.
     fn select() -> anyhow::Result<Self> {
-        let wayland_session = std::env::var("WAYLAND_DISPLAY")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
+        let wayland_session =
+            std::env::var("WAYLAND_DISPLAY").map(|v| !v.is_empty()).unwrap_or(false);
 
-        if wayland_session {
-            match YdotoolClient::connect() {
-                Ok(client) => {
-                    log_info!(
-                        "输入后端: ydotool（Wayland 会话）",
-                        "input backend: ydotool (Wayland session)"
-                    );
-                    return Ok(Self::Ydotool(client));
-                },
-                Err(e) => {
-                    // XTEST is almost certainly dead here, but some compositors
-                    // do forward it — check before giving up.
-                    if utils::xtest_available() && utils::xtest_effective() {
-                        log_info!(
-                            "输入后端: XTEST（当前合成器支持）",
-                            "input backend: XTEST (this compositor honors it)"
-                        );
-                        return Ok(Self::XTest);
-                    }
-                    return Err(e.context(
-                        "Wayland 会话无法模拟输入。/ Cannot inject input in a Wayland session.",
-                    ));
-                },
-            }
-        }
-
-        if utils::xtest_available() && utils::xtest_effective() {
+        if !wayland_session && utils::xtest_available() && utils::xtest_effective() {
             log_info!(
-                "输入后端: XTEST（X11 会话）",
-                "input backend: XTEST (X11 session)"
+                "输入后端: XTEST（X11 会话，绝对定位精确）",
+                "input backend: XTEST (X11 session; exact absolute positioning)"
             );
             return Ok(Self::XTest);
         }
 
-        // Odd X11 setups (nested servers, some compositors) — try ydotool.
-        match YdotoolClient::connect() {
-            Ok(client) => {
+        match UinputDevices::create() {
+            Ok(devices) => {
                 log_info!(
-                    "输入后端: ydotool（XTEST 无效，回退）",
-                    "input backend: ydotool (XTEST ineffective, fallback)"
+                    "输入后端: uinput（直连 /dev/uinput{}）",
+                    "input backend: uinput (direct /dev/uinput{})",
+                    if wayland_session {
+                        "，Wayland 会话"
+                    } else {
+                        "; XTEST ineffective"
+                    }
                 );
-                Ok(Self::Ydotool(client))
+                return Ok(Self::Uinput(devices));
             },
-            Err(e) => Err(anyhow::Error::msg(format!(
-                "XTEST 注入无效且未安装 ydotool；请使用 X11 会话，或安装并启用 ydotool 服务。\
-                 （{e}）\n\
-                 / XTEST injection is ineffective and ydotool is not available; use an X11 \
-                 session, or install and enable the ydotool service. ({e})"
-            ))),
+            Err(uinput_err) => {
+                if utils::xtest_available() && utils::xtest_effective() {
+                    log_info!(
+                        "输入后端: XTEST（uinput 不可用，已回退）",
+                        "input backend: XTEST (uinput unavailable, falling back)"
+                    );
+                    return Ok(Self::XTest);
+                }
+                if wayland_session {
+                    return Err(anyhow::Error::msg(format!(
+                        "无法创建虚拟输入设备（{uinput_err}）。\n\
+                         请把用户加入 input 组（sudo gpasswd -a $USER input）后重新登录，\
+                         或安装 udev 规则 80-uinput.rules，或改用 X11 会话。\n\
+                         / Cannot create the virtual input devices ({uinput_err}).\n\
+                         Add your user to the `input` group (sudo gpasswd -a $USER input) and log out/in,\
+                         install the 80-uinput.rules udev rule, or use an X11 session instead."
+                    )));
+                }
+                return Err(anyhow::Error::msg(format!(
+                    "无法创建虚拟输入设备，且 XTEST 注入无效（{uinput_err}）。\n\
+                     / Cannot create the virtual input devices and XTEST injection is ineffective ({uinput_err})."
+                )));
+            },
         }
     }
 }
@@ -182,6 +181,17 @@ const POINTER_SCALE_MAX: f32 = 8.0;
 /// Pointer-speed multiplier assumed before a live readback has measured it.
 const POINTER_SCALE_FALLBACK: f32 = 1.0;
 
+/// Whether absolute touchscreen clicks are enabled.
+///
+/// On by default; `GOODSCANNER_TOUCH_CLICK=0` falls back to moving the
+/// relative pointer and clicking, should a compositor/game mishandle
+/// synthesized touch.
+fn touch_clicks_enabled() -> bool {
+    std::env::var("GOODSCANNER_TOUCH_CLICK")
+        .map(|v| v != "0")
+        .unwrap_or(true)
+}
+
 /// Whether this process already reported its absolute-positioning self-check.
 static POINTER_SELF_CHECK_REPORTED: AtomicBool = AtomicBool::new(false);
 /// Whether this process already warned that the pointer readback is frozen.
@@ -222,7 +232,7 @@ struct PointerState {
 /// game can hold the pointer); the origin is then dropped so the next move
 /// re-slams, and the situation is reported once.
 fn move_pointer_absolute(
-    client: &mut YdotoolClient,
+    devices: &mut UinputDevices,
     x: i32,
     y: i32,
     state: &mut PointerState,
@@ -244,15 +254,15 @@ fn move_pointer_absolute(
             // slam, so the game keeps its hover and the move costs one report.
             Some(known) => {
                 if requested_x != 0 || requested_y != 0 {
-                    client.mouse_move_relative(requested_x, requested_y)?;
+                    devices.pointer_move_rel(requested_x, requested_y)?;
                 }
                 known
             },
             // Unknown origin: slam to the corner, then apply the target.
             None => {
-                client.mouse_slam()?;
+                devices.pointer_slam()?;
                 utils::sleep(POINTER_SLAM_SETTLE_MS);
-                client.mouse_move_relative(requested_x, requested_y)?;
+                devices.pointer_move_rel(requested_x, requested_y)?;
                 (0, 0)
             },
         };
@@ -440,7 +450,7 @@ impl LinuxControl {
         let mut pointer = std::mem::take(&mut self.pointer);
         let result = self.with_backend(|backend| match backend {
             InputBackend::XTest => utils::fake_input(MOTION_NOTIFY_EVENT, 0, x as i16, y as i16),
-            InputBackend::Ydotool(client) => move_pointer_absolute(client, x, y, &mut pointer),
+            InputBackend::Uinput(devices) => move_pointer_absolute(devices, x, y, &mut pointer),
         });
         self.pointer = pointer;
         result
@@ -455,11 +465,7 @@ impl LinuxControl {
                 utils::sleep(20);
                 utils::fake_input(BUTTON_RELEASE_EVENT, BUTTON_LEFT, 0, 0)
             },
-            InputBackend::Ydotool(client) => {
-                client.button(KeyCode::BTN_LEFT, true)?;
-                utils::sleep(20);
-                client.button(KeyCode::BTN_LEFT, false)
-            },
+            InputBackend::Uinput(devices) => devices.pointer_click(),
         })
     }
 
@@ -484,7 +490,7 @@ impl LinuxControl {
                 }
                 anyhow::Ok(())
             },
-            InputBackend::Ydotool(client) => client.wheel(-amount),
+            InputBackend::Uinput(devices) => devices.wheel(-amount),
         })
     }
 
@@ -500,6 +506,41 @@ impl LinuxControl {
             self.mouse_scroll(notches, false)?;
         }
         anyhow::Ok(())
+    }
+
+    /// Click at absolute screen coordinates.
+    ///
+    /// Wayland/uinput: through the absolute touchscreen when it exists — the
+    /// tap lands at exact coordinates with no acceleration and no display-scale
+    /// conversion, so no pointer positioning is needed (and the relative
+    /// pointer stays put, keeping wheel hovers stable). Otherwise the pointer
+    /// is moved (slam/hop/verify) and the click follows.
+    pub fn mouse_click_at(&mut self, x: i32, y: i32) -> anyhow::Result<()> {
+        let mut pointer = std::mem::take(&mut self.pointer);
+        let result = self.with_backend(|backend| match backend {
+            InputBackend::XTest => {
+                utils::fake_input(MOTION_NOTIFY_EVENT, 0, x as i16, y as i16)?;
+                utils::sleep(10);
+                utils::fake_input(BUTTON_PRESS_EVENT, BUTTON_LEFT, 0, 0)?;
+                utils::sleep(20);
+                utils::fake_input(BUTTON_RELEASE_EVENT, BUTTON_LEFT, 0, 0)
+            },
+            InputBackend::Uinput(devices) => {
+                if devices.has_touch() && touch_clicks_enabled() {
+                    let (screen_w, screen_h) = utils::screen_size().unwrap_or((1920, 1080));
+                    devices.touch_tap(x, y, screen_w, screen_h)?;
+                    // Let the game process the tap before the caller moves on.
+                    utils::sleep(30);
+                    Ok(())
+                } else {
+                    move_pointer_absolute(devices, x, y, &mut pointer)?;
+                    utils::sleep(10);
+                    devices.pointer_click()
+                }
+            },
+        });
+        self.pointer = pointer;
+        result
     }
 
     pub fn key_press(&mut self, key: Key) -> anyhow::Result<()> {
@@ -529,35 +570,25 @@ impl LinuxControl {
                 }
                 anyhow::Ok(())
             },
-            InputBackend::Ydotool(client) => {
-                let resolved = match named_evdev {
-                    Some(code) => Some((code, false)),
+            InputBackend::Uinput(devices) => {
+                let resolved: Option<u16> = match named_evdev {
+                    Some(code) => Some(code.0),
                     // Layout-aware resolution: the X/Wayland-session keymap
                     // knows where the keysym lives (X keycode = evdev + 8).
                     None => utils::keysym_to_keycode(keysym.raw())
                         .ok()
                         .filter(|(k, _)| *k >= 8)
-                        .map(|(k, s)| (KeyCode::new(u16::from(k) - 8), s))
-                        .or_else(|| {
-                            layout_char
-                                .and_then(qwerty_evdev_code)
-                                .map(|code| (code, false))
-                        }),
+                        .map(|(k, _)| u16::from(k) - 8)
+                        .or_else(|| layout_char.and_then(qwerty_evdev_code).map(|kc| kc.code())),
                 };
-                let Some((code, shift)) = resolved else {
+                let Some(code) = resolved else {
                     return Err(anyhow::anyhow!(
                         "keysym {keysym:?} has no evdev keycode"
                     ));
                 };
-                if shift {
-                    client.key(KeyCode::KEY_LEFTSHIFT, true)?;
-                }
-                client.key(code, true)?;
+                devices.key(code, true)?;
                 utils::sleep(10);
-                client.key(code, false)?;
-                if shift {
-                    client.key(KeyCode::KEY_LEFTSHIFT, false)?;
-                }
+                devices.key(code, false)?;
                 anyhow::Ok(())
             },
         })

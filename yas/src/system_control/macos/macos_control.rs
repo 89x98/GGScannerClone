@@ -20,6 +20,13 @@ impl MacOSControl {
         anyhow::Ok(())
     }
 
+    /// Click at absolute screen coordinates: move, settle, then click.
+    pub fn mouse_click_at(&mut self, x: i32, y: i32) -> anyhow::Result<()> {
+        self.mouse_move_to(x, y)?;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        self.mouse_click()
+    }
+
     pub fn mouse_click(&mut self) -> anyhow::Result<()> {
         self.enigo.mouse_click(MouseButton::Left);
 

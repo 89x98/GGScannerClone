@@ -261,6 +261,14 @@ pub struct PointerState {
 
 pub const BUTTON3_MASK: u16 = 1 << 10;
 
+/// Root window size in pixels (the XWayland screen).
+pub fn screen_size() -> Result<(i32, i32)> {
+    with_x11(|conn, screen| {
+        let root = &conn.setup().roots[screen];
+        Ok((root.width_in_pixels as i32, root.height_in_pixels as i32))
+    })
+}
+
 /// Query the global pointer position and button state.
 pub fn query_pointer() -> Result<PointerState> {
     with_x11(|conn, screen| {

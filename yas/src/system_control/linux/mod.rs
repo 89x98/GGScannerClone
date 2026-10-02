@@ -1,2 +1,2 @@
 pub mod linux_control;
-pub mod ydotool;
+pub mod uinput_dev;

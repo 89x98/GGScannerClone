@@ -495,18 +495,16 @@ impl GenshinGameController {
 // Navigation methods — all coordinates at 1920x1080 base, scaled by CoordScaler.
 impl GenshinGameController {
     /// Click at a position specified in base 1920x1080 coordinates.
+    ///
+    /// Delegates to the platform backend: on Linux/Wayland the click may go
+    /// through the absolute touchscreen device (exact coordinates, no pointer
+    /// positioning), everything else moves the pointer and clicks.
     pub fn click_at(&mut self, base_x: f64, base_y: f64) {
         let x = self.game_info.window.left as f64 + self.scaler.scale_x(base_x);
         let y = self.game_info.window.top as f64 + self.scaler.scale_y(base_y);
         self.system_control
-            .mouse_move_to(x as i32, y as i32)
+            .mouse_click_at(x as i32, y as i32)
             .unwrap();
-        // Settle delay: SetCursorPos (move) and SendInput (click) are different
-        // Windows APIs. Under WGC's continuous frame-copy load, the input queue
-        // can lag behind the cursor update. 10ms lets the position register
-        // before the click event enters the queue.
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        self.system_control.mouse_click().unwrap();
     }
 
     /// Move mouse to a position specified in base 1920x1080 coordinates.
