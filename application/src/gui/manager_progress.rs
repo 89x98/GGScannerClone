@@ -23,7 +23,7 @@ pub fn show(
         return;
     };
     if job.state == JobPhase::Idle || !matches!(status, Some(TaskStatus::Running(_))) {
-        theme::task_status(ui, lang, status, lang.t("等待启动连接", "Ready to connect"));
+        theme::task_status(ui, lang, status, lang.t("服务器未启动", "Server is off"));
         return;
     }
     let kind = job.ui.kind.as_ref();

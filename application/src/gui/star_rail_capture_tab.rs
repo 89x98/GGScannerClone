@@ -295,7 +295,7 @@ pub fn show_settings(
                 );
                 ui.checkbox(
                     &mut settings.capture_include_relics,
-                    lang.t("遗器", "Relics"),
+                    lang.t("遗器与饰品", "Relics"),
                 );
                 ui.checkbox(
                     &mut settings.capture_include_achievements,
@@ -304,15 +304,7 @@ pub fn show_settings(
             });
         });
     });
-    widgets::section(ui, lang.t("导出设置", "Export"), |ui| {
-        ui.add_enabled_ui(!state.is_busy() && !game_busy, |ui| {
-            ui.checkbox(
-                &mut settings.capture_only_keep_latest_export,
-                lang.t("仅保留最新导出", "Keep latest export only"),
-            );
-        });
-    });
-    widgets::fold(ui, lang.t("高级设置", "Advanced"), |ui| {
+    widgets::fold(ui, lang.t("高级选项", "Advanced"), |ui| {
         ui.add_enabled_ui(!state.is_busy() && !game_busy, |ui| {
             ui.checkbox(
                 &mut settings.capture_dump_packets,
@@ -377,58 +369,67 @@ pub fn show_status(
         CapturePhase::Stopped => Some(super::state::TaskStatus::Stopped(UiText::new(text, text))),
         _ => None,
     };
-    super::theme::task_status(ui, lang, feedback.as_ref(), text);
-    if capture_targets(settings).any() {
-        capture_status::show_connection(ui, lang, stage, shared.has_key_exchange);
-    }
-    for (selected, key, zh, en, complete, count) in [
-        (
-            settings.capture_include_characters,
-            "characters",
-            "角色",
-            "Characters",
-            shared.has_characters,
-            shared.character_count,
-        ),
-        (
-            settings.capture_include_light_cones,
-            "light_cones",
-            "光锥",
-            "Light Cones",
-            shared.has_light_cones,
-            shared.light_cone_count,
-        ),
-        (
-            settings.capture_include_relics,
-            "gear",
-            "遗器与位面饰品",
-            "Relics & Ornaments",
-            shared.has_relics,
-            shared.relic_count,
-        ),
-        (
-            settings.capture_include_achievements,
-            "achievements",
-            "成就",
-            "Achievements",
-            shared.has_achievements,
-            shared.achievement_count,
-        ),
-    ] {
-        if selected {
-            let mut step = super::task_progress::Step::new(key, zh, en);
-            step.completed = count;
-            if complete {
-                step.state = super::task_progress::StepState::Complete;
-            } else if matches!(state.phase, CapturePhase::Failed(_) | CapturePhase::Stopped) {
-                step.state = super::task_progress::StepState::Interrupted;
-            } else if matches!(state.phase, CapturePhase::Waiting) && shared.has_key_exchange {
-                step.state = super::task_progress::StepState::Running;
-            }
-            super::task_progress::row(ui, lang, &step);
+    widgets::status_content(ui, "hsr-capture-status", 1, |ui| {
+        super::theme::task_status(ui, lang, feedback.as_ref(), text);
+        if stage != Stage::Ready && capture_targets(settings).any() {
+            capture_status::show_connection(ui, lang, stage, shared.has_key_exchange);
         }
-    }
-    ui.add_space(16.0);
+        for (selected, key, zh, en, complete, count) in [
+            (
+                settings.capture_include_characters,
+                "characters",
+                "角色",
+                "Characters",
+                shared.has_characters,
+                shared.character_count,
+            ),
+            (
+                settings.capture_include_light_cones,
+                "light_cones",
+                "光锥",
+                "Light Cones",
+                shared.has_light_cones,
+                shared.light_cone_count,
+            ),
+            (
+                settings.capture_include_relics,
+                "gear",
+                "遗器与位面饰品",
+                "Relics & Ornaments",
+                shared.has_relics,
+                shared.relic_count,
+            ),
+            (
+                settings.capture_include_achievements,
+                "achievements",
+                "成就",
+                "Achievements",
+                shared.has_achievements,
+                shared.achievement_count,
+            ),
+        ] {
+            if selected && stage != Stage::Ready {
+                let mut step = super::task_progress::Step::new(key, zh, en);
+                step.completed = count;
+                if complete {
+                    step.state = super::task_progress::StepState::Complete;
+                } else if matches!(state.phase, CapturePhase::Failed(_) | CapturePhase::Stopped) {
+                    step.state = super::task_progress::StepState::Interrupted;
+                } else if matches!(state.phase, CapturePhase::Waiting) && shared.has_key_exchange {
+                    step.state = super::task_progress::StepState::Running;
+                }
+                super::task_progress::row(ui, lang, &step);
+            }
+        }
+    });
+    ui.add_space(12.0);
+    ui.add_enabled_ui(!state.is_busy() && !game_busy, |ui| {
+        ui.checkbox(
+            &mut settings.capture_only_keep_latest_export,
+            lang.t("仅保留最新导出", "Keep latest export only"),
+        );
+    });
+    ui.add_space(4.0);
     match &state.phase {
         CapturePhase::Initializing | CapturePhase::Waiting => {
             if super::theme::primary_action(ui, true, lang.t("停止抓包", "Stop capture")).clicked()

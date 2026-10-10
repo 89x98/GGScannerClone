@@ -95,7 +95,7 @@ fn row_with_meter(ui: &mut egui::Ui, lang: Lang, step: &Step, reserve_meter: boo
         86.0
     };
     let gap = 6.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 24.0), egui::Sense::hover());
     let icon = egui::Rect::from_center_size(
         egui::pos2(rect.left() + 6.0, rect.center().y),
         egui::vec2(12.0, 12.0),

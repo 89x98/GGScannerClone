@@ -29,32 +29,47 @@ pub fn show_status(
     }
     let running = state.manager_running();
     let status = worker::try_task_status(&state.manager_status);
-    super::theme::task_status(
-        ui,
-        lang,
-        status.as_ref(),
-        lang.t("连接尚未启动", "Connection is off"),
-    );
-    let job = state.manager_job.lock().unwrap().clone();
-    if job.kind.is_some() {
-        widgets::hint(
+    widgets::status_content(ui, "hsr-manager-status", 0, |ui| {
+        super::theme::task_status(
             ui,
-            &format!("{} · {}", lang.t("请求数量", "Requested"), job.count),
+            lang,
+            status.as_ref(),
+            lang.t("服务器未启动", "Server is off"),
         );
-        if let Ok(progress) = state.manager_progress.try_lock() {
-            super::task_progress::show(ui, lang, &progress);
+        let job = state.manager_job.lock().unwrap().clone();
+        if job.kind.is_some() {
+            widgets::hint(
+                ui,
+                &format!(
+                    "{} · {}",
+                    match job.kind {
+                        Some("manage") => lang.t("管理请求", "Manage request"),
+                        Some("scan") => lang.t("扫描请求", "Scan request"),
+                        _ => lang.t("请求数量", "Requested"),
+                    },
+                    job.count
+                ),
+            );
+            if let Ok(progress) = state.manager_progress.try_lock() {
+                super::task_progress::show(ui, lang, &progress);
+            }
         }
-    }
-    if running && job.phase == "idle" {
-        widgets::hint(
-            ui,
-            lang.t(
-                "在 GGArtifact 中连接管理器并选择操作。",
-                "Connect the manager in GGArtifact and choose an action.",
-            ),
-        );
-    }
-    ui.add_space(16.0);
+        if running && job.phase == "idle" {
+            widgets::hint(
+                ui,
+                lang.t("在 GGArtifact 中选择操作", "Choose an action in GGArtifact"),
+            );
+        }
+        if running
+            && !state
+                .manager_handle
+                .as_ref()
+                .is_some_and(worker::TaskHandle::is_stopping)
+        {
+            widgets::server_address(ui, lang, settings.manager_port);
+        }
+    });
+    ui.add_space(12.0);
     if running {
         let stopping = state
             .manager_handle
@@ -66,7 +81,7 @@ pub fn show_status(
             if stopping {
                 lang.t("正在停止", "Stopping")
             } else {
-                lang.t("停止连接", "Stop connection")
+                lang.t("停止服务器", "Stop server")
             },
         )
         .clicked()
@@ -75,7 +90,7 @@ pub fn show_status(
                 handle.stop();
             }
         }
-    } else if super::theme::primary_action(ui, !game_busy, lang.t("启动连接", "Start connection"))
+    } else if super::theme::primary_action(ui, !game_busy, lang.t("启动服务器", "Start server"))
         .clicked()
     {
         if let Err(error) = super::privilege::ensure_admin_for_action() {
@@ -102,16 +117,21 @@ pub fn show_settings(
     is_running: bool,
 ) {
     ui.add_enabled_ui(!is_running, |ui| {
-        widgets::section(ui, lang.t("连接", "Connection"), |ui| {
-            widgets::field_row(ui, lang.t("端口", "Port"), |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut settings.manager_port)
-                        .range(1024..=65535)
-                        .speed(0.0),
-                );
+        widgets::form(ui, |ui| {
+            widgets::group(ui, lang.t("服务器", "Server"), |ui| {
+                widgets::field_row(ui, lang.t("端口", "Port"), |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut settings.manager_port)
+                            .range(1024..=65535)
+                            .speed(0.0),
+                    );
+                });
             });
-        });
-        widgets::section(ui, lang.t("显示设置", "Display"), |ui| {
+            ui.separator();
+            widgets::group(ui, lang.t("角色信息", "Character info"), |ui| {
+                super::star_rail_scanner_tab::trailblazer_row(ui, lang, settings, false);
+            });
+            ui.separator();
             if ui
                 .checkbox(
                     &mut settings.hdr_mode,
@@ -122,11 +142,8 @@ pub fn show_settings(
                 settings.set_hdr_mode(settings.hdr_mode);
             }
         });
-        widgets::fold(ui, lang.t("角色扫描", "Character scans"), |ui| {
-            super::star_rail_scanner_tab::trailblazer_row(ui, lang, settings, false);
-        });
         super::star_rail_scanner_tab::timing_settings(ui, lang, settings, false);
-        widgets::fold(ui, lang.t("高级设置", "Advanced"), |ui| {
+        widgets::fold(ui, lang.t("高级选项", "Advanced"), |ui| {
             widgets::manager_debug_options(
                 ui,
                 lang,

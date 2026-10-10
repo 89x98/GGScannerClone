@@ -27,7 +27,7 @@ impl Default for Splits {
     fn default() -> Self {
         Self {
             sidebar: 0.10,
-            workspace: 0.80,
+            workspace: 0.74,
             settings: 0.50,
         }
     }
@@ -126,39 +126,43 @@ pub fn workspace(
     mut render: impl FnMut(&mut egui::Ui, Pane),
 ) {
     let rect = ui.available_rect_before_wrap();
-    let [left, right] = split(ui, rect, "settings-status", fraction, true, 180.0);
+    // Leave room for labels, counts and action controls when a divider is dragged.
+    let [left, right] = split(ui, rect, "settings-status", fraction, true, 250.0);
     for (pane, rect, id) in [
         (
             Pane::Settings,
-            left.shrink2(egui::vec2(12.0, 0.0)),
+            left.shrink2(egui::vec2(6.0, 0.0)),
             "settings",
         ),
-        (Pane::Status, right.shrink2(egui::vec2(12.0, 0.0)), "status"),
+        (Pane::Status, right.shrink2(egui::vec2(6.0, 0.0)), "status"),
     ] {
         region(ui, rect, id, |ui| {
             let content_width =
                 (ui.available_width() - ui.spacing().scroll.allocated_width()).max(1.0);
+            if matches!(pane, Pane::Status) {
+                egui::Frame::none()
+                    .fill(theme::SURFACE)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .rounding(8.0)
+                    .inner_margin(14.0)
+                    .outer_margin(2.0)
+                    .show(ui, |ui| {
+                        ui.set_width((content_width - 32.0).max(1.0));
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        ui.spacing_mut().interact_size.y = 22.0;
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                        render(ui, pane);
+                    });
+                return;
+            }
             egui::ScrollArea::both()
                 .id_salt(id)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.set_width(content_width);
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                    if matches!(pane, Pane::Settings) {
-                        ui.spacing_mut().item_spacing.y = 10.0;
-                        render(ui, pane);
-                        return;
-                    }
-                    egui::Frame::none()
-                        .fill(theme::SURFACE)
-                        .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                        .rounding(14.0)
-                        .inner_margin(16.0)
-                        .outer_margin(2.0)
-                        .show(ui, |ui| {
-                            ui.set_width((content_width - 36.0).max(1.0));
-                            render(ui, pane);
-                        });
+                    ui.spacing_mut().item_spacing.y = 7.0;
+                    render(ui, pane);
                 });
         });
     }

@@ -3,7 +3,6 @@ use eframe::egui;
 use super::{
     state::Lang,
     task_progress::{self, Step, StepState},
-    widgets,
 };
 
 /// Both capture adapters report the same user journey from their actual monitor state.
@@ -58,23 +57,6 @@ pub(super) fn show_connection(
     stage: Stage,
     key_exchange_captured: bool,
 ) {
-    if stage == Stage::Done {
-        widgets::hint(
-            ui,
-            lang.t(
-                "在 GGArtifact 中导入上面的文件。",
-                "Import the file above into GGArtifact.",
-            ),
-        );
-    } else if stage == Stage::Login {
-        widgets::hint(
-            ui,
-            lang.t(
-                "游戏已在运行？请关闭后重新登录。",
-                "Already in-game? Close it and log in again.",
-            ),
-        );
-    }
     let mut step = Step::new("key_exchange", "登录握手", "Login handshake");
     step.show_count = false;
     step.state = if key_exchange_captured {

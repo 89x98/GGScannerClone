@@ -141,6 +141,8 @@ fn scanner_config(
 
     Ok(ScanConfig {
         targets,
+        // Persisted settings always load Auto; explicit diagnostic CLI overrides
+        // are transient and share the same scanner implementation.
         capture_method: settings.capture_method.to_yas(),
         hdr_mode: settings.hdr_mode,
         timings: settings.timings.clone(),
@@ -621,15 +623,18 @@ pub fn spawn_manager_server(
         TaskKind::Manager,
         LogSource::Manager,
         status,
-        UiText::new("正在启动连接", "Starting connection"),
-        UiText::new("正在安全停止连接", "Stopping connection safely"),
+        UiText::new("正在启动服务器", "Starting server"),
+        UiText::new("正在停止服务器", "Stopping server"),
         move |cancel| {
             let server =
                 tiny_http::Server::http(("127.0.0.1", settings.manager_port)).map_err(|error| {
-                    UiError::from_message(UiText::new(
-                    "无法启动连接。端口可能已被占用，请更换端口。",
-                    "Connection could not start. The port may be in use; choose another port."
-                ), error.to_string())
+                    UiError::from_message(
+                        UiText::new(
+                            "无法启动服务器。端口可能已被占用，请更换端口。",
+                            "Server could not start. The port may be in use; choose another port.",
+                        ),
+                        error.to_string(),
+                    )
                 })?;
             *status_worker.lock().unwrap() =
                 TaskStatus::Running(UiText::new("等待网站请求", "Waiting for a website request"));
@@ -693,7 +698,7 @@ pub fn spawn_manager_server(
                                 super::task_progress::StepState::Interrupted => "interrupted",
                             }})).collect::<Vec<_>>()})
                 },
-            ).map_err(|error| UiError::from_anyhow(UiText::new("连接已中断", "Connection interrupted"), &error))?;
+            ).map_err(|error| UiError::from_anyhow(UiText::new("服务器已停止", "Server stopped"), &error))?;
             Ok(stopped(TaskKind::Manager))
         },
     )

@@ -1066,8 +1066,8 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
     let shutdown_clone = shutdown.clone();
 
     let msg = UiText::new(
-        format!("正在启动连接 · 端口 {}", port),
-        format!("Starting connection · port {}", port),
+        format!("正在启动服务器 · 端口 {}", port),
+        format!("Starting server · port {}", port),
     );
     *status.lock().unwrap() = TaskStatus::Running(msg);
 
@@ -1121,7 +1121,7 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
             let status_fn = Arc::new(move |msg: &str| {
                 *status_clone.lock().unwrap() = TaskStatus::Running(
                     if shutdown_for_status.load(std::sync::atomic::Ordering::Relaxed) {
-                        UiText::new("正在停止连接", "Stopping connection")
+                        UiText::new("正在停止服务器", "Stopping server")
                     } else {
                         UiText::from_bilingual(msg)
                     },

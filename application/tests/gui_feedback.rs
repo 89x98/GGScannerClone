@@ -216,6 +216,9 @@ fn capture_forms_have_no_manual_or_folder_picker_and_start_with_actionable_guida
         assert!(!status_text
             .iter()
             .any(|(text, _, _)| text.contains("Import the file")));
+        assert!(!status_text.iter().any(|(text, _, _)| text == "Characters"
+            || text == "Login handshake"
+            || text == "Task status"));
     }
 }
 

@@ -75,9 +75,9 @@ impl Source {
     }
     fn refresh_label(self, lang: Lang) -> &'static str {
         match self {
-            Self::Genshin | Self::StarRail => lang.t("刷新基础数据", "Refresh base data"),
+            Self::Genshin | Self::StarRail => lang.t("刷新数据", "Refresh data"),
             Self::GenshinAchievements => lang.t("刷新成就数据", "Refresh achievement data"),
-            Self::StarRailAchievementIds => lang.t("刷新成就 ID", "Refresh achievement IDs"),
+            Self::StarRailAchievementIds => lang.t("刷新成就数据", "Refresh achievement data"),
         }
     }
 }
@@ -164,11 +164,17 @@ impl DataRefresh {
             ui.heading(title);
             return;
         };
-        ui.heading(title);
-        self.cache_row(ui, lang, source, enabled);
-        if let Some(source) = Source::additional_for_page(game, tab, capture_achievements) {
-            self.cache_row(ui, lang, source, enabled && !self.is_running());
-        }
+        ui.scope(|ui| {
+            ui.spacing_mut().interact_size.y = 32.0;
+            ui.horizontal_wrapped(|ui| {
+                ui.heading(title);
+                ui.add_space(10.0);
+                self.cache_row(ui, lang, source, enabled);
+                if let Some(source) = Source::additional_for_page(game, tab, capture_achievements) {
+                    self.cache_row(ui, lang, source, enabled);
+                }
+            });
+        });
     }
     fn cache_row(&mut self, ui: &mut egui::Ui, lang: Lang, source: Source, enabled: bool) {
         let enabled = enabled && !self.is_running();
@@ -186,7 +192,7 @@ impl DataRefresh {
                     ui.text_style_height(&egui::TextStyle::Button)
                         + 2.0 * ui.spacing().button_padding.y,
                 );
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 let busy = cache.refresh.is_running();
                 if ui
                     .add_enabled(

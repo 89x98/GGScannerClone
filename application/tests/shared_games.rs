@@ -228,29 +228,23 @@ fn star_rail_capture_defaults_match_genshin_sdr_at_the_config_boundary() {
     let root = temp_root("shared-capture-default");
     fs::create_dir_all(&root).unwrap();
     let path = root.join("config.json");
-    // Existing v2 files may omit captureMethod. Explicit choices still
-    // round-trip as overrides rather than being forced to Automatic.
+    // Persisted capture choices are retired; HDR now determines GUI capture.
     fs::write(&path, r#"{"schemaVersion":2,"starRail":{}}"#).unwrap();
     let store = ApplicationConfigStore::load(&path).unwrap();
     assert_eq!(store.config.star_rail.capture_method.to_yas(), None);
 
-    for (saved, method) in [
-        ("wgc", yas::capture::CaptureMethod::Wgc),
-        ("bitBlt", yas::capture::CaptureMethod::BitBlt),
-    ] {
+    for saved in ["wgc", "bitBlt"] {
         fs::write(
             &path,
             format!(r#"{{"schemaVersion":2,"starRail":{{"captureMethod":"{saved}"}}}}"#),
         )
         .unwrap();
         let mut store = ApplicationConfigStore::load(&path).unwrap();
-        assert_eq!(store.config.star_rail.capture_method.to_yas(), Some(method));
+        assert_eq!(store.config.star_rail.capture_method.to_yas(), None);
         store.persist_now().unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("captureMethod"));
         let reloaded = ApplicationConfigStore::load(&path).unwrap();
-        assert_eq!(
-            reloaded.config.star_rail.capture_method.to_yas(),
-            Some(method)
-        );
+        assert_eq!(reloaded.config.star_rail.capture_method.to_yas(), None);
     }
     remove_test_tree(&root);
 }
@@ -264,7 +258,7 @@ fn capture_settings_migrate_and_hdr_round_trips_through_public_config_load() {
     let root = temp_root("capture-hdr-migration");
     fs::create_dir_all(&root).unwrap();
     let path = root.join("config.json");
-    for version in [1, 2, 3] {
+    for version in [1, 2, 3, 4] {
         for method in [None, Some("bitBlt"), Some("wgc"), Some("printWindow")] {
             let mut saved = serde_json::json!({
                 "schemaVersion": version,
@@ -286,17 +280,7 @@ fn capture_settings_migrate_and_hdr_round_trips_through_public_config_load() {
                 APPLICATION_CONFIG_SCHEMA_VERSION
             );
             assert!(!store.config.star_rail.hdr_mode);
-            let expected_override = match method {
-                None => None,
-                Some("bitBlt") => Some(CaptureMethod::BitBlt),
-                Some("wgc") => Some(CaptureMethod::Wgc),
-                Some("printWindow") => None,
-                _ => unreachable!(),
-            };
-            assert_eq!(
-                store.config.star_rail.capture_method.to_yas(),
-                expected_override
-            );
+            assert_eq!(store.config.star_rail.capture_method.to_yas(), None);
             assert_eq!(store.config.navigation.active_game, Game::StarRail);
             assert_eq!(store.config.navigation.star_rail_tab, ToolTab::Manager);
             assert_eq!(store.config.star_rail.output_dir, r"D:\exports");
@@ -346,39 +330,41 @@ fn retired_capture_override_uses_saved_hdr_mode_after_migration() {
     let root = temp_root("retired-capture-override");
     fs::create_dir_all(&root).unwrap();
     let path = root.join("config.json");
-    for version in [1, 2, 3] {
+    for version in [1, 2, 3, 4] {
         for hdr_mode in [false, true] {
-            // Include timings to cover the existing migration's early return.
-            let saved = serde_json::json!({
-                "schemaVersion":version,
-                "starRail":{"captureMethod":"printWindow", "hdrMode":hdr_mode,
-                    "timings":{"panelSwitchMs":650}, "outputDir":"D:\\exports",
-                    "scanCharacters":false, "dumpImages":true}
-            });
-            fs::write(&path, serde_json::to_string(&saved).unwrap()).unwrap();
-            let mut store = ApplicationConfigStore::load(&path).unwrap();
-            let settings = &store.config.star_rail;
-            assert_eq!(settings.capture_method.to_yas(), None);
-            assert_eq!(settings.hdr_mode, hdr_mode);
-            assert_eq!(settings.timings.panel_switch_ms, 650);
-            assert_eq!(settings.output_dir, r"D:\exports");
-            assert!(!settings.scan_characters);
-            assert!(settings.dump_images);
-            let scan = ScanConfig {
-                capture_method: settings.capture_method.to_yas(),
-                hdr_mode: settings.hdr_mode,
-                ..Default::default()
-            };
-            assert_eq!(
-                scan.effective_capture_method(),
-                CaptureMethod::for_hdr_mode(hdr_mode)
-            );
-            store.persist_now().unwrap();
-            assert!(!fs::read_to_string(&path).unwrap().contains("printWindow"));
-            assert_eq!(
-                ApplicationConfigStore::load(&path).unwrap().config,
-                store.config
-            );
+            for method in ["auto", "bitBlt", "wgc", "printWindow"] {
+                // Include timings to cover the existing migration's early return.
+                let saved = serde_json::json!({
+                    "schemaVersion":version,
+                    "starRail":{"captureMethod":method, "hdrMode":hdr_mode,
+                        "timings":{"panelSwitchMs":650}, "outputDir":"D:\\exports",
+                        "scanCharacters":false, "dumpImages":true}
+                });
+                fs::write(&path, serde_json::to_string(&saved).unwrap()).unwrap();
+                let mut store = ApplicationConfigStore::load(&path).unwrap();
+                let settings = &store.config.star_rail;
+                assert_eq!(settings.capture_method.to_yas(), None);
+                assert_eq!(settings.hdr_mode, hdr_mode);
+                assert_eq!(settings.timings.panel_switch_ms, 650);
+                assert_eq!(settings.output_dir, r"D:\exports");
+                assert!(!settings.scan_characters);
+                assert!(settings.dump_images);
+                let scan = ScanConfig {
+                    capture_method: settings.capture_method.to_yas(),
+                    hdr_mode: settings.hdr_mode,
+                    ..Default::default()
+                };
+                assert_eq!(
+                    scan.effective_capture_method(),
+                    CaptureMethod::for_hdr_mode(hdr_mode)
+                );
+                store.persist_now().unwrap();
+                assert!(!fs::read_to_string(&path).unwrap().contains("captureMethod"));
+                assert_eq!(
+                    ApplicationConfigStore::load(&path).unwrap().config,
+                    store.config
+                );
+            }
         }
     }
     remove_test_tree(&root);
@@ -498,7 +484,10 @@ fn obsolete_archive_import_path_is_removed_without_changing_saved_preferences() 
             saved["starRail"]["verbose"] = false.into();
             saved["starRail"]["stopOnFailure"] = false.into();
             saved["starRail"]["dumpJobData"] = false.into();
-            saved["starRail"]["captureMethod"] = "auto".into();
+            saved["starRail"]
+                .as_object_mut()
+                .unwrap()
+                .remove("captureMethod");
             assert_eq!(persisted, saved);
             let reloaded = ApplicationConfigStore::load(&path).unwrap();
             assert_eq!(reloaded.config, store.config);

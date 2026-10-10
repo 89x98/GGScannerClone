@@ -7,36 +7,27 @@ use super::worker::{self, TaskHandle};
 pub fn show_settings(ui: &mut egui::Ui, state: &mut AppState, is_scanning: bool) {
     let l = state.lang;
 
-    widgets::section(ui, l.t("扫描内容", "Scan targets"), |ui| {
+    widgets::form(ui, |ui| {
         ui.add_enabled_ui(!is_scanning, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut state.scan_characters, l.t("角色", "Characters"));
-                ui.checkbox(&mut state.scan_weapons, l.t("武器", "Weapons"));
-                ui.checkbox(&mut state.scan_artifacts, l.t("圣遗物", "Artifacts"));
-                ui.checkbox(&mut state.scan_achievements, l.t("成就", "Achievements"));
+            widgets::group(ui, l.t("扫描内容", "Scan targets"), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut state.scan_characters, l.t("角色", "Characters"));
+                    ui.checkbox(&mut state.scan_weapons, l.t("武器", "Weapons"));
+                    ui.checkbox(&mut state.scan_artifacts, l.t("圣遗物", "Artifacts"))
+                        .on_hover_text(l.t(
+                            "扫描前请清除背包过滤条件。",
+                            "Clear inventory filters first.",
+                        ));
+                    ui.checkbox(&mut state.scan_achievements, l.t("成就", "Achievements"));
+                });
             });
-            widgets::hint(
-                ui,
-                l.t(
-                    "扫描前请清除背包过滤条件。",
-                    "Clear inventory filters first.",
-                ),
-            );
-        });
-    });
-    if state.scan_characters || state.names_need_attention {
-        widgets::section(ui, l.t("角色信息", "Character names"), |ui| {
-            widgets::character_names_section(ui, state, !is_scanning);
-        });
-    }
-    widgets::section(ui, l.t("导出与显示", "Export & display"), |ui| {
-        ui.add_enabled_ui(!is_scanning, |ui| {
-            widgets::scan_export_options(
-                ui,
-                l,
-                &mut state.only_keep_latest_export,
-                &mut state.save_on_cancel,
-            );
+            if state.scan_characters || state.names_need_attention {
+                ui.separator();
+                widgets::group(ui, l.t("角色信息", "Character info"), |ui| {
+                    widgets::character_names_section(ui, state, true);
+                });
+            }
+            ui.separator();
             ui.checkbox(&mut state.hdr_mode, l.t("游戏使用 HDR", "Game uses HDR"));
         });
     });
@@ -80,21 +71,19 @@ pub fn show_settings(ui: &mut egui::Ui, state: &mut AppState, is_scanning: bool)
                 &mut state.dump_images,
             );
             ui.separator();
-            ui.strong(l.t("扫描上限", "Scan limits"));
-            widgets::hint(ui, l.t("0 = 全部", "0 = all"));
-            for (label, value) in [
-                (l.t("角色", "Characters"), &mut state.char_max_count),
-                (l.t("武器", "Weapons"), &mut state.weapon_max_count),
-                (l.t("圣遗物", "Artifacts"), &mut state.artifact_max_count),
-                (
-                    l.t("成就", "Achievements"),
-                    &mut state.achievement_max_count,
-                ),
-            ] {
-                widgets::field_row(ui, label, |ui| {
-                    max_count_field(ui, value);
-                });
-            }
+            widgets::scan_limits(
+                ui,
+                l,
+                &mut [
+                    (l.t("角色", "Characters"), &mut state.char_max_count),
+                    (l.t("武器", "Weapons"), &mut state.weapon_max_count),
+                    (l.t("圣遗物", "Artifacts"), &mut state.artifact_max_count),
+                    (
+                        l.t("成就", "Achievements"),
+                        &mut state.achievement_max_count,
+                    ),
+                ],
+            );
         });
     });
 }
@@ -138,15 +127,32 @@ pub fn show_status(
             "Select scan targets",
         )));
     }
-    super::theme::task_status(ui, l, status.as_ref(), l.t("准备扫描", "Ready to scan"));
-    if let Ok(progress) = state.scan_progress.try_lock() {
-        let mut display = progress.clone();
-        if matches!(status, Some(TaskStatus::Failed(_))) {
-            display.interrupt_unfinished();
-        }
-        super::task_progress::show(ui, l, &display);
+    if matches!(status, Some(TaskStatus::Idle)) && state.missing_required_character_names() {
+        status = Some(TaskStatus::AwaitingInput(UiText::new(
+            "请填写旅行者名字",
+            "Enter the Traveler's name",
+        )));
     }
+    widgets::status_content(ui, "genshin-scan-status", 2, |ui| {
+        super::theme::task_status(ui, l, status.as_ref(), l.t("准备扫描", "Ready to scan"));
+        if let Ok(progress) = state.scan_progress.try_lock() {
+            let mut display = progress.clone();
+            if matches!(status, Some(TaskStatus::Failed(_))) {
+                display.interrupt_unfinished();
+            }
+            super::task_progress::show(ui, l, &display);
+        }
+    });
     ui.add_space(12.0);
+    ui.add_enabled_ui(!running && !game_busy, |ui| {
+        widgets::scan_export_options(
+            ui,
+            l,
+            &mut state.only_keep_latest_export,
+            &mut state.save_on_cancel,
+        );
+    });
+    ui.add_space(4.0);
     if running {
         let stopping = handle.as_ref().is_some_and(TaskHandle::is_stopping);
         if super::theme::primary_action(
@@ -167,6 +173,7 @@ pub fn show_status(
     } else if super::theme::primary_action(
         ui,
         !game_busy
+            && !state.missing_required_character_names()
             && (state.scan_characters
                 || state.scan_weapons
                 || state.scan_artifacts
@@ -197,8 +204,4 @@ pub fn show_status(
             *handle = Some(worker::spawn_scan(state));
         }
     }
-}
-
-fn max_count_field(ui: &mut egui::Ui, value: &mut usize) {
-    ui.add(egui::DragValue::new(value).range(0..=2000).speed(0.0));
 }

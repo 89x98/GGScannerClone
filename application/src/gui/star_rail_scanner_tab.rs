@@ -1,7 +1,7 @@
 use eframe::egui;
 use hsr_scanner::TrailblazerGender;
 
-use crate::config::{StarRailCaptureMethod, StarRailSettings};
+use crate::config::StarRailSettings;
 
 use super::{star_rail_state::StarRailState, star_rail_worker, state::Lang, widgets, worker};
 
@@ -47,26 +47,48 @@ pub fn show_status(
             ));
         }
     }
-    super::theme::task_status(
-        ui,
-        lang,
-        status.as_ref(),
-        lang.t("准备扫描", "Ready to scan"),
-    );
-    if let Ok(progress) = state.scan_progress.try_lock() {
-        let mut display = progress.clone();
-        if matches!(status, Some(super::state::TaskStatus::Failed(_))) {
-            display.interrupt_unfinished();
+    widgets::status_content(ui, "hsr-scan-status", 2, |ui| {
+        super::theme::task_status(
+            ui,
+            lang,
+            status.as_ref(),
+            lang.t("准备扫描", "Ready to scan"),
+        );
+        if let Ok(progress) = state.scan_progress.try_lock() {
+            let mut display = progress.clone();
+            if matches!(status, Some(super::state::TaskStatus::Failed(_))) {
+                display.interrupt_unfinished();
+            }
+            super::task_progress::show(ui, lang, &display);
         }
-        super::task_progress::show(ui, lang, &display);
-    }
-    ui.horizontal(|ui| {
+    });
+    ui.add_space(12.0);
+    ui.add_enabled_ui(!is_running && !game_busy, |ui| {
+        widgets::scan_export_options(
+            ui,
+            lang,
+            &mut settings.scan_only_keep_latest_export,
+            &mut settings.scan_save_on_cancel,
+        );
+    });
+    ui.add_space(4.0);
+    ui.scope(|ui| {
         if is_running {
             let stopping = state
                 .scan_handle
                 .as_ref()
                 .is_some_and(super::worker::TaskHandle::is_stopping);
-            if super::theme::primary_action(ui, !stopping, lang.t("停止", "Stop")).clicked() {
+            if super::theme::primary_action(
+                ui,
+                !stopping,
+                if stopping {
+                    lang.t("正在停止", "Stopping")
+                } else {
+                    lang.t("停止扫描", "Stop scan")
+                },
+            )
+            .clicked()
+            {
                 if let Some(handle) = &state.scan_handle {
                     handle.stop();
                 }
@@ -104,48 +126,38 @@ pub fn show_settings(
 ) {
     let game_busy = false;
 
-    widgets::section(ui, lang.t("扫描内容", "Scan targets"), |ui| {
+    widgets::form(ui, |ui| {
         ui.add_enabled_ui(!is_running && !game_busy, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut settings.scan_characters, lang.t("角色", "Characters"));
-                ui.checkbox(
-                    &mut settings.scan_light_cones,
-                    lang.t("光锥", "Light Cones"),
-                );
-                ui.checkbox(
-                    &mut settings.scan_relics_and_ornaments,
-                    lang.t("遗器与饰品", "Relics"),
-                )
-                .on_hover_text(lang.t("隧洞遗器与位面饰品", "Cavern Relics and Planar Ornaments"));
+            widgets::group(ui, lang.t("扫描内容", "Scan targets"), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut settings.scan_characters, lang.t("角色", "Characters"));
+                    ui.checkbox(
+                        &mut settings.scan_light_cones,
+                        lang.t("光锥", "Light Cones"),
+                    );
+                    ui.checkbox(
+                        &mut settings.scan_relics_and_ornaments,
+                        lang.t("遗器与饰品", "Relics"),
+                    )
+                    .on_hover_text(
+                        lang.t("隧洞遗器与位面饰品", "Cavern Relics and Planar Ornaments"),
+                    );
+                });
             });
-            if !settings.scan_characters
-                && !settings.scan_light_cones
-                && !settings.scan_relics_and_ornaments
-            {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    lang.t("请至少选择一种扫描内容。", "Select at least one target."),
-                );
+            if settings.scan_characters {
+                ui.separator();
+                widgets::group(ui, lang.t("角色信息", "Character info"), |ui| {
+                    trailblazer_row(ui, lang, settings, true);
+                });
             }
-        });
-    });
-    if settings.scan_characters {
-        widgets::section(ui, lang.t("开拓者信息", "Trailblazer"), |ui| {
-            ui.add_enabled_ui(!is_running && !game_busy, |ui| {
-                trailblazer_row(ui, lang, settings, true);
-            });
-        });
-    }
-    widgets::section(ui, lang.t("导出与显示", "Export & display"), |ui| {
-        ui.add_enabled_ui(!is_running && !game_busy, |ui| {
-            widgets::scan_export_options(
-                ui,
-                lang,
-                &mut settings.scan_only_keep_latest_export,
-                &mut settings.scan_save_on_cancel,
-            );
-            if ui.checkbox(&mut settings.hdr_mode, lang.t("游戏使用 HDR", "Game uses HDR"))
-                .on_hover_text(lang.t("切换后恢复自动截图：普通模式使用 BitBlt，HDR 使用 Windows 图形捕获。", "Restores Automatic capture: BitBlt normally, Windows Graphics Capture for HDR.")).changed() {
+            ui.separator();
+            if ui
+                .checkbox(
+                    &mut settings.hdr_mode,
+                    lang.t("游戏使用 HDR", "Game uses HDR"),
+                )
+                .changed()
+            {
                 settings.set_hdr_mode(settings.hdr_mode);
             }
         });
@@ -154,38 +166,24 @@ pub fn show_settings(
     timing_settings(ui, lang, settings, is_running);
     widgets::fold(ui, lang.t("高级选项", "Advanced"), |ui| {
         ui.add_enabled_ui(!is_running && !game_busy, |ui| {
-            widgets::scan_debug_options(ui, lang, &mut settings.verbose, &mut settings.stop_on_failure, &mut settings.dump_images);
-            widgets::field_row(ui, lang.t("截图方式", "Capture"), |ui| {
-                egui::ComboBox::from_id_salt("star_rail_capture_method")
-                    .width(ui.available_width() - 16.0)
-                    .selected_text(capture_method_label(lang, settings.capture_method))
-                    .show_ui(ui, |ui| {
-                        for method in [StarRailCaptureMethod::Auto, StarRailCaptureMethod::BitBlt, StarRailCaptureMethod::Wgc] {
-                            ui.selectable_value(&mut settings.capture_method, method, capture_method_label(lang, method));
-                        }
-                    });
-            });
+            widgets::scan_debug_options(
+                ui,
+                lang,
+                &mut settings.verbose,
+                &mut settings.stop_on_failure,
+                &mut settings.dump_images,
+            );
             ui.separator();
-            ui.strong(lang.t("扫描上限", "Scan limits"));
-            for (zh, en, value) in [
-                ("角色", "Characters", &mut settings.max_characters),
-                ("光锥", "Light Cones", &mut settings.max_light_cones),
-                ("遗器与饰品", "Relics", &mut settings.max_gear),
-            ] {
-                widgets::field_row(ui, lang.t(zh, en), |ui| { ui.add(egui::DragValue::new(value).range(0..=10_000)); });
-            }
-                        if settings.capture_method != StarRailCaptureMethod::Auto {
-                            widgets::hint(ui, lang.t(
-                                "手动截图方式会覆盖自动选择。HDR 色调映射仅适用于 Windows 图形捕获；选择“自动”可恢复推荐设置。",
-                                "A capture override replaces automatic selection. HDR tone mapping applies to WGC only; choose Automatic to restore the recommended setting.",
-                            ));
-                        }
-                        widgets::hint(ui, lang.t(
-                            "最大扫描数：0 = 全部。达到上限时仅导出已扫描条目。",
-                            "Max scan count: 0 = all. Reaching a cap saves partial results.",
-                        ));
-
-                    });
+            widgets::scan_limits(
+                ui,
+                lang,
+                &mut [
+                    (lang.t("角色", "Characters"), &mut settings.max_characters),
+                    (lang.t("光锥", "Light Cones"), &mut settings.max_light_cones),
+                    (lang.t("遗器与饰品", "Relics"), &mut settings.max_gear),
+                ],
+            );
+        });
     });
 }
 
@@ -197,7 +195,6 @@ pub(super) fn trailblazer_row(
     settings: &mut StarRailSettings,
     required: bool,
 ) {
-    let missing = settings.missing_trailblazer();
     widgets::field_row(
         ui,
         if required {
@@ -206,6 +203,9 @@ pub(super) fn trailblazer_row(
             lang.t("游戏内昵称", "Name")
         },
         |ui| {
+            if required && settings.trailblazer_name.trim().is_empty() {
+                ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::WARNING;
+            }
             ui.add(
                 widgets::singleline_input(&mut settings.trailblazer_name)
                     .desired_width(ui.available_width())
@@ -221,6 +221,9 @@ pub(super) fn trailblazer_row(
             lang.t("性别", "Gender")
         },
         |ui| {
+            if required && settings.trailblazer_gender.is_none() {
+                ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::WARNING;
+            }
             egui::ComboBox::from_id_salt("star_rail_trailblazer_gender")
                 .width(ui.available_width() - ui.spacing().button_padding.x * 2.0)
                 .selected_text(match settings.trailblazer_gender {
@@ -238,29 +241,12 @@ pub(super) fn trailblazer_row(
                 });
         },
     );
-    if required && missing {
-        ui.colored_label(
-            egui::Color32::from_rgb(255, 200, 50),
-            lang.t(
-                "扫描角色需要开拓者的游戏内昵称和性别。",
-                "Enter your Trailblazer name and gender.",
-            ),
-        );
-    }
 }
 
 fn trailblazer_gender_label(lang: Lang, gender: TrailblazerGender) -> &'static str {
     match gender {
         TrailblazerGender::Stelle => lang.t("星（女）", "Stelle (female)"),
         TrailblazerGender::Caelus => lang.t("穹（男）", "Caelus (male)"),
-    }
-}
-
-fn capture_method_label(lang: Lang, method: StarRailCaptureMethod) -> &'static str {
-    match method {
-        StarRailCaptureMethod::Auto => lang.t("自动（推荐）", "Automatic"),
-        StarRailCaptureMethod::Wgc => lang.t("Windows 图形捕获", "Windows Graphics Capture"),
-        StarRailCaptureMethod::BitBlt => "BitBlt",
     }
 }
 

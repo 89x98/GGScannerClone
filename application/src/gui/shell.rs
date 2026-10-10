@@ -2,8 +2,8 @@ use super::{game_switcher, state::Lang, theme};
 use crate::config::{Game, GameNavigation, ToolTab};
 use eframe::egui;
 
-pub const TITLEBAR_HEIGHT: f32 = 64.0;
-pub const SIDEBAR_MIN_WIDTH: f32 = 148.0;
+pub const TITLEBAR_HEIGHT: f32 = 56.0;
+pub const SIDEBAR_MIN_WIDTH: f32 = 128.0;
 
 pub fn product_name() -> &'static str {
     if cfg!(feature = "capture") {
@@ -20,6 +20,7 @@ pub fn site(game: Game) -> (&'static str, &'static str) {
 }
 
 pub struct Logos {
+    pub app: egui::TextureHandle,
     pub genshin: egui::TextureHandle,
     pub star_rail: egui::TextureHandle,
 }
@@ -27,7 +28,7 @@ impl Logos {
     pub fn load(ctx: &egui::Context) -> Self {
         fn load(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
             let rgba = image::load_from_memory(bytes)
-                .expect("bundled game logo must be valid PNG")
+                .expect("bundled logo must be valid PNG")
                 .into_rgba8();
             let size = [rgba.width() as usize, rgba.height() as usize];
             ctx.load_texture(
@@ -37,6 +38,12 @@ impl Logos {
             )
         }
         Self {
+            // Generated from the same source as the executable's icon.ico.
+            app: load(
+                ctx,
+                "app-icon",
+                include_bytes!("../../../assets/icon_64.png"),
+            ),
             genshin: load(
                 ctx,
                 "genshin-site-logo",
@@ -63,7 +70,7 @@ pub fn titlebar(
         .frame(
             egui::Frame::none()
                 .fill(theme::SURFACE)
-                .inner_margin(egui::Margin::symmetric(12.0, 7.0)),
+                .inner_margin(egui::Margin::ZERO),
         )
         .show(ctx, |ui| {
             let drag = ui.interact(
@@ -77,46 +84,104 @@ pub fn titlebar(
             } else if drag.drag_started() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
-            ui.horizontal_centered(|ui| {
-                ui.label(
-                    egui::RichText::new("G")
-                        .color(theme::ACCENT)
-                        .size(23.0)
-                        .strong(),
-                );
+            let rect = ui.max_rect();
+            let controls = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - 138.0, rect.top()),
+                egui::vec2(138.0, 32.0),
+            );
+            let brand = egui::Rect::from_min_max(
+                rect.min + egui::vec2(12.0, 0.0),
+                egui::pos2(controls.left() - 8.0, rect.bottom()),
+            );
+            let mut brand_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(brand)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            brand_ui.horizontal_centered(|ui| {
+                ui.add(egui::Image::new((logos.app.id(), egui::vec2(28.0, 28.0))));
                 ui.label(egui::RichText::new(product_name()).size(16.0).strong());
                 ui.add_space(16.0);
                 ui.allocate_ui(egui::vec2(248.0, 36.0), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     game_switcher::show(ui, *lang, game, enabled, Some(logos));
                 });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if theme::text_button(ui, "×", egui::vec2(36.0, 32.0), false)
-                        .on_hover_text(lang.t("关闭", "Close"))
-                        .clicked()
-                    {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                    if theme::text_button(
-                        ui,
-                        if maximized { "❐" } else { "□" },
-                        egui::vec2(36.0, 32.0),
-                        false,
-                    )
-                    .on_hover_text(lang.t("最大化 / 还原", "Maximize / Restore"))
-                    .clicked()
-                    {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                    }
-                    if theme::text_button(ui, "−", egui::vec2(36.0, 32.0), false)
-                        .on_hover_text(lang.t("最小化", "Minimize"))
-                        .clicked()
-                    {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                    }
-                });
             });
+            let mut controls_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(controls)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            controls_ui.spacing_mut().item_spacing.x = 0.0;
+            for (index, label, command) in [
+                (
+                    0,
+                    lang.t("最小化", "Minimize"),
+                    egui::ViewportCommand::Minimized(true),
+                ),
+                (
+                    1,
+                    lang.t("最大化 / 还原", "Maximize / Restore"),
+                    egui::ViewportCommand::Maximized(!maximized),
+                ),
+                (2, lang.t("关闭", "Close"), egui::ViewportCommand::Close),
+            ] {
+                if caption_button(&mut controls_ui, label, index, maximized).clicked() {
+                    ctx.send_viewport_cmd(command);
+                }
+            }
         });
+}
+
+/// Windows caption proportions and painted glyphs avoid font-dependent symbols.
+fn caption_button(ui: &mut egui::Ui, label: &str, index: u8, maximized: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(46.0, 32.0), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    let hover = response.hovered() || response.is_pointer_button_down_on();
+    if hover {
+        ui.painter().rect_filled(
+            rect,
+            0.0,
+            if index == 2 {
+                egui::Color32::from_rgb(196, 43, 28)
+            } else {
+                egui::Color32::from_rgb(48, 57, 68)
+            },
+        );
+    }
+    let stroke = egui::Stroke::new(
+        1.0,
+        if hover {
+            egui::Color32::WHITE
+        } else {
+            theme::MUTED
+        },
+    );
+    let glyph = egui::Rect::from_center_size(rect.center(), egui::vec2(10.0, 10.0));
+    match index {
+        0 => {
+            ui.painter()
+                .line_segment([glyph.left_center(), glyph.right_center()], stroke);
+        },
+        1 if maximized => {
+            let back = glyph.translate(egui::vec2(2.0, -2.0));
+            ui.painter()
+                .line_segment([back.left_top(), back.right_top()], stroke);
+            ui.painter()
+                .line_segment([back.right_top(), back.right_bottom()], stroke);
+            ui.painter().rect_stroke(glyph, 0.0, stroke);
+        },
+        1 => {
+            ui.painter().rect_stroke(glyph, 0.0, stroke);
+        },
+        _ => {
+            ui.painter()
+                .line_segment([glyph.left_top(), glyph.right_bottom()], stroke);
+            ui.painter()
+                .line_segment([glyph.right_top(), glyph.left_bottom()], stroke);
+        },
+    }
+    response.on_hover_text(label)
 }
 
 pub fn sidebar(ui: &mut egui::Ui, lang: &mut Lang, navigation: &mut GameNavigation) {
@@ -204,14 +269,9 @@ pub fn sidebar(ui: &mut egui::Ui, lang: &mut Lang, navigation: &mut GameNavigati
                 navigation.select_tab(ToolTab::Credits);
             }
             let (label, url) = site(navigation.active_game);
-            if theme::text_button(
-                ui,
-                &format!("{label} ↗"),
-                egui::vec2(ui.available_width(), 30.0),
-                false,
-            )
-            .on_hover_text(url)
-            .clicked()
+            if theme::text_button(ui, label, egui::vec2(ui.available_width(), 30.0), false)
+                .on_hover_text(url)
+                .clicked()
             {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(url));
             }

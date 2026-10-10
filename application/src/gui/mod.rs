@@ -116,6 +116,7 @@ pub fn run_gui() {
         .with_title(window_title)
         .with_inner_size([1040.0, 760.0])
         .with_min_inner_size([760.0, 500.0])
+        .with_clamp_size_to_monitor_size(true)
         .with_decorations(false);
     match eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon_64.png")) {
         Ok(icon) => viewport = viewport.with_icon(std::sync::Arc::new(icon)),
@@ -411,7 +412,7 @@ impl eframe::App for GuiApp {
                     "log-split",
                     &mut self.splits.workspace,
                     false,
-                    88.0,
+                    150.0,
                 );
                 let log_buf = match active_tab {
                     ToolTab::Manager => &self.state.manager_log_lines,
@@ -780,7 +781,11 @@ fn setup_fonts(ctx: &egui::Context) {
             bold_fonts.push(name.to_owned());
         }
     }
-    bold_fonts.extend(fonts.families[&egui::FontFamily::Proportional].iter().cloned());
+    bold_fonts.extend(
+        fonts.families[&egui::FontFamily::Proportional]
+            .iter()
+            .cloned(),
+    );
     fonts
         .families
         .insert(egui::FontFamily::Name("bold".into()), bold_fonts);

@@ -6,15 +6,19 @@ use super::state::{AppState, Lang, UiError};
 
 /// Native egui frames provide the same spacing and hierarchy for every form.
 pub fn section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    form_frame(ui, |ui| {
-        ui.label(egui::RichText::new(title).size(13.0).strong());
-        ui.add_space(3.0);
-        body(ui);
-    });
+    form(ui, |ui| group(ui, title, body));
+}
+
+pub fn group(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+    ui.label(egui::RichText::new(title).size(13.0).strong());
+    body(ui);
 }
 
 pub fn fold(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    form_frame(ui, |ui| {
+    ui.scope(|ui| {
+        ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
+        ui.spacing_mut().item_spacing.y = 4.0;
+        ui.spacing_mut().interact_size.y = 26.0;
         egui::CollapsingHeader::new(egui::RichText::new(title).size(13.0).strong())
             .show_unindented(ui, |ui| {
                 ui.add_space(3.0);
@@ -23,11 +27,11 @@ pub fn fold(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
-fn form_frame(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+pub fn form(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
     let width = ui.available_width();
     egui::Frame::none()
         .fill(super::theme::SURFACE)
-        .rounding(9.0)
+        .rounding(8.0)
         .inner_margin(egui::vec2(12.0, 10.0))
         .show(ui, |ui| {
             ui.set_width((width - 24.0).max(1.0));
@@ -37,6 +41,39 @@ fn form_frame(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
             ui.spacing_mut().interact_size.y = 26.0;
             body(ui);
         });
+}
+
+/// Two compact columns, with each category and its cap kept on the same row.
+pub fn scan_limits(ui: &mut egui::Ui, lang: Lang, values: &mut [(&str, &mut usize)]) {
+    ui.horizontal(|ui| {
+        ui.strong(lang.t("扫描上限", "Scan limits"));
+        hint(ui, lang.t("0 = 全部", "0 = all"));
+    });
+    let gap = 12.0;
+    let width = (ui.available_width() - gap) / 2.0;
+    for pair in values.chunks_mut(2) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for (label, value) in pair {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, 28.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.add_sized(
+                            [width - 54.0, 26.0],
+                            egui::Label::new(*label).truncate().halign(egui::Align::Min),
+                        )
+                        .on_hover_text(*label);
+                        ui.add_sized(
+                            [50.0, 26.0],
+                            egui::DragValue::new(*value).range(0..=10_000).speed(0.0),
+                        );
+                    },
+                );
+            }
+        });
+    }
 }
 
 /// Labels and controls share a fixed-height row and a stable label column.
@@ -75,6 +112,28 @@ pub fn hint(ui: &mut egui::Ui, text: &str) {
     );
 }
 
+/// Only task details scroll. Keep export choices and Start/Stop reachable even
+/// at the minimum window height or when a diagnostic disclosure is expanded.
+pub fn status_content(
+    ui: &mut egui::Ui,
+    id: &str,
+    options: usize,
+    body: impl FnOnce(&mut egui::Ui),
+) {
+    let footer_height =
+        60.0 + options as f32 * (ui.spacing().interact_size.y + ui.spacing().item_spacing.y);
+    let height = (ui.available_height() - footer_height).max(24.0);
+    let width = (ui.available_width() - ui.spacing().scroll.allocated_width()).max(1.0);
+    egui::ScrollArea::vertical()
+        .id_salt(id)
+        .max_height(height)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.set_width(width);
+            body(ui);
+        });
+}
+
 /// Keep text, selection and caret centered when a form gives the input extra height.
 pub fn singleline_input(text: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
     egui::TextEdit::singleline(text).vertical_align(egui::Align::Center)
@@ -97,6 +156,24 @@ pub fn scan_export_options(
     );
 }
 
+pub fn server_address(ui: &mut egui::Ui, lang: Lang, port: u16) {
+    let address = format!("http://127.0.0.1:{port}");
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new(&address)
+                .monospace()
+                .size(12.0)
+                .color(super::theme::MUTED),
+        );
+        if ui
+            .small_button(lang.t("复制地址", "Copy address"))
+            .clicked()
+        {
+            ui.ctx().copy_text(address);
+        }
+    });
+}
+
 pub fn scan_debug_options(
     ui: &mut egui::Ui,
     lang: Lang,
@@ -104,8 +181,9 @@ pub fn scan_debug_options(
     stop_on_failure: &mut bool,
     dump_images: &mut bool,
 ) {
-    ui.checkbox(verbose, lang.t("详细日志", "Detailed logs"));
-    ui.checkbox(
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(verbose, lang.t("详细日志", "Detailed logs"));
+        ui.checkbox(
         stop_on_failure,
         lang.t("识别失败时停止", "Stop on OCR errors"),
     )
@@ -113,7 +191,8 @@ pub fn scan_debug_options(
         "调试时在失败条目处停止。关闭时跳过失败条目，日志会保留失败原因。",
         "Stop at a failed entry for debugging. When off, skip failed entries and log their causes.",
     ));
-    ui.checkbox(dump_images, lang.t("保存 OCR 截图", "Save OCR screenshots"));
+        ui.checkbox(dump_images, lang.t("保存 OCR 截图", "Save OCR screenshots"));
+    });
 }
 
 pub fn manager_debug_options(
@@ -244,25 +323,10 @@ pub fn character_names_section(ui: &mut egui::Ui, state: &mut AppState, enabled:
     let l = state.lang;
 
     ui.add_enabled_ui(enabled, |ui| {
-        if state.names_need_attention {
-            ui.colored_label(
-                egui::Color32::from_rgb(255, 200, 50),
-                l.t(
-                    "请填写必填角色名称（旅行者），然后再次点击开始扫描。",
-                    "Fill in the required name (Traveler), then click Start Scan again.",
-                ),
-            );
-            ui.add_space(4.0);
-        } else {
-            hint(
-                ui,
-                l.t(
-                    "填写游戏内昵称；* 为必填。",
-                    "Use in-game names. * Required.",
-                ),
-            );
-        }
         field_row(ui, l.t("旅行者*", "Traveler*"), |ui| {
+            if state.user_config.traveler_name.trim().is_empty() {
+                ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::WARNING;
+            }
             ui.add(
                 singleline_input(&mut state.user_config.traveler_name)
                     .desired_width(ui.available_width())

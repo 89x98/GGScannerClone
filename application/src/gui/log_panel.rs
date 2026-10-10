@@ -25,10 +25,7 @@ pub fn show_with(ui: &mut egui::Ui, l: Lang, log_lines: &Arc<LogStore>) {
     ui.horizontal(|ui| {
         ui.strong(l.t("日志", "Log"));
         if count > 0 {
-            ui.colored_label(
-                egui::Color32::from_rgb(120, 120, 120),
-                format!("({})", count),
-            );
+            ui.colored_label(super::theme::MUTED, format!("({})", count));
             if ui.small_button(l.t("复制", "Copy")).clicked() {
                 ui.ctx().copy_text(full_text.clone());
             }

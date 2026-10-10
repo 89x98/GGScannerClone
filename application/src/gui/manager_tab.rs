@@ -9,7 +9,9 @@ use super::worker::{self, TaskHandle};
 pub fn show_settings(ui: &mut egui::Ui, state: &mut AppState, is_server_running: bool) {
     let l = state.lang;
 
-    widgets::section(ui, l.t("连接", "Connection"), |ui| {
+    widgets::form(ui, |ui| {
+        ui.add_enabled_ui(!is_server_running, |ui| {
+        widgets::group(ui, l.t("服务器", "Server"), |ui| {
         widgets::field_row(ui, l.t("端口", "Port"), |ui| {
             ui.add(
                 egui::DragValue::new(&mut state.server_port)
@@ -17,16 +19,16 @@ pub fn show_settings(ui: &mut egui::Ui, state: &mut AppState, is_server_running:
                     .speed(0.0),
             );
         });
-    });
-    widgets::section(ui, l.t("执行选项", "Execution"), |ui| {
-        ui.add_enabled_ui(!is_server_running, |ui| {
+        });
+        ui.separator();
+        widgets::group(ui, l.t("角色信息", "Character info"), |ui| {
+            widgets::character_names_section(ui, state, true);
+        });
+        ui.separator();
             ui.checkbox(&mut state.filter_involved_sets, l.t("仅筛选涉及的套装", "Filter target sets only"))
                 .on_hover_text(l.t("加解锁时只扫描涉及的套装，速度更快；不会更新完整背包。", "Scan only the requested artifact sets for faster lock changes. The full inventory will not be updated."));
             ui.checkbox(&mut state.hdr_mode, l.t("游戏使用 HDR", "Game uses HDR"));
         });
-    });
-    widgets::section(ui, l.t("角色信息", "Character names"), |ui| {
-        widgets::character_names_section(ui, state, !is_server_running);
     });
 
     // === Timing Delays ===
@@ -99,17 +101,22 @@ pub fn show_status(
     }
     let running = handle.as_ref().is_some_and(|h| !h.is_finished());
     let status = worker::try_task_status(&state.server_status);
-    if handle.as_ref().is_some_and(TaskHandle::is_stopping) {
-        super::theme::task_status(
-            ui,
-            l,
-            status.as_ref(),
-            l.t("正在停止连接", "Stopping connection"),
-        );
-    } else {
-        super::manager_progress::show(ui, l, &state.server_job, status.as_ref());
-    }
-    ui.add_space(16.0);
+    widgets::status_content(ui, "genshin-manager-status", 0, |ui| {
+        if handle.as_ref().is_some_and(TaskHandle::is_stopping) {
+            super::theme::task_status(
+                ui,
+                l,
+                status.as_ref(),
+                l.t("正在停止服务器", "Stopping server"),
+            );
+        } else {
+            super::manager_progress::show(ui, l, &state.server_job, status.as_ref());
+        }
+        if running && !handle.as_ref().is_some_and(TaskHandle::is_stopping) {
+            widgets::server_address(ui, l, state.server_port);
+        }
+    });
+    ui.add_space(12.0);
     if running {
         let stopping = handle.as_ref().is_some_and(TaskHandle::is_stopping);
         if super::theme::primary_action(
@@ -118,7 +125,7 @@ pub fn show_status(
             if stopping {
                 l.t("正在停止", "Stopping")
             } else {
-                l.t("停止连接", "Stop connection")
+                l.t("停止服务器", "Stop server")
             },
         )
         .clicked()
@@ -127,7 +134,7 @@ pub fn show_status(
                 h.stop();
             }
         }
-    } else if super::theme::primary_action(ui, !game_busy, l.t("启动连接", "Start connection"))
+    } else if super::theme::primary_action(ui, !game_busy, l.t("启动服务器", "Start server"))
         .clicked()
     {
         if let Err(e) = super::privilege::ensure_admin_for_action() {

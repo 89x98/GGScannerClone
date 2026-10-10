@@ -403,19 +403,13 @@ pub fn show_settings(ui: &mut egui::Ui, l: Lang, tab: &mut CaptureTabState, is_b
             });
         });
     });
-    widgets::section(ui, l.t("导出设置", "Export"), |ui| {
+    widgets::fold(ui, l.t("高级选项", "Advanced"), |ui| {
         ui.add_enabled_ui(!is_busy, |ui| {
             ui.checkbox(
-                &mut tab.only_keep_latest_dump,
-                l.t("仅保留最新导出", "Keep latest export only"),
+                &mut tab.dump_packets,
+                l.t("保存解密数据包", "Save decoded packets"),
             );
         });
-    });
-    widgets::fold(ui, l.t("高级设置", "Advanced"), |ui| {
-        ui.checkbox(
-            &mut tab.dump_packets,
-            l.t("保存解密数据包", "Save decoded packets"),
-        );
     });
 }
 
@@ -541,65 +535,75 @@ pub fn show_status(
         Phase::Stopped => Some(super::state::TaskStatus::Stopped(UiText::new(text, text))),
         _ => None,
     };
-    super::theme::task_status(ui, l, feedback.as_ref(), text);
-    if tab.include_characters
-        || tab.include_weapons
-        || tab.include_artifacts
-        || tab.include_achievements
-    {
-        capture_status::show_connection(ui, l, stage, shared.has_key_exchange);
-    }
-    {
-        let cs = &shared;
-        for (selected, key, zh, en, complete, count) in [
-            (
-                tab.include_characters,
-                "characters",
-                "角色",
-                "Characters",
-                cs.has_characters,
-                cs.character_count,
-            ),
-            (
-                tab.include_weapons,
-                "weapons",
-                "武器",
-                "Weapons",
-                cs.has_items,
-                cs.weapon_count,
-            ),
-            (
-                tab.include_artifacts,
-                "artifacts",
-                "圣遗物",
-                "Artifacts",
-                cs.has_items,
-                cs.artifact_count,
-            ),
-            (
-                tab.include_achievements,
-                "achievements",
-                "成就",
-                "Achievements",
-                cs.has_achievements,
-                cs.achievement_count,
-            ),
-        ] {
-            if selected {
-                let mut step = super::task_progress::Step::new(key, zh, en);
-                step.completed = count;
-                if complete {
-                    step.state = super::task_progress::StepState::Complete;
-                } else if matches!(tab.phase, Phase::Failed(_) | Phase::Stopped) {
-                    step.state = super::task_progress::StepState::Interrupted;
-                } else if matches!(tab.phase, Phase::Waiting) && shared.has_key_exchange {
-                    step.state = super::task_progress::StepState::Running;
+    widgets::status_content(ui, "genshin-capture-status", 1, |ui| {
+        super::theme::task_status(ui, l, feedback.as_ref(), text);
+        if stage != Stage::Ready
+            && (tab.include_characters
+                || tab.include_weapons
+                || tab.include_artifacts
+                || tab.include_achievements)
+        {
+            capture_status::show_connection(ui, l, stage, shared.has_key_exchange);
+        }
+        if stage != Stage::Ready {
+            let cs = &shared;
+            for (selected, key, zh, en, complete, count) in [
+                (
+                    tab.include_characters,
+                    "characters",
+                    "角色",
+                    "Characters",
+                    cs.has_characters,
+                    cs.character_count,
+                ),
+                (
+                    tab.include_weapons,
+                    "weapons",
+                    "武器",
+                    "Weapons",
+                    cs.has_items,
+                    cs.weapon_count,
+                ),
+                (
+                    tab.include_artifacts,
+                    "artifacts",
+                    "圣遗物",
+                    "Artifacts",
+                    cs.has_items,
+                    cs.artifact_count,
+                ),
+                (
+                    tab.include_achievements,
+                    "achievements",
+                    "成就",
+                    "Achievements",
+                    cs.has_achievements,
+                    cs.achievement_count,
+                ),
+            ] {
+                if selected {
+                    let mut step = super::task_progress::Step::new(key, zh, en);
+                    step.completed = count;
+                    if complete {
+                        step.state = super::task_progress::StepState::Complete;
+                    } else if matches!(tab.phase, Phase::Failed(_) | Phase::Stopped) {
+                        step.state = super::task_progress::StepState::Interrupted;
+                    } else if matches!(tab.phase, Phase::Waiting) && shared.has_key_exchange {
+                        step.state = super::task_progress::StepState::Running;
+                    }
+                    super::task_progress::row(ui, l, &step);
                 }
-                super::task_progress::row(ui, l, &step);
             }
         }
-    }
-    ui.add_space(16.0);
+    });
+    ui.add_space(12.0);
+    ui.add_enabled_ui(!tab.is_busy() && !game_busy, |ui| {
+        ui.checkbox(
+            &mut tab.only_keep_latest_dump,
+            l.t("仅保留最新导出", "Keep latest export only"),
+        );
+    });
+    ui.add_space(4.0);
     match &tab.phase {
         Phase::Initializing | Phase::Waiting => {
             if super::theme::primary_action(ui, true, l.t("停止抓包", "Stop capture")).clicked()

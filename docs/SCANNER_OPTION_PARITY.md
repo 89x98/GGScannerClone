@@ -68,3 +68,16 @@ Genshin `good_config.json` now uses schema version 1. Legacy explicit
 their behavior. Missing values use the new default (false). Retired pool and
 inventory-refresh keys are removed on save. Star Rail adds its diagnostic
 settings with false defaults in the current application config schema.
+
+Application config v5 retires persisted Star Rail `captureMethod` overrides.
+Both GUI scanners and managers use BitBlt for SDR and WGC for HDR, controlled
+only by **Game uses HDR**. Existing HDR, timing, names, scan limits and export
+preferences survive loading v1-v4 files. Explicit CLI capture overrides remain
+transient diagnostics and are never saved to GUI settings. PrintWindow has no
+runtime implementation.
+
+The GUI keeps common settings together, with separate collapsed timing and
+diagnostic sections. Export retention and partial-save choices sit immediately
+above the scan/capture action. Independent mapping/achievement refreshes,
+active task counts, results, errors and the always-visible log panel remain
+part of the production UI.

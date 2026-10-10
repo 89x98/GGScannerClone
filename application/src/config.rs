@@ -9,7 +9,7 @@ use hsr_scanner::scan_timing::ScanTimings;
 use hsr_scanner::{TrailblazerGender, TrailblazerIdentity};
 use serde::{Deserialize, Serialize};
 
-pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 4;
+pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 5;
 pub const APPLICATION_CONFIG_FILE_REL: &str = "data/good_app_config.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,7 +144,9 @@ pub struct StarRailSettings {
     pub max_light_cones: usize,
     #[serde(default)]
     pub max_gear: usize,
-    #[serde(default)]
+    /// Transient diagnostic CLI override. The GUI derives capture from HDR;
+    /// v1-v4 serialized captureMethod, which is discarded on load/save in v5.
+    #[serde(skip)]
     pub capture_method: StarRailCaptureMethod,
     #[serde(default)]
     pub hdr_mode: bool,
@@ -231,8 +233,7 @@ impl StarRailSettings {
         }
     }
 
-    /// The normal HDR control restores the recommended capture policy.
-    /// Advanced overrides can be selected afterward for troubleshooting.
+    /// Changing HDR restores the automatic capture policy, including in the CLI.
     pub fn set_hdr_mode(&mut self, enabled: bool) {
         self.hdr_mode = enabled;
         self.capture_method = StarRailCaptureMethod::Auto;
@@ -283,12 +284,6 @@ fn migrate_star_rail_scan_settings(value: &mut serde_json::Value) -> Result<()> 
     let Some(settings) = value.get_mut("starRail").and_then(Value::as_object_mut) else {
         return Ok(());
     };
-    // v1/v2 and earlier local v3 files could save captureMethod="printWindow".
-    // Retire that backend within the existing v3 migration from origin's v2;
-    // Auto uses the saved hdrMode to select BitBlt or WGC.
-    if settings.get("captureMethod").and_then(Value::as_str) == Some("printWindow") {
-        settings.insert("captureMethod".to_owned(), Value::from("auto"));
-    }
     if settings.contains_key("timings") {
         return Ok(());
     }
@@ -421,15 +416,14 @@ impl ApplicationConfigStore {
         // path. v1/v2 had starRail.offlineImportPath: the JSON converter's input
         // path. Serde discards those obsolete string keys while retaining all
         // scan, capture, manager, navigation and output settings.
-        // v1/v2 and earlier local v3 files stored a concrete captureMethod
-        // (default bitBlt) and no HDR
-        // setting. Preserve supported choices as advanced overrides; an omitted
-        // method now uses Auto, which still selects BitBlt with HDR disabled.
+        // v1-v4 stored captureMethod (auto/bitBlt/wgc; old files also used
+        // printWindow). v5 skips this persisted field so all GUI tasks use
+        // BitBlt for SDR and WGC for HDR. Preserve the existing hdrMode flag.
         // v3 added HDR. v4 adds the loopback manager port and scan export
         // preferences. Earlier files lacked both export preferences: serde
         // supplies the shared defaults (keep latest, discard on user stop).
         // Existing values remain intact, including the manager's saved port.
-        if matches!(config.schema_version, 1 | 2 | 3) {
+        if matches!(config.schema_version, 1..=4) {
             config.schema_version = APPLICATION_CONFIG_SCHEMA_VERSION;
         }
         config.validate_version()?;

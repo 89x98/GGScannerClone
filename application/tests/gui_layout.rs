@@ -31,6 +31,9 @@ fn both_games_expose_and_toggle_the_same_scan_export_preferences() {
                 scan_characters: false,
                 ..Default::default()
             };
+            let mut hsr_state =
+                good_tools_app::gui::star_rail_state::StarRailState::new(String::new());
+            let mut scan_handle = None;
             let mut draw = |events| {
                 ctx.run(
                     egui::RawInput {
@@ -40,14 +43,22 @@ fn both_games_expose_and_toggle_the_same_scan_export_preferences() {
                     |ctx| {
                         egui::CentralPanel::default().show(ctx, |ui| {
                             if star_rail {
-                                star_rail_scanner_tab::show_settings(
+                                star_rail_scanner_tab::show_status(
                                     ui,
                                     lang,
                                     &mut settings,
+                                    &mut hsr_state,
+                                    false,
                                     false,
                                 );
                             } else {
-                                scanner_tab::show_settings(ui, &mut genshin, false);
+                                scanner_tab::show_status(
+                                    ui,
+                                    &mut genshin,
+                                    &mut scan_handle,
+                                    false,
+                                    false,
+                                );
                             }
                         });
                     },
@@ -150,7 +161,7 @@ fn progress_rows_keep_the_same_height_at_narrow_and_wide_widths() {
                             let row_top = ui.cursor().top();
                             task_progress::row(ui, Lang::En, &step);
                             if let Some(previous) = previous_row_top {
-                                assert_eq!(row_top - previous, 28.0 + ui.spacing().item_spacing.y);
+                                assert_eq!(row_top - previous, 24.0 + ui.spacing().item_spacing.y);
                             }
                             previous_row_top = Some(row_top);
                         }
@@ -305,8 +316,9 @@ fn splitter_drag_changes_ratio_and_resize_keeps_the_requested_ratio() {
     theme::setup(&ctx);
     let mut fraction = 0.10;
     let panes = draw_split(&ctx, &mut fraction, [1040.0, 760.0], vec![]);
-    assert_eq!(panes[0].right(), 145.0);
-    let point = egui::pos2(148.0, 200.0);
+    let minimum = good_tools_app::gui::shell::SIDEBAR_MIN_WIDTH;
+    assert_eq!(panes[0].right(), minimum - 3.0);
+    let point = egui::pos2(minimum, 200.0);
     draw_split(
         &ctx,
         &mut fraction,
@@ -349,7 +361,7 @@ fn splitter_drag_changes_ratio_and_resize_keeps_the_requested_ratio() {
         fraction, 0.10,
         "minimum width must not overwrite the saved ratio"
     );
-    assert_eq!(small[0].right(), 145.0);
+    assert_eq!(small[0].right(), minimum - 3.0);
 }
 
 #[test]
@@ -590,7 +602,7 @@ fn refresh_heading_borders_fit_the_pane_when_hovered_and_pressed() {
             let initial = draw(vec![]);
             let point = painted_text(&initial.shapes)
                 .into_iter()
-                .find(|(text, _)| text == lang.t("刷新基础数据", "Refresh base data"))
+                .find(|(text, _)| text == lang.t("刷新数据", "Refresh data"))
                 .unwrap()
                 .1;
             for events in [
@@ -1113,4 +1125,93 @@ fn manager_progress_waits_for_durable_verification_and_preserves_lease_and_stop(
         .iter()
         .any(|s| s.state == StepState::Interrupted));
     store.load().unwrap();
+}
+
+#[test]
+fn scanner_actions_stay_visible_when_task_details_exceed_a_small_window() {
+    use good_tools_app::{
+        config::StarRailSettings,
+        gui::{
+            scanner_tab, star_rail_scanner_tab,
+            star_rail_state::StarRailState,
+            state::{AppState, Lang, UiError},
+        },
+    };
+    for star_rail in [false, true] {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let mut genshin = AppState::new();
+        genshin.lang = Lang::En;
+        genshin.user_config.traveler_name = "Traveler".into();
+        let mut settings = StarRailSettings::default();
+        settings.trailblazer_name = "Trailblazer".into();
+        settings.trailblazer_gender = Some(hsr_scanner::TrailblazerGender::Stelle);
+        let mut hsr = StarRailState::new(String::new());
+        let mut handle = None;
+        let error = TaskStatus::Failed(UiError::from_message(
+            UiText::new("错误", "A long localized error. ".repeat(30)),
+            "technical details\n".repeat(30),
+        ));
+        *genshin.scan_status.lock().unwrap() = error.clone();
+        *hsr.scan_status.lock().unwrap() = error;
+        for _ in 0..2 {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(760.0, 500.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(140.0, 100.0),
+                            egui::vec2(600.0, 235.0),
+                        );
+                        layout::region(ui, rect, "small-workspace", |ui| {
+                            let mut split = 0.5;
+                            layout::workspace(ui, &mut split, |ui, pane| {
+                                if matches!(pane, layout::Pane::Status) {
+                                    if star_rail {
+                                        star_rail_scanner_tab::show_status(
+                                            ui,
+                                            Lang::En,
+                                            &mut settings,
+                                            &mut hsr,
+                                            false,
+                                            false,
+                                        );
+                                    } else {
+                                        scanner_tab::show_status(
+                                            ui,
+                                            &mut genshin,
+                                            &mut handle,
+                                            false,
+                                            false,
+                                        );
+                                    }
+                                }
+                            });
+                        });
+                    });
+                },
+            );
+            let retry = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Retry" => Some((
+                        clipped.clip_rect,
+                        egui::Rect::from_min_size(text.pos, text.galley.size()),
+                    )),
+                    _ => None,
+                })
+                .expect("retry action remains rendered");
+            assert!(
+                retry.0.contains_rect(retry.1),
+                "retry action was clipped: {retry:?}"
+            );
+        }
+    }
 }
