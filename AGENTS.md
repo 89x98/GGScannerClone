@@ -4,6 +4,40 @@
 
 - **NEVER kill GGScanner.exe, GGScannerOCR.exe, GOODScanner.exe, GOODCapture.exe, or any user process to unblock a build.** If `cargo build` fails with "access denied" because the exe is locked, tell the user and wait. If they confirm the process can be stopped, wait for it to exit on its own or let the user close it.
 
+## Public Releases And Player-Facing Changes
+
+- **Treat the public release page, download list, and release copy as product UI.**
+  A technically correct updater or passing build does not establish that the
+  release is ready for players.
+- **Technical needs must fit the public product contract.** Build identity,
+  cache handling, compatibility, and internal naming are implementation concerns.
+  Solve them through metadata, tags, manifests, or internal routing; do not expose
+  extra downloads, choices, or explanations merely to simplify implementation.
+- A routine release publishes the existing editions. Do not add public variants,
+  duplicate binaries, revision-suffixed executables, or rename downloads unless
+  the user specifically requests that public change. The current release asset
+  list is exactly `GOODCapture.exe`, `GOODScanner.exe`, and `update.json`.
+- Keep build revisions in version/manifest metadata. The updater and website
+  must use the same download for each edition. Preserve edition mapping when
+  handling historical names; compatibility does not justify publishing duplicate
+  binaries. Keep any necessary old-release fallback inside the updater.
+- Before publishing, inspect the exact proposed asset list and bilingual copy
+  from a player's perspective. Each download must represent a distinct useful
+  choice. Check names, edition mapping, links, manifest targets, and unexpected
+  files. After publishing, verify the actual release against that same contract.
+- Write release/download copy around supported games, benefits, and edition
+  choices. Omit control locations, architecture, dependency details, renaming
+  plans, and updater mechanics. Use useful download labels and a brief risk
+  disclaimer; do not add terms-of-service links or lengthy defensive copy unless
+  requested.
+- Tests must enforce the intended public contract, not just confirm a workaround.
+  When changing release plumbing, verify the asset inventory and updater targets
+  as well as build success. Passing tests cannot excuse a confusing public result.
+- Existing code, tests, and rollout docs are evidence of past decisions, not
+  automatic justification for retaining them. Reassess inherited workarounds
+  against the user's current requirements, and update obsolete instructions
+  rather than turning implementation accidents into permanent policy.
+
 ## Prioritization
 
 - **When instructions are clear, implement them directly.** Do not block one clear item because another item needs discussion. Make all clear changes first, then discuss the unclear ones.
