@@ -44,6 +44,7 @@ features = [
 ]
 
 [build-dependencies]
+time = "0.3"
 winres = "0.1"
 
 [[bin]]

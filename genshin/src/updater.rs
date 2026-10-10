@@ -1,8 +1,8 @@
 //! Auto-update: check GitHub for new releases and self-replace the executable.
 //!
 //! Version scheme: CalVer tags (e.g. `v2026.03.27`) mapped to semver
-//! `YYYYMMDD.build.0` in Cargo.toml by CI. Dev builds (major < 20000000)
-//! skip the update check entirely.
+//! `YYYYMMDD.build.0` in Cargo.toml by CI. Local builds use yesterday's UTC
+//! date with revision zero, so they can discover today's official release.
 //!
 //! **Version check** uses two strategies:
 //!   1. GitHub REST API (`api.github.com`) — fast, structured JSON
@@ -140,7 +140,7 @@ fn release_revision(body: Option<&str>) -> u32 {
 }
 
 fn current_revision() -> u32 {
-    env!("CARGO_PKG_VERSION")
+    env!("GGSCANNER_BUILD_VERSION")
         .split('.')
         .nth(1)
         .and_then(|minor| minor.parse().ok())
@@ -186,10 +186,10 @@ fn parse_calver_tag(tag: &str) -> Option<u32> {
 
 /// The current build's CalVer integer, or `None` for dev builds.
 ///
-/// CI sets `CARGO_PKG_VERSION` to `YYYYMMDD.build.0`; the major component
-/// is ≥ 20000000.  Local dev builds have `0.x.y` (major < 20000000).
+/// CI supplies `YYYYMMDD.build.0`; the build script defaults local builds to
+/// yesterday's UTC date with revision zero.
 fn current_version_int() -> Option<u32> {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = env!("GGSCANNER_BUILD_VERSION");
     let major: u32 = version.split('.').next()?.parse().ok()?;
     if major < 20000000 {
         return None; // dev build
@@ -204,7 +204,7 @@ pub fn window_title(product: &str) -> String {
 
 /// Human-readable current version string.
 pub fn current_version_display() -> String {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = env!("GGSCANNER_BUILD_VERSION");
     let major: u32 = version
         .split('.')
         .next()
@@ -717,6 +717,20 @@ mod tests {
                     })
                     .collect(),
             ),
+        }
+    }
+
+    #[test]
+    fn date_versioned_local_builds_discover_the_next_days_release() {
+        assert!(current_version_int().is_some());
+        for asset in [ASSET_SCANNER, ASSET_CAPTURE] {
+            let mut release = release_with_inventory(&[ASSET_SCANNER, ASSET_CAPTURE]);
+            release.tag = "v2026.10.09".into();
+            assert!(matches!(
+                resolve_update(release, asset, 20261008, 0).unwrap(),
+                UpdateStatus::UpdateAvailable { latest_version, download_url, .. }
+                    if latest_version == "v2026.10.09" && download_url.ends_with(asset)
+            ));
         }
     }
 

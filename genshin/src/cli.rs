@@ -1281,7 +1281,7 @@ impl GoodScannerApplication {
     }
 
     pub fn build_command() -> clap::Command {
-        let cmd = command!();
+        let cmd = command!().version(env!("GGSCANNER_BUILD_VERSION"));
         <GoodScannerConfig as Args>::augment_args_for_update(cmd)
     }
 
