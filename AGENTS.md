@@ -21,6 +21,10 @@
   must use the same download for each edition. Preserve edition mapping when
   handling historical names; compatibility does not justify publishing duplicate
   binaries. Keep any necessary old-release fallback inside the updater.
+- Same-day publication is blocked when that day's release or tag already exists.
+  Never automatically delete, overwrite, or add another public build variant.
+  A replacement requires the operator to manually remove the existing release
+  and tag first. Ordinary CI builds may still run without publishing.
 - Before publishing, inspect the exact proposed asset list and bilingual copy
   from a player's perspective. Each download must represent a distinct useful
   choice. Check names, edition mapping, links, manifest targets, and unexpected

@@ -3,6 +3,15 @@
 The editions will be `GGScanner.exe` (capture, OCR, and manager) and
 `GGScannerOCR.exe` (OCR and manager, with capture dependencies excluded).
 
+## Same-day publication
+
+Publishing is blocked if the daily release or tag already exists. Ordinary CI
+builds remain available. The workflow never automatically deletes or overwrites
+a published release. To deliberately replace it, an operator must manually remove
+the release and its tag, then dispatch publication again. Remove both together
+with `gh release delete <tag> --yes --cleanup-tag` so the new tag points at the
+new build's commit.
+
 ## Publish the updater bridge first
 
 The current workflow publishes the bridge under the existing `GOODScanner.exe`

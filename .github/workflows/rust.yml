@@ -32,6 +32,12 @@ jobs:
           $tag = "v$date"
           "VERSION=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      - name: Require an unused release tag
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+        run: ./.github/scripts/check-release-available.ps1 -Tag $env:VERSION -Repository $env:GITHUB_REPOSITORY
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Cache Cargo registry + build
         uses: actions/cache@v4
         with:
@@ -112,13 +118,6 @@ jobs:
             target/release/GOODScanner.exe
             target/release/GOODCapture.exe
 
-      - name: Delete existing release if any
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
-        run: gh release delete $env:VERSION --yes --cleanup-tag 2>$null
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Generate bilingual release description
         if: github.event_name == 'workflow_dispatch' && inputs.publish_release
         run: |
@@ -129,13 +128,9 @@ jobs:
 
       - name: Create GitHub Release
         if: github.event_name == 'workflow_dispatch' && inputs.publish_release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.VERSION }}
-          name: ${{ env.VERSION }}
-          body_path: release-notes.md
-          files: |
-            target/release/GOODScanner.exe
-            target/release/GOODCapture.exe
-            update.json
-          make_latest: true
+        run: |
+          # Create only: a concurrent publication must fail, never edit a release.
+          gh release create $env:VERSION target/release/GOODScanner.exe target/release/GOODCapture.exe update.json --target $env:GITHUB_SHA --title $env:VERSION --notes-file release-notes.md --latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
