@@ -47,7 +47,7 @@ pub mod proto;
 pub mod protocol;
 
 /// Decoder revision written into HSR exports.
-pub const HSR_CAPTURE_REVISION: &str = "reliquary-shape-4.5-v1";
+pub const HSR_CAPTURE_REVISION: &str = "reliquary-shape-4.6-v1";
 
 /// HSR's two UDP gateway ports. Kept public for build-time regression tests.
 pub const HSR_PACKET_PORTS: [u16; 2] = [23301, 23302];
@@ -202,6 +202,11 @@ impl HsrPacketDecoder {
                 GamePacket::Commands {
                     result: Err(error), ..
                 } => {
+                    if let crate::network::GameCommandError::DecryptionKeyMissing { version } =
+                        &error
+                    {
+                        self.state.missing_dispatch_key = Some(*version);
+                    }
                     self.state.last_transport_error = Some(error.to_string());
                 },
                 GamePacket::Connection(connection) => {
@@ -282,6 +287,8 @@ pub struct HsrCaptureState {
     pub packet_count: usize,
     pub command_count: usize,
     pub last_transport_error: Option<String>,
+    /// Public dispatch-key identifier, retained when later unrelated frames fail.
+    pub missing_dispatch_key: Option<u32>,
     pub has_characters: bool,
     pub has_items: bool,
     pub has_light_cones: bool,
@@ -545,12 +552,15 @@ impl HsrCaptureMonitor {
             .is_some_and(|start| start.elapsed().as_secs() >= CAPTURE_TIMEOUT_SECS)
         {
             let state = self.decoder.state();
-            let detail = format!("capture timed out after {CAPTURE_TIMEOUT_SECS} seconds; packets={}; decryptedCommands={}; keyExchangeCaptured={}; characters={}; lightCones={}; relics={}; achievements={}; lastTransportError={}",
+            let detail = format!("capture timed out after {CAPTURE_TIMEOUT_SECS} seconds; packets={}; decryptedCommands={}; keyExchangeCaptured={}; characters={}; lightCones={}; relics={}; achievements={}; missingDispatchKey={:?}; lastTransportError={}",
                 state.packet_count, state.command_count, state.has_key_exchange, state.character_count, state.light_cone_count,
-                state.relic_count, state.achievement_count, state.last_transport_error.as_deref().unwrap_or("none"));
+                state.relic_count, state.achievement_count, state.missing_dispatch_key, state.last_transport_error.as_deref().unwrap_or("none"));
             let hint = if state.packet_count == 0 {
                 LocalizedText::new("未收到星穹铁道流量。请确认游戏正在本机运行，重新抓包后再登录。",
                     "No Star Rail traffic was received. Check that the game is running on this PC, then start capture before logging in.")
+            } else if state.missing_dispatch_key.is_some() && !state.has_key_exchange {
+                LocalizedText::new("当前游戏使用的登录密钥尚未收录，无法解密数据。请更新 GGScanner；若最新版仍失败，请复制完整错误。",
+                    "The current game's login key is missing, so its data cannot be decrypted. Update GGScanner; if the latest build still fails, copy the full error.")
             } else if !state.has_key_exchange {
                 LocalizedText::new("已收到网络流量，但未捕获登录握手。请在启动游戏前开始抓包，再重新登录；若仍失败，请更新 GGScanner。",
                     "Traffic was received, but the login handshake was not captured. Start capture before launching the game, then log in again. If it still fails, update GGScanner.")
@@ -836,9 +846,72 @@ mod tests {
     #[test]
     fn embedded_dispatch_keys_are_pinned_and_decodable() {
         let keys = load_embedded_dispatch_keys().unwrap();
-        assert_eq!(keys.len(), 30);
+        assert_eq!(keys.len(), 31);
+        assert!(keys.contains_key(&2920436228));
         assert!(keys.values().all(|key| key.len() >= 4_096));
         assert_eq!(HSR_PACKET_PORTS, [23301, 23302]);
+    }
+
+    #[test]
+    fn current_inventory_wire_tags_decode_without_using_generated_writers() {
+        use protobuf::Message;
+        // HSR 4.6 wire records, independent of the generated serializers.
+        let cone = proto::Equipment::Equipment::parse_from_bytes(&[
+            8, 80, 24, 1, 56, 6, 64, 1, 72, 0xe9, 7, 112, 5, 120, 0xa1, 0x9c, 1,
+        ])
+        .unwrap();
+        assert_eq!(
+            (
+                cone.tid,
+                cone.unique_id,
+                cone.level,
+                cone.promotion,
+                cone.rank,
+                cone.equip_avatar_id
+            ),
+            (20001, 1, 80, 6, 5, 1001)
+        );
+        assert!(cone.is_protected);
+        let relic = proto::Relic::Relic::parse_from_bytes(&[
+            8, 1, 16, 0xe9, 7, 32, 15, 56, 1, 88, 0xd3, 0xdc, 3, 112, 1, 120, 6,
+        ])
+        .unwrap();
+        assert_eq!(
+            (
+                relic.tid,
+                relic.unique_id,
+                relic.level,
+                relic.main_affix_id,
+                relic.equip_avatar_id
+            ),
+            (61011, 1, 15, 6, 1001)
+        );
+        assert!(relic.is_protected && relic.is_discarded);
+    }
+
+    #[test]
+    fn missing_dispatch_key_survives_later_transport_noise_and_resets() {
+        let mut decoder = HsrPacketDecoder::new(
+            crate::load_embedded_gilore_reference().unwrap(),
+            CaptureTargets::default(),
+        )
+        .unwrap();
+        decoder.sniffer = GameSniffer::new();
+        decoder
+            .receive_packet(crate::network::tests::frame(77, 0, &[8, 42], &[0; 4096]))
+            .unwrap();
+        assert_eq!(decoder.state.missing_dispatch_key, Some(0));
+        assert!(decoder
+            .state
+            .last_transport_error
+            .as_deref()
+            .unwrap()
+            .contains("decryption key 0"));
+        decoder.receive_packet(vec![0; 14]).unwrap();
+        assert_eq!(decoder.state.missing_dispatch_key, Some(0));
+        assert!(!decoder.state.has_key_exchange);
+        decoder.reset();
+        assert_eq!(decoder.state.missing_dispatch_key, None);
     }
 
     #[test]
@@ -851,6 +924,7 @@ mod tests {
         )
         .unwrap();
         monitor.decoder.state.packet_count = 12;
+        monitor.decoder.state.missing_dispatch_key = Some(2920436228);
         monitor.decoder.state.last_transport_error =
             Some("decryption key is missing for command".to_owned());
         monitor.started = Some(
@@ -865,6 +939,7 @@ mod tests {
         let message = error.localized_message(crate::Language::En);
         assert!(message.contains("packets=12"));
         assert!(message.contains("decryptedCommands=0"));
+        assert!(message.contains("missingDispatchKey=Some(2920436228)"));
     }
 
     #[test]

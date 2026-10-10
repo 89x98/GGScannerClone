@@ -252,7 +252,11 @@ impl ConversationSniffer {
                     self.key = Some(key);
                     self.key.as_ref().unwrap()
                 },
-                None => return Err(GameCommandError::DecryptionKeyMissing),
+                None => {
+                    return Err(GameCommandError::DecryptionKeyMissing {
+                        version: get_game_version(&data),
+                    })
+                },
             },
         };
 

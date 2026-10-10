@@ -48,6 +48,10 @@ with numbered `.bin` protobuf bodies. Each capture gets its own folder. This is
 an explicit diagnostic dump, separate from sanitized exports; it is not a PCAP
 or ETL transport recording. A write failure is surfaced with its full path.
 
+Replay a raw dump through the live transport and current hosted references with
+`cargo run -p hsr_scanner --features capture --example analyze_dump -- <session> --raw`.
+The tool reports distinct transport errors and exports only a complete snapshot.
+
 Each completed capture writes one file: `star_rail_capture_<timestamp>.json`.
 That file is HSR-Scanner format v4 plus GGScanner extensions (achievements,
 Trailblazer gender and current path). See [`HSR_EXPORT.md`](HSR_EXPORT.md).
@@ -118,7 +122,8 @@ distinction between unknown outer protobuf containers and validated inner types.
 
 ## Compatibility limits
 
-The inner inventory schemas are the reviewed HSR 4.5 protobuf types. Command
+The inner inventory schemas are the reviewed HSR 4.6 protobuf types from
+Reliquary revision `0b8c1d4f8eb5ae9722b5c3273e36a464b7188a38`. Command
 and outer-field rotation are handled, but arbitrary inner-field or encryption
 changes can still require an update. Scalar fields with identical shapes
 cannot always be inferred unambiguously from values alone.

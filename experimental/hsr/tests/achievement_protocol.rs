@@ -39,7 +39,7 @@ fn synthetic_fixture_is_explicitly_privacy_safe() {
     assert_eq!(fixture.fixture_kind, "syntheticDecryptedCommand");
     assert!(fixture.description.contains("no account identifiers"));
     assert!(fixture.description.contains("no raw captured packets"));
-    assert_eq!(HSR_CAPTURE_REVISION, "reliquary-shape-4.5-v1");
+    assert_eq!(HSR_CAPTURE_REVISION, "reliquary-shape-4.6-v1");
 }
 
 #[test]

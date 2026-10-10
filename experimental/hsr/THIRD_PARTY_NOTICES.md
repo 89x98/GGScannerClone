@@ -6,11 +6,14 @@ targets and does not produce a separate HSR executable.
 
 ## Native inventory and achievement packet boundary
 
-The transport under `src/network/` and the seven inventory record types under
-`src/packet_capture/proto/` are adapted from
+The transport under `src/network/` is adapted from
 [IceDynamix/reliquary](https://github.com/IceDynamix/reliquary/tree/d5cf3b7e7e66470d2d8efff6676aa18762b21d3b),
 v23.0.0, commit `d5cf3b7e7e66470d2d8efff6676aa18762b21d3b` (2026-08-28,
 HSR 4.5). Its MIT license is reproduced in `LICENSE-reliquary.txt`.
+
+The seven inventory record types under `src/packet_capture/proto/` are sourced
+from [Reliquary v24.0.0 / HSR 4.6](https://github.com/IceDynamix/reliquary/tree/0b8c1d4f8eb5ae9722b5c3273e36a464b7188a38),
+revision `0b8c1d4f8eb5ae9722b5c3273e36a464b7188a38`, under the same MIT license.
 
 The local adaptation preserves independent KCP conversations, removes raw
 packet/seed trace logging, bounds malformed frames, and infers the login seed
@@ -31,8 +34,8 @@ The substat calculation is `count * base + step * stepValue`, with ratios
 converted to percentage points like the existing HSR observation contract.
 
 The unchanged `keys/hsr.json` public interoperability dataset comes from
-[stardb-exporter](https://github.com/juliuskreutz/stardb-exporter/tree/50c04597d37cf366290de6e316aaca98dd57acfc).
-SHA-256: `85a98f5abf9b4041d6752e8f60b6db760d5a9753ad73874a9d5744f9c1d7944a`.
+[stardb-exporter](https://github.com/juliuskreutz/stardb-exporter/tree/faac466be74cf234c9855c14dd7d723e557e9971).
+SHA-256: `5f45f27da792a7058855cfbea3e2ea39eca39d5976ab37038a45b52cb29a8b7b`.
 It contains version-indexed dispatch keys, never account/session data.
 The prior auto-reliquary dependency has been replaced by the local audited
 transport. Achievement classification remains independent and accepts packed
