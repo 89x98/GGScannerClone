@@ -1,5 +1,5 @@
 //! Replay dumped HSR commands (or raw frames with --raw) through the production decoder
-//! and write one HSR-Scanner v4 JSON next to the dump.
+//! and optionally retain decrypted messages in a separate diagnostic directory.
 use std::{env, fs, path::PathBuf};
 
 use hsr_scanner::{
@@ -14,6 +14,14 @@ fn main() {
             .expect("usage: analyze_dump <session dir> [--raw]"),
     );
     let raw = env::args().skip(2).any(|arg| arg == "--raw");
+    let options: Vec<String> = env::args().skip(2).collect();
+    let option_path = |name: &str| {
+        options
+            .windows(2)
+            .find(|pair| pair[0] == name)
+            .map(|pair| PathBuf::from(&pair[1]))
+    };
+    let output = option_path("--output-dir").unwrap_or_else(|| root.clone());
     let prefix = if raw { "raw_" } else { "hsr_" };
     let mut files: Vec<_> = fs::read_dir(&root)
         .unwrap()
@@ -44,6 +52,9 @@ fn main() {
         load_embedded_gilore_reference().unwrap()
     };
     let mut decoder = HsrPacketDecoder::new(references.clone(), CaptureTargets::default()).unwrap();
+    if let Some(directory) = option_path("--dump-dir") {
+        decoder.set_packet_dump(directory);
+    }
     let mut seen_errors = std::collections::BTreeSet::new();
     for path in files {
         let bytes = fs::read(&path).unwrap();
@@ -111,6 +122,9 @@ fn main() {
     if !state.complete {
         std::process::exit(2);
     }
-    let path = state.write_interop_exports(&root, &references, "").unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let path = state
+        .write_interop_exports(&output, &references, "")
+        .unwrap();
     eprintln!("export={}", path.display());
 }

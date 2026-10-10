@@ -164,6 +164,11 @@ impl HsrPacketDecoder {
         &self.state
     }
 
+    /// Save exact raw frames and decrypted messages during offline replay too.
+    pub fn set_packet_dump(&mut self, root: std::path::PathBuf) {
+        self.packet_dump = Some(dump::PacketDump::new(root));
+    }
+
     /// Full packet replay and live capture use exactly the same transport.
     pub fn receive_packet(&mut self, packet: Vec<u8>) -> HsrResult<()> {
         if let Some(dump) = &mut self.packet_dump {
@@ -444,7 +449,7 @@ impl HsrCaptureMonitor {
 
     /// Enabling diagnostics performs no I/O until a decrypted command arrives.
     pub fn with_packet_dump(mut self, root: std::path::PathBuf) -> Self {
-        self.decoder.packet_dump = Some(dump::PacketDump::new(root));
+        self.decoder.set_packet_dump(root);
         self
     }
 

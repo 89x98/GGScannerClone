@@ -122,6 +122,20 @@ distinction between unknown outer protobuf containers and validated inner types.
 
 ## Compatibility limits
 
+A local login-frame replay confirmed that `GetQuestDataScRsp` carries achievement
+and non-achievement Quest records in the same repeated field 10. Quest ID is
+field 12, status is field 1, completion time is field 3 and progress is field 14
+in that inspected layout. Both categories share record shapes; those fields
+do not include a category discriminator. The current client therefore uses the
+public achievement-ID catalog to classify records. Parsing known field numbers
+alone does not replace that classification.
+
+For offline investigation, `analyze_dump <session> --raw --dump-dir <diagnostics>
+--output-dir <exports>` replays raw frames through the production decoder and
+retains the unfiltered decrypted messages in the diagnostic directory. Separate
+output directories keep the original capture session intact. This diagnostic
+material must remain local and must not be committed as a test fixture.
+
 The inner inventory schemas are the reviewed HSR 4.6 protobuf types from
 Reliquary revision `0b8c1d4f8eb5ae9722b5c3273e36a464b7188a38`. Command
 and outer-field rotation are handled, but arbitrary inner-field or encryption
