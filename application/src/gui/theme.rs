@@ -12,6 +12,8 @@ pub const ERROR: Color32 = Color32::from_rgb(244, 132, 137);
 pub const WARNING: Color32 = Color32::from_rgb(238, 190, 110);
 
 pub fn setup(ctx: &egui::Context) {
+    // Keep native widgets on the same dark theme as the custom panel backgrounds.
+    ctx.set_theme(egui::Theme::Dark);
     let mut style = (*ctx.style()).clone();
     style.visuals = egui::Visuals::dark();
     style.visuals.panel_fill = BACKGROUND;
