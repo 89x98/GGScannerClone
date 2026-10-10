@@ -13,10 +13,8 @@ use std::{
 };
 
 pub const DATA_CACHE_URL: &str = "https://hsr.ggartifact.com/good/hsr_scanner_data.json";
-pub const ACHIEVEMENT_IDS_URL: &str = "https://hsr.ggartifact.com/good/hsr_achievement_ids.json";
 pub const DATA_CACHE_DIRECTORY: &str = "data/hsr";
 const DATA_FILE: &str = "hsr_scanner_data.json";
-const ACHIEVEMENT_FILE: &str = "hsr_achievement_ids.json";
 // Old combined and briefly separated caches are removed at the new boundary.
 const TTL: u64 = 2 * 3600;
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -69,28 +67,6 @@ struct DiskCache<T> {
     data: T,
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AchievementDocument {
-    format_version: u32,
-    source_revision: String,
-    achievement_ids: Vec<u32>,
-}
-
-impl AchievementDocument {
-    fn attach(&self, references: &ReferenceCache) -> HsrResult<ReferenceCache> {
-        if self.format_version != 1 || self.source_revision != references.revision() {
-            return Err(error(
-                "HSR-REF-ACHIEVEMENT-REVISION",
-                "achievement IDs and inventory reference revisions disagree",
-            ));
-        }
-        references
-            .clone()
-            .with_achievement_ids(self.achievement_ids.clone())
-    }
-}
-
 fn error(code: &'static str, detail: impl Into<String>) -> HsrError {
     HsrError::new(code, LocalizedText::new(
         "无法更新星穹铁道游戏数据。请检查网络连接，然后点击“刷新游戏数据”重试。",
@@ -119,46 +95,9 @@ pub fn force_refresh() -> HsrResult<()> {
     load_from_url(Path::new(DATA_CACHE_DIRECTORY), DATA_CACHE_URL, true).map(|_| ())
 }
 
-/// Only achievement capture calls this; inventory operations never download IDs.
-pub fn load_achievement_data(
-    references: &ReferenceCache,
-    force: bool,
-) -> HsrResult<ReferenceCache> {
-    let result = load_document::<AchievementDocument, _>(
-        Path::new(DATA_CACHE_DIRECTORY),
-        ACHIEVEMENT_FILE,
-        ACHIEVEMENT_IDS_URL,
-        force,
-        |data| data.attach(references),
-    );
-    match result {
-        Ok(cache) => Ok(cache),
-        Err(failure) if failure.code() == "HSR-REF-CACHE-CLEANUP" => Err(failure),
-        Err(failure) if !force => {
-            let embedded = crate::load_embedded_gilore_reference()?;
-            if embedded.revision() != references.revision() {
-                return Err(failure);
-            }
-            yas::log_warn!(
-                "无法下载星穹铁道成就数据，将使用内置参考数据。完整错误详情: {}",
-                "Star Rail achievement data could not be downloaded; using the built-in reference. Full error details: {}",
-                failure
-            );
-            references
-                .clone()
-                .with_achievement_ids(embedded.achievement_ids().collect())
-        },
-        Err(failure) => Err(failure),
-    }
-}
-
 /// Metadata for the UI. Reading it does not load or refresh the reference data.
 pub fn cache_updated_at() -> Option<u64> {
     document_updated_at(DATA_FILE)
-}
-
-pub fn achievement_cache_updated_at() -> Option<u64> {
-    document_updated_at(ACHIEVEMENT_FILE)
 }
 
 fn document_updated_at(filename: &str) -> Option<u64> {
@@ -193,6 +132,15 @@ fn load_document<T: DeserializeOwned + Serialize, R>(
     let _guard = CACHE_LOCK
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    let obsolete_ids = root.join("hsr_achievement_ids.json");
+    if let Err(failure) = fs::remove_file(&obsolete_ids) {
+        if failure.kind() != std::io::ErrorKind::NotFound {
+            return Err(error(
+                "HSR-REF-CACHE-CLEANUP",
+                format!("{}: {failure}", obsolete_ids.display()),
+            ));
+        }
+    }
     for directory in [root.to_path_buf(), root.join("ocr"), root.join("capture")] {
         let old = directory.join("hsr_data_cache.json");
         match fs::remove_file(&old) {
@@ -341,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn inventory_cache_is_shared_and_achievement_ids_are_optional_and_revision_checked() {
+    fn inventory_cache_is_shared_and_obsolete_achievement_ids_are_removed() {
         let root = std::env::temp_dir().join(format!(
             "hsr-mode-cache-{}",
             SystemTime::now()
@@ -353,6 +301,7 @@ mod tests {
         // Only known obsolete cache files are removed; other files are preserved.
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("hsr_data_cache.json"), b"legacy cache").unwrap();
+        fs::write(root.join("hsr_achievement_ids.json"), b"legacy IDs").unwrap();
         for directory in ["ocr", "capture"] {
             fs::create_dir_all(root.join(directory)).unwrap();
             fs::write(
@@ -370,38 +319,9 @@ mod tests {
         assert!(!root.join("capture/hsr_data_cache.json").exists());
         assert!(root.join("capture/keep.txt").exists());
         assert_eq!(references.achievement_count(), 0);
-        assert!(!root.join(ACHIEVEMENT_FILE).exists());
+        assert!(!root.join("hsr_achievement_ids.json").exists());
         // Scanner, manager and capture all reuse this file without another request.
         assert!(load_from_url(&root, &url, false).is_ok());
-        let inventory_bytes = fs::read(root.join(DATA_FILE)).unwrap();
-        let ids = serde_json::json!({"formatVersion": 1, "sourceRevision": references.revision(), "achievementIds": [4010101]});
-        let (url, task) = server(200, serde_json::to_vec(&ids).unwrap());
-        let loaded =
-            load_document::<AchievementDocument, _>(&root, ACHIEVEMENT_FILE, &url, false, |data| {
-                data.attach(&references)
-            })
-            .unwrap();
-        task.join().unwrap();
-        assert!(loaded.has_achievement(4010101));
-        assert_eq!(fs::read(root.join(DATA_FILE)).unwrap(), inventory_bytes);
-        let good_ids = fs::read(root.join(ACHIEVEMENT_FILE)).unwrap();
-        for invalid in [
-            serde_json::json!({"formatVersion": 1, "sourceRevision": "wrong", "achievementIds": [4010101]}),
-            serde_json::json!({"formatVersion": 1, "sourceRevision": references.revision(), "achievementIds": []}),
-            serde_json::json!({"formatVersion": 1, "sourceRevision": references.revision(), "achievementIds": [4010101, 4010101]}),
-        ] {
-            let (url, task) = server(200, serde_json::to_vec(&invalid).unwrap());
-            assert!(load_document::<AchievementDocument, _>(
-                &root,
-                ACHIEVEMENT_FILE,
-                &url,
-                true,
-                |data| data.attach(&references)
-            )
-            .is_err());
-            task.join().unwrap();
-            assert_eq!(fs::read(root.join(ACHIEVEMENT_FILE)).unwrap(), good_ids);
-        }
         fs::remove_dir_all(root).unwrap();
     }
 

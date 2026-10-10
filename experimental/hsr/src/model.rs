@@ -7,6 +7,16 @@ pub const EXPORT_SCHEMA_VERSION: u32 = 3;
 pub const REFERENCE_SCHEMA_VERSION: u32 = 1;
 pub const OBSERVATION_SCHEMA_VERSION: u32 = 1;
 
+/// Full Quest state, including achievements and ordinary objectives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservedQuest {
+    pub id: u32,
+    pub status: u32,
+    pub progress: u32,
+    pub counters: Vec<u32>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GearCategory {
@@ -54,11 +64,13 @@ pub enum TrailblazerGender {
 
 impl TrailblazerGender {
     pub fn of(avatar_id: u32) -> Option<Self> {
-        (8001..9000).contains(&avatar_id).then_some(if avatar_id % 2 == 0 {
-            Self::Stelle
-        } else {
-            Self::Caelus
-        })
+        (8001..9000)
+            .contains(&avatar_id)
+            .then_some(if avatar_id % 2 == 0 {
+                Self::Stelle
+            } else {
+                Self::Caelus
+            })
     }
 
     pub const fn name(self) -> &'static str {

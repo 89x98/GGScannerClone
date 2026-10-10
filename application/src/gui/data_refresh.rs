@@ -14,7 +14,6 @@ enum Source {
     Genshin,
     StarRail,
     GenshinAchievements,
-    StarRailAchievementIds,
 }
 impl Source {
     fn for_page(game: Game, tab: ToolTab) -> Option<Self> {
@@ -31,7 +30,6 @@ impl Source {
             Self::Genshin => 0,
             Self::StarRail => 1,
             Self::GenshinAchievements => 2,
-            Self::StarRailAchievementIds => 3,
         }
     }
     fn updated_at(self) -> Option<u64> {
@@ -41,7 +39,6 @@ impl Source {
             Self::GenshinAchievements => {
                 genshin_scanner::scanner::achievement::AchievementCatalog::cache_updated_at()
             },
-            Self::StarRailAchievementIds => hsr_scanner::data_cache::achievement_cache_updated_at(),
         }
     }
     fn refresh(self) -> anyhow::Result<()> {
@@ -57,19 +54,11 @@ impl Source {
             Self::GenshinAchievements => {
                 genshin_scanner::scanner::achievement::AchievementCatalog::force_refresh()
             },
-            Self::StarRailAchievementIds => {
-                let references = hsr_scanner::data_cache::load_data_cache()?;
-                hsr_scanner::data_cache::load_achievement_data(&references, true)?;
-                Ok(())
-            },
         }
     }
-    fn additional_for_page(game: Game, tab: ToolTab, capture_achievements: bool) -> Option<Self> {
+    fn additional_for_page(game: Game, tab: ToolTab, _capture_achievements: bool) -> Option<Self> {
         match (game, tab) {
             (Game::Genshin, ToolTab::Scanner) => Some(Self::GenshinAchievements),
-            (Game::StarRail, ToolTab::Capture) if capture_achievements => {
-                Some(Self::StarRailAchievementIds)
-            },
             _ => None,
         }
     }
@@ -77,7 +66,6 @@ impl Source {
         match self {
             Self::Genshin | Self::StarRail => lang.t("刷新数据", "Refresh data"),
             Self::GenshinAchievements => lang.t("刷新成就数据", "Refresh achievement data"),
-            Self::StarRailAchievementIds => lang.t("刷新成就数据", "Refresh achievement data"),
         }
     }
 }
@@ -131,7 +119,7 @@ impl CachedData {
 
 #[derive(Default)]
 pub struct DataRefresh {
-    caches: [CachedData; 4],
+    caches: [CachedData; 3],
 }
 impl DataRefresh {
     pub fn poll(&mut self) {
@@ -354,8 +342,7 @@ mod feedback_tests {
             assert!(Source::additional_for_page(Game::Genshin, tab, true).is_none());
         }
         assert!(Source::additional_for_page(Game::StarRail, ToolTab::Capture, false).is_none());
-        let ids = Source::additional_for_page(Game::StarRail, ToolTab::Capture, true).unwrap();
-        assert_ne!(ids.index(), Source::StarRail.index());
+        assert!(Source::additional_for_page(Game::StarRail, ToolTab::Capture, true).is_none());
 
         let mut refresh = DataRefresh::default();
         refresh.caches[base.index()].updated_at = Some(100);

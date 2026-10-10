@@ -46,8 +46,7 @@ fn main() {
     );
 
     let references = if raw {
-        let references = hsr_scanner::data_cache::load_data_cache().unwrap();
-        hsr_scanner::data_cache::load_achievement_data(&references, false).unwrap()
+        hsr_scanner::data_cache::load_data_cache().unwrap()
     } else {
         load_embedded_gilore_reference().unwrap()
     };

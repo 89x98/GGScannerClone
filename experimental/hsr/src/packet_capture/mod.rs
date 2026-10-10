@@ -6,7 +6,7 @@
 //! decrypted-command fixtures.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     future::Future,
     panic::{catch_unwind, AssertUnwindSafe},
     pin::Pin,
@@ -16,14 +16,10 @@ use std::{
 use crate::network::{GamePacket, GameSniffer};
 use crate::{
     model::{
-        CoverageLevel, EvidenceKind, HsrInventoryExport, InventoryCoverage, ObservationEvidence,
-        ObservationSnapshot, OBSERVATION_SCHEMA_VERSION,
+        CoverageLevel, EvidenceKind, InventoryCoverage, ObservationEvidence, ObservationSnapshot,
+        OBSERVATION_SCHEMA_VERSION,
     },
-    observation::ValidatedObservationSnapshot,
-    pipeline::{
-        build_achievement_snapshot, build_export, build_export_with_achievements,
-        write_json_create_new,
-    },
+    pipeline::write_json_create_new,
     reference::ReferenceCache,
 };
 use base64::prelude::*;
@@ -47,7 +43,7 @@ pub mod proto;
 pub mod protocol;
 
 /// Decoder revision written into HSR exports.
-pub const HSR_CAPTURE_REVISION: &str = "reliquary-shape-4.6-v1";
+pub const HSR_CAPTURE_REVISION: &str = "reliquary-quest-4.6-v2";
 
 /// HSR's two UDP gateway ports. Kept public for build-time regression tests.
 pub const HSR_PACKET_PORTS: [u16; 2] = [23301, 23302];
@@ -65,30 +61,6 @@ const WORKER_HINT: LocalizedText = LocalizedText::new(
     "HSR 抓包任务意外停止。请重新抓包；若问题再次出现，请复制完整错误。",
     "The HSR capture task stopped unexpectedly. Capture again; if it recurs, copy the full error.",
 );
-
-/// A successfully recognized complete achievement response.
-///
-/// The vector contains only public definition IDs whose raw status was 2 or
-/// 3. It is sorted and deduplicated. An empty vector is still a present,
-/// complete response and must not be confused with `None` from the decoder.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DecodedAchievementSnapshot {
-    completed_ids: Vec<u32>,
-}
-
-impl DecodedAchievementSnapshot {
-    pub(crate) fn new(completed_ids: Vec<u32>) -> Self {
-        Self { completed_ids }
-    }
-
-    pub fn completed_ids(&self) -> &[u32] {
-        &self.completed_ids
-    }
-
-    pub fn into_completed_ids(self) -> Vec<u32> {
-        self.completed_ids
-    }
-}
 
 /// Categories selected before starting a capture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,7 +91,6 @@ impl CaptureTargets {
 /// Stateful Ethernet/IP/UDP/KCP/session-key decoder used by both native
 /// capture and deterministic packet replay.
 pub struct HsrPacketDecoder {
-    known_ids: BTreeSet<u32>,
     dispatch_keys: HashMap<u32, Vec<u8>>,
     sniffer: GameSniffer,
     inventory: InventoryDecoder,
@@ -141,15 +112,9 @@ impl HsrPacketDecoder {
                 "capture requires at least one selected category",
             ));
         }
-        let known_ids = if targets.achievements {
-            protocol::collect_known_ids(references.achievement_ids())?
-        } else {
-            BTreeSet::new()
-        };
         let dispatch_keys = load_embedded_dispatch_keys()?;
         let sniffer = GameSniffer::new().set_initial_keys(dispatch_keys.clone());
         Ok(Self {
-            known_ids,
             dispatch_keys,
             sniffer,
             inventory: InventoryDecoder::new(references, targets)?,
@@ -237,11 +202,9 @@ impl HsrPacketDecoder {
         self.inventory.receive(bytes)?;
         if self.targets.achievements && !self.state.has_achievements {
             for container in protocol::containers(bytes) {
-                if let Some(snapshot) =
-                    protocol::decode_achievement_command(container, &self.known_ids)?
-                {
-                    self.state.completed_ids = snapshot.into_completed_ids();
-                    self.state.achievement_count = self.state.completed_ids.len();
+                if let Some(snapshot) = protocol::decode_quest_command(container)? {
+                    self.state.achievement_count = snapshot.len();
+                    self.state.quests = snapshot;
                     self.state.has_achievements = true;
                     break;
                 }
@@ -305,46 +268,11 @@ pub struct HsrCaptureState {
     pub inventory: Option<ObservationSnapshot>,
     pub export_details: crate::scanner_export::CaptureExportDetails,
     pub achievement_count: usize,
-    pub completed_ids: Vec<u32>,
+    pub quests: Vec<crate::model::ObservedQuest>,
     pub error: Option<HsrError>,
 }
 
 impl HsrCaptureState {
-    /// Build the internal GGStarRail v3 export. Capture GUI writes HSR-Scanner v4 instead.
-    pub fn build_export(&self, references: &ReferenceCache) -> HsrResult<HsrInventoryExport> {
-        if !self.complete {
-            return Err(HsrError::new(
-                "HSR-CAPTURE-EXPORT-INCOMPLETE",
-                LocalizedText::new(
-                    "抓包尚未完成，无法导出。",
-                    "Capture is not complete, so nothing can be exported.",
-                ),
-                "build_export requires a complete capture",
-            ));
-        }
-        let inventory = self.inventory.clone().ok_or_else(|| {
-            HsrError::new(
-                "HSR-CAPTURE-EXPORT-EMPTY",
-                LocalizedText::new(
-                    "库存数据缺失，请重新抓包。",
-                    "Inventory data is missing. Capture again.",
-                ),
-                "completed capture has no inventory snapshot",
-            )
-        })?;
-        let observations = ValidatedObservationSnapshot::from_packet_capture(inventory)?;
-        if self.has_achievements {
-            let achievements = build_achievement_snapshot(
-                self.completed_ids.iter().copied(),
-                HSR_CAPTURE_REVISION,
-                references,
-            )?;
-            build_export_with_achievements(observations, achievements, references)
-        } else {
-            build_export(observations, references)
-        }
-    }
-
     /// Single HSR-Scanner v4 JSON, including optional achievement and Trailblazer extensions.
     pub fn build_scanner_export(
         &self,
@@ -368,13 +296,21 @@ impl HsrCaptureState {
                 &owned
             },
         };
-        crate::scanner_export::build_scanner_export(
+        let mut export = crate::scanner_export::build_scanner_export(
             inventory,
             references,
             &self.export_details,
-            self.has_achievements
-                .then_some(self.completed_ids.as_slice()),
-        )
+            None,
+        )?;
+        if self.has_achievements {
+            export.as_object_mut().unwrap().insert(
+                "quests".into(),
+                serde_json::json!({
+                    "schemaVersion": 1, "coverage": "complete", "records": self.quests,
+                }),
+            );
+        }
+        Ok(export)
     }
 
     /// Write one HSR-Scanner v4 JSON. Returns that path.
@@ -781,9 +717,8 @@ mod tests {
             achievements: false,
             ..CaptureTargets::default()
         };
-        let decoder = HsrPacketDecoder::new(references.clone(), targets).unwrap();
-        assert!(decoder.known_ids.is_empty());
-        assert!(HsrPacketDecoder::new(references, CaptureTargets::default()).is_err());
+        assert!(HsrPacketDecoder::new(references.clone(), targets).is_ok());
+        assert!(HsrPacketDecoder::new(references, CaptureTargets::default()).is_ok());
     }
 
     impl PacketSource for PendingPacketSource {

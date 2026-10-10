@@ -40,8 +40,7 @@ pub use observation::{
 };
 #[cfg(feature = "capture")]
 pub use packet_capture::{
-    DecodedAchievementSnapshot, HsrCaptureCommand, HsrCaptureMonitor, HsrCaptureState,
-    HsrPacketDecoder, HSR_CAPTURE_REVISION,
+    HsrCaptureCommand, HsrCaptureMonitor, HsrCaptureState, HsrPacketDecoder, HSR_CAPTURE_REVISION,
 };
 pub use pipeline::{
     build_achievement_only_export, build_achievement_snapshot, build_export,

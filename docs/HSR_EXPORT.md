@@ -50,13 +50,16 @@ not captured; do not invent empty coverage.
 | `generator` | `{name:"GOODScanner", version, captureRevision, compatibility}` |
 | `coverage` | `{characters, lightCones, relics}` each `complete` / `unknown` / … |
 | `metadata.current_trailblazer_path` | current Trailblazer path, same names as `characters[].path` |
-| `achievements` | sorted unique completed achievement IDs. `[]` means zero completed. **Omitted** means achievements were not observed |
+| `quests` | `{schemaVersion:1, coverage:"complete", records:[{id,status,progress,counters}]}`; records sorted by unique positive ID. Omitted means no Quest snapshot was captured |
 
-Same rule as Genshin GOOD: a missing `achievements` array leaves consumer
-achievement state untouched; a present array (including empty) replaces it.
+The complete Quest snapshot contains achievements and other objectives together.
+Status values are 0 (None), 1 (Doing), 2 (Finish), 3 (Close), 4 (Delete).
+GGStarRail derives completed achievements from catalog membership and statuses
+2/3, and retains every record for the Objectives archive. Missing `quests`
+leaves existing progress untouched. Legacy `achievements` exports remain importable.
 
-与原神 GOOD 相同：没有 `achievements` 时消费者应保留原成就数据；有该数组
-（包括 `[]`）时以文件为准。
+`quests` 保留成就与其他目标的完整列表、状态、进度和计数，网站负责分类。
+没有该字段时保留已有进度；出现完整快照时替换。完成时间不写入导出。
 
 ## Minimal example / 最小示例
 
@@ -68,7 +71,7 @@ achievement state untouched; a present array (including empty) replaces it.
   "generator": {
     "name": "GOODScanner",
     "version": "0.0.0",
-    "captureRevision": "reliquary-shape-4.5-v1",
+    "captureRevision": "reliquary-quest-4.6-v2",
     "compatibility": "HSR-Scanner v1.2.0 / format v4"
   },
   "metadata": {
@@ -84,7 +87,11 @@ achievement state untouched; a present array (including empty) replaces it.
   "characters": [],
   "light_cones": [],
   "relics": [],
-  "achievements": [4010101]
+  "quests": {
+    "schemaVersion": 1,
+    "coverage": "complete",
+    "records": [{"id": 4010101, "status": 3, "progress": 1, "counters": []}]
+  }
 }
 ```
 

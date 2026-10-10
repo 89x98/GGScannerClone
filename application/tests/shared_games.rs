@@ -202,10 +202,6 @@ fn default_star_rail_settings_use_automatic_hosted_reference_without_a_folder() 
         "https://hsr.ggartifact.com/good/hsr_scanner_data.json"
     );
     assert_eq!(hsr_scanner::data_cache::DATA_CACHE_DIRECTORY, "data/hsr");
-    assert_eq!(
-        hsr_scanner::data_cache::ACHIEVEMENT_IDS_URL,
-        "https://hsr.ggartifact.com/good/hsr_achievement_ids.json"
-    );
 
     remove_test_tree(&root);
 }
@@ -956,7 +952,8 @@ fn completed_capture_advances_and_exports_while_its_tab_is_inactive() {
         .to_str()
         .unwrap()
         .starts_with("star_rail_capture_"));
-    assert_eq!(common["achievements"], serde_json::json!([achievement_id]));
+    assert_eq!(common["quests"]["records"], serde_json::json!([{ "id": achievement_id, "status": 3, "progress": 1, "counters": [] }]));
+    assert!(common.get("achievements").is_none());
     let extras: Vec<_> = fs::read_dir(&output_dir)
         .unwrap()
         .filter_map(|entry| entry.ok())

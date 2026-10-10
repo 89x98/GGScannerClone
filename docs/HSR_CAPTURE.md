@@ -2,7 +2,7 @@
 
 Select **Star Rail → Capture**, start capture as administrator, then log in
 from the game's title screen. Characters, Light Cones, and Relics (including
-Planar Ornaments), and Achievements each have a checkbox, matching the Genshin
+Planar Ornaments), and Achievements & objectives each have a checkbox, matching the Genshin
 export settings. All four default to selected; selections persist independently
 of OCR settings. Unchecked categories are excluded from the export and completion
 requirements. Capture stops and saves one export file after the requested data arrives. The default destination is beside the
@@ -16,20 +16,19 @@ affix values and packet/form mappings, with no achievement data. Scanner, captur
 and manager reuse this one cache. The old combined filename and the briefly
 separated OCR/capture caches are deleted on load, along with empty obsolete directories.
 
-Only capture with Achievements selected loads `/good/hsr_achievement_ids.json`,
-cached independently in `data/hsr/`. The IDs must come from the same source
-revision as the inventory reference. Inventory-only capture and all scanner and
-manager operations work without achievement references. The full achievement OCR
-mapping is a separate product and is not downloaded by these inventory flows.
+Capture exports the complete Quest response when Achievements & objectives is
+selected, retaining IDs, statuses, progress and counters. It requires no
+achievement-ID download. GGStarRail classifies achievements with its own catalog
+and displays the remaining records in the Objectives archive. The obsolete
+`hsr_achievement_ids.json` cache and hosted file are removed. The full achievement
+OCR mapping remains a separate product.
 
-Both downloads use the two-hour cache policy. Base data has its own refresh
-button and download age. Capture with Achievements selected shows an independent
-achievement-ID refresh button and age; refreshing base data never refreshes the ID
-file. Failed or malformed replacements preserve the previous cache and report
+The base download uses the two-hour cache policy, with its own refresh button
+and download age. Failed or malformed replacements preserve the previous cache and report
 the error. Normal loads can use a last valid cache; a cold offline load can use
-the bundled reference. Achievement fallback is allowed only for matching revisions.
+the bundled reference.
 
-HoyoData's `uv run hoyodata ggstarrail` generates both new files from the same
+HoyoData's `uv run hoyodata ggstarrail` generates the base file from the same
 source and publishes them into GGStarRail's `public/good/` directory and its local
 archive. The website build checks revision and field coverage against its catalog.
 Publishing the files updates clients without rebuilding GGScanner. Protocol code
@@ -53,7 +52,7 @@ Replay a raw dump through the live transport and current hosted references with
 The tool reports distinct transport errors and exports only a complete snapshot.
 
 Each completed capture writes one file: `star_rail_capture_<timestamp>.json`.
-That file is HSR-Scanner format v4 plus GGScanner extensions (achievements,
+That file is HSR-Scanner format v4 plus GGScanner extensions (complete Quests,
 Trailblazer gender and current path). See [`HSR_EXPORT.md`](HSR_EXPORT.md).
 Screenshot scans write `star_rail_scan_<timestamp>.json` instead, so the two
 flows cannot overwrite each other. Unchecked categories are omitted rather
@@ -110,7 +109,7 @@ The replacement uses:
   distinguishes a full avatar response from a normal avatar update.
 - Equipment and Relic normalization, retaining equipped character, lock and
   discard states; affix IDs/roll counts become the existing semantic stat units.
-- Separate achievement readiness. All records in a candidate group must parse;
+- Separate Quest readiness. All records in a candidate group must parse;
   an invalid member cannot silently disappear from an authoritative snapshot.
 - A 120-second deadline with readable errors distinguishing absent traffic,
   unsuccessful decryption, and missing categories. Full errors include packet,
@@ -126,9 +125,11 @@ A local login-frame replay confirmed that `GetQuestDataScRsp` carries achievemen
 and non-achievement Quest records in the same repeated field 10. Quest ID is
 field 12, status is field 1, completion time is field 3 and progress is field 14
 in that inspected layout. Both categories share record shapes; those fields
-do not include a category discriminator. The current client therefore uses the
-public achievement-ID catalog to classify records. Parsing known field numbers
-alone does not replace that classification.
+do not include a category discriminator. GGScanner preserves the complete list;
+classification happens in GGStarRail using AchievementData and QuestData.
+The inner Quest schema is the reviewed HSR 4.6 layout, including packed or
+unpacked counters in field 10. Incremental Quest notifications are not accepted
+as complete snapshots.
 
 For offline investigation, `analyze_dump <session> --raw --dump-dir <diagnostics>
 --output-dir <exports>` replays raw frames through the production decoder and

@@ -251,7 +251,15 @@ impl StarRailCaptureState {
             complete: true,
             has_key_exchange: true,
             achievement_count,
-            completed_ids,
+            quests: completed_ids
+                .into_iter()
+                .map(|id| hsr_scanner::model::ObservedQuest {
+                    id,
+                    status: 3,
+                    progress: 1,
+                    counters: vec![],
+                })
+                .collect(),
             inventory: Some(inventory),
             has_achievements: true,
             ..HsrCaptureState::default()
@@ -299,7 +307,7 @@ pub fn show_settings(
                 );
                 ui.checkbox(
                     &mut settings.capture_include_achievements,
-                    lang.t("成就", "Achievements"),
+                    lang.t("成就与任务", "Achievements & objectives"),
                 );
             });
         });
@@ -352,7 +360,9 @@ pub fn show_status(
         CapturePhase::Done { .. } => Stage::Done,
         CapturePhase::Failed(_) => Stage::Failed,
     };
-    let text = stage.headline(lang);
+    let text = if stage == Stage::Achievements {
+        lang.t("正在接收成就与任务", "Receiving achievements and objectives")
+    } else { stage.headline(lang) };
     let feedback = match &state.phase {
         CapturePhase::Idle if !capture_targets(settings).any() => {
             Some(super::state::TaskStatus::AwaitingInput(UiText::new(
@@ -402,8 +412,8 @@ pub fn show_status(
             (
                 settings.capture_include_achievements,
                 "achievements",
-                "成就",
-                "Achievements",
+                "成就与任务",
+                "Achievements & objectives",
                 shared.has_achievements,
                 shared.achievement_count,
             ),
@@ -545,13 +555,7 @@ fn spawn_capture_monitor(
             let native_context =
                 native_guard_active.then(yas::native_crash::inherit_current_task);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let references = match star_rail_worker::load_references().and_then(|references| {
-                    if targets.achievements {
-                        hsr_scanner::data_cache::load_achievement_data(&references, false)
-                    } else {
-                        Ok(references)
-                    }
-                }) {
+                let references = match star_rail_worker::load_references() {
                     Ok(references) => references,
                     Err(error) => {
                         lock_shared(&shared_for_thread).error = Some(error);
@@ -855,14 +859,14 @@ mod feedback_tests {
             texts(|ui| show_status(ui, Lang::En, &mut settings, &mut state, false, false));
         assert!(achievements
             .iter()
-            .any(|s| s == "Open Achievements in the game"));
+            .any(|s| s == "Receiving achievements and objectives"));
         assert!(!achievements.iter().any(|s| s.contains("Import the file")));
         state.phase = CapturePhase::Done {
             summary: UiText::new("已完成", "Completed"),
             path: "capture.json".into(),
         };
         let done = texts(|ui| show_status(ui, Lang::En, &mut settings, &mut state, false, false));
-        assert!(done.iter().any(|s| s.contains("Import the file")));
+        assert!(done.iter().any(|s| s == "Export saved"));
         assert!(!done.iter().any(|s| s.contains("Open Achievements")));
     }
     #[test]

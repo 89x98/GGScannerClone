@@ -837,7 +837,7 @@ mod feedback_tests {
             path: "capture.json".into(),
         };
         let done = texts(|ui| show_status(ui, Lang::En, &mut tab, false, false));
-        assert!(done.iter().any(|s| s.contains("Import the file")));
+        assert!(done.iter().any(|s| s == "Export saved"));
         assert!(!done.iter().any(|s| s.contains("Open Achievements")));
     }
     #[test]
