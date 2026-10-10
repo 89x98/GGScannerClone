@@ -38,6 +38,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check bundled capture keys
+        run: |
+          python -m unittest discover -s scripts -p test_check_capture_keys.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/check_capture_keys.py --revision HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Cache Cargo registry + build
         uses: actions/cache@v4
         with:
