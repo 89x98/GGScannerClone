@@ -1414,6 +1414,9 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
     }
 
     fn reset_character_bar(&mut self) -> HsrResult<()> {
+        // open_menu also accepts an already-open Character menu, whose bar
+        // may have been scrolled by the user. Rewind until two drags agree
+        // that the first page is stationary; this is not a fixed drag count.
         self.issue_input(InputCommand::Hover(Point::new(0.85, 0.15)))?;
         let mut previous = self.capture_stable()?;
         for _ in 0..self
