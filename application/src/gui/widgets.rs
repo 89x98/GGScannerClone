@@ -323,7 +323,7 @@ pub fn character_names_section(ui: &mut egui::Ui, state: &mut AppState, enabled:
     let l = state.lang;
 
     ui.add_enabled_ui(enabled, |ui| {
-        field_row(ui, l.t("旅行者*", "Traveler*"), |ui| {
+        field_row(ui, l.t("游戏内昵称*", "In-game nickname*"), |ui| {
             if state.user_config.traveler_name.trim().is_empty() {
                 ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::WARNING;
             }

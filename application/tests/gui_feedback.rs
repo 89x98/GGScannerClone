@@ -127,13 +127,13 @@ fn fixing_required_input_clears_the_old_blocking_status() {
     state.lang = Lang::En;
     state.user_config.traveler_name = "Traveler".into();
     *state.scan_status.lock().unwrap() =
-        TaskStatus::AwaitingInput(UiText::new("请填写旅行者名字", "Enter the Traveler's name"));
+        TaskStatus::AwaitingInput(UiText::new("请填写游戏内昵称", "Enter your in-game nickname"));
     let mut handle = None;
     let texts = render(|ui| scanner_tab::show_status(ui, &mut state, &mut handle, false, false));
     assert!(texts.iter().any(|(text, _, _)| text == "Ready to scan"));
     assert!(!texts
         .iter()
-        .any(|(text, _, _)| text == "Enter the Traveler's name"));
+        .any(|(text, _, _)| text == "Enter your in-game nickname"));
 }
 
 #[test]

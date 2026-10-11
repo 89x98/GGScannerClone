@@ -35,8 +35,8 @@ pub fn show_status(
             Some(lang.t("请选择扫描内容", "Select scan targets"))
         } else if settings.missing_trailblazer() {
             Some(lang.t(
-                "请填写开拓者昵称和性别",
-                "Enter Trailblazer name and gender",
+                "请填写游戏内昵称并选择性别",
+                "Enter your in-game nickname and choose a gender",
             ))
         } else {
             None
@@ -198,9 +198,9 @@ pub(super) fn trailblazer_row(
     widgets::field_row(
         ui,
         if required {
-            lang.t("游戏内昵称*", "Name*")
+            lang.t("游戏内昵称*", "In-game nickname*")
         } else {
-            lang.t("游戏内昵称", "Name")
+            lang.t("游戏内昵称", "In-game nickname")
         },
         |ui| {
             if required && settings.trailblazer_name.trim().is_empty() {

@@ -129,8 +129,8 @@ pub fn show_status(
     }
     if matches!(status, Some(TaskStatus::Idle)) && state.missing_required_character_names() {
         status = Some(TaskStatus::AwaitingInput(UiText::new(
-            "请填写旅行者名字",
-            "Enter the Traveler's name",
+            "请填写游戏内昵称",
+            "Enter your in-game nickname",
         )));
     }
     widgets::status_content(ui, "genshin-scan-status", 2, |ui| {
@@ -189,8 +189,8 @@ pub fn show_status(
         if state.missing_required_character_names() {
             state.names_need_attention = true;
             *state.scan_status.lock().unwrap() = TaskStatus::AwaitingInput(UiText::new(
-                "请填写旅行者名字",
-                "Enter the Traveler's name",
+                "请填写游戏内昵称",
+                "Enter your in-game nickname",
             ));
             *state.scan_progress.lock().unwrap() = Default::default();
         } else if let Err(e) = super::privilege::ensure_admin_for_action() {

@@ -307,7 +307,7 @@ pub fn show_settings(
                 );
                 ui.checkbox(
                     &mut settings.capture_include_achievements,
-                    lang.t("成就与任务", "Achievements & objectives"),
+                    lang.t("成就", "Achievements"),
                 );
             });
         });
@@ -361,7 +361,7 @@ pub fn show_status(
         CapturePhase::Failed(_) => Stage::Failed,
     };
     let text = if stage == Stage::Achievements {
-        lang.t("正在接收成就与任务", "Receiving achievements and objectives")
+        lang.t("正在接收成就", "Receiving achievements")
     } else { stage.headline(lang) };
     let feedback = match &state.phase {
         CapturePhase::Idle if !capture_targets(settings).any() => {
@@ -412,8 +412,8 @@ pub fn show_status(
             (
                 settings.capture_include_achievements,
                 "achievements",
-                "成就与任务",
-                "Achievements & objectives",
+                "成就",
+                "Achievements",
                 shared.has_achievements,
                 shared.achievement_count,
             ),
@@ -859,7 +859,7 @@ mod feedback_tests {
             texts(|ui| show_status(ui, Lang::En, &mut settings, &mut state, false, false));
         assert!(achievements
             .iter()
-            .any(|s| s == "Receiving achievements and objectives"));
+            .any(|s| s == "Receiving achievements"));
         assert!(!achievements.iter().any(|s| s.contains("Import the file")));
         state.phase = CapturePhase::Done {
             summary: UiText::new("已完成", "Completed"),
