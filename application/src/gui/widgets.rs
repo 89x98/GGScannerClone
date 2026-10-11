@@ -252,21 +252,30 @@ pub fn error_card(ui: &mut egui::Ui, l: Lang, error: &UiError) {
 }
 
 pub fn export_file(ui: &mut egui::Ui, l: Lang, path: &str) {
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(l.t("导出文件", "Export file"))
-                .size(12.0)
-                .color(super::theme::MUTED),
-        );
-        if ui.small_button(l.t("复制路径", "Copy path")).clicked() {
-            ui.ctx().copy_text(path.to_owned());
+    let error_id = ui.id().with(("reveal-export-error", path));
+    if ui.button(l.t("打开文件夹", "Open folder")).clicked() {
+        match super::file_location::reveal_file(path) {
+            Ok(()) => ui.ctx().data_mut(|data| data.remove::<UiError>(error_id)),
+            Err(error) => {
+                let error = UiError::from_anyhow(
+                    super::state::UiText::new(
+                        "无法打开导出文件所在文件夹。请确认文件仍然存在，然后重试。",
+                        "Could not open the export folder. Check that the file still exists and try again.",
+                    ),
+                    &error,
+                );
+                log::error!(
+                    "Could not reveal export file: {}",
+                    error.technical_details(l)
+                );
+                ui.ctx().data_mut(|data| data.insert_temp(error_id, error));
+            },
         }
-    });
-    ui.add(
-        singleline_input(&mut path.as_ref())
-            .font(egui::TextStyle::Small)
-            .desired_width(ui.available_width()),
-    );
+    }
+    let error = ui.ctx().data(|data| data.get_temp::<UiError>(error_id));
+    if let Some(error) = error {
+        error_card(ui, l, &error);
+    }
 }
 
 /// Numeric input for u64 values (clamped to 5000).

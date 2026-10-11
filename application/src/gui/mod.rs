@@ -4,6 +4,7 @@ mod capture_status;
 pub mod capture_tab;
 pub mod credits;
 pub mod data_refresh;
+mod file_location;
 pub mod game_switcher;
 pub mod hsr_manager_progress;
 pub mod layout;

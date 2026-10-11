@@ -72,7 +72,7 @@ fn failure_is_prominent_before_retry_without_expanding_technical_clutter() {
 }
 
 #[test]
-fn export_path_is_visible_only_after_a_successful_write() {
+fn export_folder_action_is_visible_only_after_a_successful_write() {
     let path = "C:/exports/scan.json";
     for partial in [false, true] {
         let status = TaskStatus::Exported {
@@ -95,14 +95,14 @@ fn export_path_is_visible_only_after_a_successful_write() {
                 theme::ACCENT
             }
         );
-        assert!(texts.iter().any(|(text, _, _)| text == path));
-        assert!(texts.iter().any(|(text, _, _)| text == "Copy path"));
+        assert!(!texts.iter().any(|(text, _, _)| text == path));
+        assert!(texts.iter().any(|(text, _, _)| text == "Open folder"));
     }
     let status = TaskStatus::Running(UiText::new("正在导出", "Saving export"));
     let texts = render(|ui| theme::task_status(ui, Lang::En, Some(&status), "Ready"));
     assert!(!texts
         .iter()
-        .any(|(text, _, _)| text == "Copy path" || text == "Export saved"));
+        .any(|(text, _, _)| text == "Open folder" || text == "Export saved"));
 }
 
 #[test]
@@ -126,8 +126,10 @@ fn fixing_required_input_clears_the_old_blocking_status() {
     let mut state = AppState::new();
     state.lang = Lang::En;
     state.user_config.traveler_name = "Traveler".into();
-    *state.scan_status.lock().unwrap() =
-        TaskStatus::AwaitingInput(UiText::new("请填写游戏内昵称", "Enter your in-game nickname"));
+    *state.scan_status.lock().unwrap() = TaskStatus::AwaitingInput(UiText::new(
+        "请填写游戏内昵称",
+        "Enter your in-game nickname",
+    ));
     let mut handle = None;
     let texts = render(|ui| scanner_tab::show_status(ui, &mut state, &mut handle, false, false));
     assert!(texts.iter().any(|(text, _, _)| text == "Ready to scan"));
@@ -282,5 +284,5 @@ fn failed_capture_write_displays_the_cause_and_never_shows_an_export_path() {
     assert!(texts.iter().any(|(text, _, _)| text == "Retry"));
     assert!(!texts
         .iter()
-        .any(|(text, _, _)| text == "Copy path" || text == "Export saved"));
+        .any(|(text, _, _)| text == "Open folder" || text == "Export saved"));
 }

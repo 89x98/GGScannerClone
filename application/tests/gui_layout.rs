@@ -581,6 +581,105 @@ fn manager_port_is_above_the_start_action_and_absent_from_settings() {
 }
 
 #[test]
+fn long_export_paths_do_not_change_pane_width_when_resized() {
+    use good_tools_app::gui::state::Lang;
+    let path = format!(
+        "C:/exports/含空格的文件夹/{}/scan.json",
+        "long-folder-name/".repeat(30)
+    );
+    for lang in [Lang::Zh, Lang::En] {
+        for partial in [false, true] {
+            let ctx = egui::Context::default();
+            theme::setup(&ctx);
+            let status = TaskStatus::Exported {
+                message: UiText::new("完成", "Done"),
+                path: path.clone(),
+                partial,
+            };
+            for width in [250.0, 500.0, 250.0] {
+                for _ in 0..3 {
+                    let output = ctx.run(Default::default(), |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            layout::region(
+                                ui,
+                                egui::Rect::from_min_size(
+                                    egui::pos2(20.0, 20.0),
+                                    egui::vec2(width, 300.0),
+                                ),
+                                "export-result",
+                                |ui| {
+                                    theme::task_status(ui, lang, Some(&status), "Ready");
+                                    assert!(ui.min_rect().width() <= width);
+                                },
+                            );
+                        });
+                    });
+                    let texts = painted_text(&output.shapes);
+                    assert!(texts
+                        .iter()
+                        .any(|(text, _)| text == lang.t("打开文件夹", "Open folder")));
+                    assert!(!texts
+                        .iter()
+                        .any(|(text, _)| text.contains("scan.json") || text == "Copy path"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn opening_a_missing_export_reports_a_visible_error() {
+    use good_tools_app::gui::{state::Lang, widgets};
+    let ctx = egui::Context::default();
+    theme::setup(&ctx);
+    let path =
+        std::env::temp_dir().join(format!("missing-good-export-{}.json", std::process::id()));
+    assert!(!path.exists());
+    let draw = |events| {
+        ctx.run(
+            egui::RawInput {
+                events,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600.0, 400.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    widgets::export_file(ui, Lang::En, path.to_str().unwrap());
+                });
+            },
+        )
+    };
+    draw(vec![]);
+    let initial = draw(vec![]);
+    let button = painted_text(&initial.shapes)
+        .into_iter()
+        .find(|(text, _)| text == "Open folder")
+        .unwrap()
+        .1;
+    draw(vec![
+        Event::PointerMoved(button),
+        Event::PointerButton {
+            pos: button,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        },
+    ]);
+    let clicked = draw(vec![Event::PointerButton {
+        pos: button,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    }]);
+    assert!(painted_text(&clicked.shapes)
+        .iter()
+        .any(|(text, _)| text.contains("Could not open the export folder")));
+}
+
+#[test]
 fn sidebar_language_button_names_the_target_language_and_toggles_it() {
     use good_tools_app::{
         config::GameNavigation,
