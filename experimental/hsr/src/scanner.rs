@@ -1283,13 +1283,15 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
             ..CaptureExportDetails::default()
         };
         let traversal = (|| {
+            // Reopen from a fresh menu so the roster starts at the current
+            // team's first slots, rather than preserving a user's scroll.
+            self.leave_menu()?;
             self.open_menu('c', CHARACTER_TITLE)?;
             // Leave controller UI once, then use only mouse traversal.
             self.issue_input(InputCommand::Key('1'))?;
             self.wait_attended(Duration::from_millis(self.config.timings.input_settle_ms))?;
             self.issue_input(InputCommand::Click(layout::DETAILS_BUTTON))?;
             self.wait_attended(Duration::from_millis(self.config.timings.panel_switch_ms))?;
-            self.reset_character_bar()?;
             self.issue_input(InputCommand::Click(layout::character_portrait(0)))?;
             self.wait_attended(Duration::from_millis(
                 self.config.timings.character_switch_ms,
@@ -1411,37 +1413,6 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
             details: export_details,
             coverage,
         })
-    }
-
-    fn reset_character_bar(&mut self) -> HsrResult<()> {
-        // open_menu also accepts an already-open Character menu, whose bar
-        // may have been scrolled by the user. Rewind until two drags agree
-        // that the first page is stationary; this is not a fixed drag count.
-        self.issue_input(InputCommand::Hover(Point::new(0.85, 0.15)))?;
-        let mut previous = self.capture_stable()?;
-        for _ in 0..self
-            .references
-            .character_count()
-            .div_ceil(layout::CHARACTER_PAGE_SIZE)
-            + 2
-        {
-            let next = drag_character_page(&mut self.device, false, &self.config.timings)?;
-            if character_bar_unchanged(&previous, &next)? {
-                let confirmation =
-                    drag_character_page(&mut self.device, false, &self.config.timings)?;
-                if character_bar_unchanged(&next, &confirmation)? {
-                    return Ok(());
-                }
-                previous = confirmation;
-                continue;
-            }
-            previous = next;
-        }
-        Err(HsrError::new(
-            "HSR-CHAR-START",
-            hints::SCREEN_INVALID,
-            "portrait bar did not reach a stationary first page",
-        ))
     }
 
     fn advance_character(
@@ -3196,13 +3167,18 @@ mod tests {
         frame
     }
 
-    /// `open_menu` spends one stable capture (two frames) reading the title.
-    fn with_character_menu_open(frames: Vec<RgbImage>) -> Vec<RgbImage> {
+    /// Read the title before opening, then verify the freshly opened menu.
+    fn with_character_menu_reopened(frames: Vec<RgbImage>) -> Vec<RgbImage> {
         let title_frame = frames[0].clone();
-        [title_frame.clone(), title_frame]
-            .into_iter()
-            .chain(frames)
-            .collect()
+        [
+            title_frame.clone(),
+            title_frame.clone(),
+            title_frame.clone(),
+            title_frame,
+        ]
+        .into_iter()
+        .chain(frames)
+        .collect()
     }
 
     fn two_character_references() -> ReferenceCache {
@@ -3223,9 +3199,9 @@ mod tests {
         names: &[&str],
         maximum: usize,
     ) -> CharacterScan {
-        let frames = with_character_menu_open(frames);
+        let frames = with_character_menu_reopened(frames);
         let reader = ScriptedOcrReader::default()
-            .with(OcrField::MenuTitle, ["角色详情"])
+            .with(OcrField::MenuTitle, ["", "角色详情"])
             .with(OcrField::CharacterName, names.iter().copied())
             .with(
                 OcrField::CharacterLevel,
@@ -3245,7 +3221,16 @@ mod tests {
             two_character_references(),
             config,
         );
-        scanner.scan_characters().unwrap()
+        let scan = scanner.scan_characters().unwrap();
+        let commands = scanner.device().commands();
+        assert_eq!(
+            &commands[..2],
+            &[InputCommand::Escape, InputCommand::Escape]
+        );
+        assert!(commands.contains(&InputCommand::Key('c')));
+        let (from, to) = layout::character_page_drag(false);
+        assert!(!commands.contains(&InputCommand::Drag { from, to }));
+        scan
     }
 
     #[test]
@@ -3393,7 +3378,7 @@ mod tests {
         let visually_changed_same_id = character_frame(Rgb([170, 90, 120]));
         let frames = {
             let mut frames = Vec::new();
-            frames.extend(std::iter::repeat_with(|| first.clone()).take(7));
+            frames.extend(std::iter::repeat_with(|| first.clone()).take(3));
             frames.extend(std::iter::repeat_with(|| visually_changed_same_id.clone()).take(40));
             frames
         };
@@ -3406,9 +3391,9 @@ mod tests {
     fn stationary_roster_end_proves_completion_without_an_entered_total() {
         let first = character_frame(Rgb([90, 120, 170]));
         let second = character_frame(Rgb([170, 90, 120]));
-        // Four reset captures + three tabs; subsequent entries need two
+        // Three tabs; subsequent entries need two
         // identity-change captures + three tabs, with no return to Details.
-        let mut frames = vec![first.clone(); 7];
+        let mut frames = vec![first.clone(); 3];
         frames.extend(vec![second.clone(); 5]);
         // Model overlap: every visible position is visited, but identities
         // already seen on a clamped page are exported only once.
@@ -3475,34 +3460,10 @@ mod tests {
     }
 
     #[test]
-    fn reset_retries_when_a_missed_drag_is_followed_by_a_moving_confirmation() {
-        let before = character_frame(Rgb([90, 120, 170]));
-        let mut moved = before.clone();
-        paint_character_portraits(&mut moved);
-        let mut scanner = scanner_with_frames(
-            vec![
-                before.clone(),
-                before.clone(),
-                before,
-                moved.clone(),
-                moved.clone(),
-                moved,
-            ],
-            ScanConfig::default(),
-        );
-        scanner.reset_character_bar().unwrap();
-        assert_eq!(scanner.device().remaining_frames(), 0);
-        let (from, to) = layout::character_page_drag(false);
-        assert_eq!(
-            scanner.device().commands(),
-            &[
-                InputCommand::Hover(Point::new(0.85, 0.15)),
-                InputCommand::Drag { from, to },
-                InputCommand::Drag { from, to },
-                InputCommand::Drag { from, to },
-                InputCommand::Drag { from, to },
-            ]
-        );
+    fn character_scan_reopens_menu_without_rewinding_the_bar() {
+        let frame = character_frame(Rgb([90, 120, 170]));
+        let scan = run_character_simulation(vec![frame; 3], &["三月七"], 1);
+        assert_eq!(scan.items.len(), 1);
     }
 
     #[test]
@@ -3695,11 +3656,11 @@ mod tests {
         let make = |maximum, save_on_cancel| {
             let frame = character_frame(Rgb([90, 120, 170]));
             let reader = ScriptedOcrReader::default()
-                .with(OcrField::MenuTitle, ["角色详情"])
+                .with(OcrField::MenuTitle, ["", "角色详情"])
                 .with(OcrField::CharacterName, ["三月七"])
                 .with(OcrField::CharacterLevel, ["等级 80/80"]);
             HsrScanner::new(
-                ReplayDevice::new(1280, 720, with_character_menu_open(vec![frame; 64])),
+                ReplayDevice::new(1280, 720, with_character_menu_reopened(vec![frame; 64])),
                 reader,
                 two_character_references(),
                 ScanConfig {
@@ -3742,7 +3703,7 @@ mod tests {
         let extra = character_frame(Rgb([90, 170, 120]));
         let frames = {
             let mut frames = Vec::new();
-            frames.extend(std::iter::repeat_with(|| first.clone()).take(7));
+            frames.extend(std::iter::repeat_with(|| first.clone()).take(3));
             frames.extend(std::iter::repeat_with(|| second.clone()).take(5));
             frames.extend(std::iter::repeat_with(|| extra.clone()).take(2));
             frames
@@ -3758,7 +3719,7 @@ mod tests {
         let second = character_frame(Rgb([170, 90, 120]));
         let frames = {
             let mut frames = Vec::new();
-            frames.extend(std::iter::repeat_with(|| first.clone()).take(7));
+            frames.extend(std::iter::repeat_with(|| first.clone()).take(3));
             frames.extend(std::iter::repeat_with(|| second.clone()).take(5));
             frames.extend(std::iter::repeat_with(|| first.clone()).take(40));
             frames
