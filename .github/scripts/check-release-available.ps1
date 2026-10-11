@@ -16,3 +16,6 @@ foreach ($endpoint in @("releases/tags/$Tag", "git/ref/tags/$Tag")) {
     }
 }
 Write-Output "Release and tag $Tag are available."
+# The confirmed 404 leaves gh's LASTEXITCODE at 1. GitHub's PowerShell wrapper
+# propagates it unless this successful availability check exits explicitly.
+exit 0
