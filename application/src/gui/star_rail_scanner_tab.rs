@@ -146,9 +146,7 @@ pub fn show_settings(
             });
             if settings.scan_characters {
                 ui.separator();
-                widgets::group(ui, lang.t("角色信息", "Character info"), |ui| {
-                    trailblazer_row(ui, lang, settings, true);
-                });
+                trailblazer_row(ui, lang, settings, true);
             }
             ui.separator();
             if ui

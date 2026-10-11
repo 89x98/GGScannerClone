@@ -461,6 +461,126 @@ fn painted_text(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Pos
 }
 
 #[test]
+fn delay_fields_switch_columns_without_overflow_or_losing_warnings() {
+    use good_tools_app::gui::{state::Lang, widgets};
+    for (width, two_columns) in [(300.0, false), (600.0, true)] {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let mut values = [100, 50, 100];
+        for _ in 0..2 {
+            let output = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    layout::region(
+                        ui,
+                        egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(width, 300.0)),
+                        "delay-fields",
+                        |ui| {
+                            let [first, second, third] = &mut values;
+                            widgets::delay_group(
+                                ui,
+                                "delays",
+                                "Navigation",
+                                Lang::En,
+                                &mut [
+                                    ("First", first, 100, "First tooltip"),
+                                    ("Second", second, 100, "Second tooltip"),
+                                    ("Third", third, 100, "Third tooltip"),
+                                ],
+                            );
+                            assert!(ui.min_rect().width() <= width);
+                        },
+                    );
+                });
+            });
+            let texts = painted_text(&output.shapes);
+            let position = |label| texts.iter().find(|(text, _)| text == label).unwrap().1;
+            let first = position("First");
+            let second = position("Second*");
+            let third = position("Third");
+            if two_columns {
+                assert!((first.y - second.y).abs() < 1.0);
+                assert!(second.x > first.x + 200.0);
+            } else {
+                assert!(second.y > first.y);
+                assert!((first.x - second.x).abs() < 20.0);
+            }
+            assert!(third.y > second.y);
+            assert!(texts.iter().any(|(text, _)| text.contains("Below default")));
+        }
+        assert_eq!(values, [100, 50, 100]);
+    }
+}
+
+#[test]
+fn manager_port_is_above_the_start_action_and_absent_from_settings() {
+    use good_tools_app::{
+        config::StarRailSettings,
+        gui::{
+            manager_tab, star_rail_manager_tab,
+            star_rail_state::StarRailState,
+            state::{AppState, Lang},
+        },
+    };
+    for star_rail in [false, true] {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let mut genshin = AppState::new();
+        genshin.lang = Lang::En;
+        let mut settings = StarRailSettings::default();
+        let mut hsr = StarRailState::new(String::new());
+        let mut handle = None;
+        for status in [false, true] {
+            for _ in 0..2 {
+                let output = ctx.run(Default::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.set_width(350.0);
+                        match (star_rail, status) {
+                            (true, true) => star_rail_manager_tab::show_status(
+                                ui,
+                                Lang::En,
+                                &mut settings,
+                                &mut hsr,
+                                false,
+                                false,
+                            ),
+                            (true, false) => star_rail_manager_tab::show_settings(
+                                ui,
+                                Lang::En,
+                                &mut settings,
+                                &mut hsr,
+                                false,
+                            ),
+                            (false, true) => manager_tab::show_status(
+                                ui,
+                                &mut genshin,
+                                &mut handle,
+                                false,
+                                false,
+                            ),
+                            (false, false) => manager_tab::show_settings(ui, &mut genshin, false),
+                        }
+                    });
+                });
+                let texts = painted_text(&output.shapes);
+                assert!(!texts
+                    .iter()
+                    .any(|(text, _)| text == "Character info" || text == "Server"));
+                let port = texts.iter().find(|(text, _)| text == "Server port");
+                if status {
+                    let action = texts
+                        .iter()
+                        .find(|(text, _)| text == "Start server")
+                        .unwrap();
+                    assert!(port.unwrap().1.y < action.1.y);
+                } else {
+                    assert!(port.is_none());
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn sidebar_language_button_names_the_target_language_and_toggles_it() {
     use good_tools_app::{
         config::GameNavigation,

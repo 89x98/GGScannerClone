@@ -70,6 +70,7 @@ pub fn show_status(
         }
     });
     ui.add_space(12.0);
+    widgets::server_port(ui, lang, &mut settings.manager_port, !running && !game_busy);
     if running {
         let stopping = state
             .manager_handle
@@ -118,19 +119,7 @@ pub fn show_settings(
 ) {
     ui.add_enabled_ui(!is_running, |ui| {
         widgets::form(ui, |ui| {
-            widgets::group(ui, lang.t("服务器", "Server"), |ui| {
-                widgets::field_row(ui, lang.t("端口", "Port"), |ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut settings.manager_port)
-                            .range(1024..=65535)
-                            .speed(0.0),
-                    );
-                });
-            });
-            ui.separator();
-            widgets::group(ui, lang.t("角色信息", "Character info"), |ui| {
-                super::star_rail_scanner_tab::trailblazer_row(ui, lang, settings, false);
-            });
+            super::star_rail_scanner_tab::trailblazer_row(ui, lang, settings, false);
             ui.separator();
             if ui
                 .checkbox(

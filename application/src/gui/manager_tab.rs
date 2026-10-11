@@ -11,19 +11,7 @@ pub fn show_settings(ui: &mut egui::Ui, state: &mut AppState, is_server_running:
 
     widgets::form(ui, |ui| {
         ui.add_enabled_ui(!is_server_running, |ui| {
-        widgets::group(ui, l.t("服务器", "Server"), |ui| {
-        widgets::field_row(ui, l.t("端口", "Port"), |ui| {
-            ui.add(
-                egui::DragValue::new(&mut state.server_port)
-                    .range(1024..=65535)
-                    .speed(0.0),
-            );
-        });
-        });
-        ui.separator();
-        widgets::group(ui, l.t("角色信息", "Character info"), |ui| {
-            widgets::character_names_section(ui, state, true);
-        });
+        widgets::character_names_section(ui, state, true);
         ui.separator();
             ui.checkbox(&mut state.filter_involved_sets, l.t("仅筛选涉及的套装", "Filter target sets only"))
                 .on_hover_text(l.t("加解锁时只扫描涉及的套装，速度更快；不会更新完整背包。", "Scan only the requested artifact sets for faster lock changes. The full inventory will not be updated."));
@@ -117,6 +105,7 @@ pub fn show_status(
         }
     });
     ui.add_space(12.0);
+    widgets::server_port(ui, l, &mut state.server_port, !running && !game_busy);
     if running {
         let stopping = handle.as_ref().is_some_and(TaskHandle::is_stopping);
         if super::theme::primary_action(

@@ -10,8 +10,18 @@ pub fn section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui))
 }
 
 pub fn group(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    ui.label(egui::RichText::new(title).size(13.0).strong());
+    ui.label(section_title(ui, title));
     body(ui);
+}
+
+fn section_title(ui: &egui::Ui, title: &str) -> egui::RichText {
+    let family = egui::FontFamily::Name("bold".into());
+    let text = egui::RichText::new(title).size(13.0).strong();
+    if ui.fonts(|fonts| fonts.families().contains(&family)) {
+        text.family(family)
+    } else {
+        text
+    }
 }
 
 pub fn fold(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
@@ -19,11 +29,10 @@ pub fn fold(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
         ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
         ui.spacing_mut().item_spacing.y = 4.0;
         ui.spacing_mut().interact_size.y = 26.0;
-        egui::CollapsingHeader::new(egui::RichText::new(title).size(13.0).strong())
-            .show_unindented(ui, |ui| {
-                ui.add_space(3.0);
-                body(ui);
-            });
+        egui::CollapsingHeader::new(section_title(ui, title)).show_unindented(ui, |ui| {
+            ui.add_space(3.0);
+            body(ui);
+        });
     });
 }
 
@@ -278,31 +287,54 @@ pub fn delay_group(
     l: Lang,
     fields: &mut [(&str, &mut u64, u64, &str)],
 ) {
-    ui.strong(format!("{category} (ms)"));
-    let mut any_below = false;
-    let warn_color = egui::Color32::from_rgb(255, 200, 50);
+    ui.label(section_title(ui, &format!("{category} (ms)")));
+    let any_below = fields
+        .iter()
+        .any(|(_, value, default, _)| **value < *default);
+    let warn_color = super::theme::WARNING;
+    let gap = 16.0;
+    let columns = if ui.available_width() >= 2.0 * 235.0 + gap {
+        2
+    } else {
+        1
+    };
+    let width = (ui.available_width() - gap * (columns - 1) as f32) / columns as f32;
     ui.push_id(id, |ui| {
-        for (label, value, default, tooltip) in fields.iter_mut() {
-            let below = **value < *default;
-            let label_text = if below {
-                any_below = true;
-                format!("{}*", label)
-            } else {
-                label.to_string()
-            };
-            let rich = if below {
-                egui::RichText::new(&label_text).color(warn_color)
-            } else {
-                egui::RichText::new(&label_text)
-            };
+        for row in fields.chunks_mut(columns) {
             ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    num_input_u64(ui, value, 60.0);
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.add(egui::Label::new(rich).truncate())
-                            .on_hover_text(format!("{label}\n{tooltip}"));
-                    });
-                });
+                ui.spacing_mut().item_spacing.x = gap;
+                for (label, value, default, tooltip) in row {
+                    let below = **value < *default;
+                    let label_text = if below {
+                        format!("{}*", label)
+                    } else {
+                        label.to_string()
+                    };
+                    let rich = if below {
+                        egui::RichText::new(&label_text).color(warn_color)
+                    } else {
+                        egui::RichText::new(&label_text)
+                    };
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, 26.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    num_input_u64(ui, value, 60.0);
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.add(egui::Label::new(rich).truncate())
+                                                .on_hover_text(format!("{label}\n{tooltip}"));
+                                        },
+                                    );
+                                },
+                            );
+                        },
+                    );
+                }
             });
         }
     });
@@ -315,6 +347,15 @@ pub fn delay_group(
             ),
         );
     }
+}
+
+pub fn server_port(ui: &mut egui::Ui, lang: Lang, port: &mut u16, enabled: bool) {
+    ui.add_enabled_ui(enabled, |ui| {
+        field_row(ui, lang.t("服务器端口", "Server port"), |ui| {
+            ui.add(egui::DragValue::new(port).range(1024..=65535).speed(0.0));
+        });
+    });
+    ui.add_space(4.0);
 }
 
 /// Character names section — shared between scanner and manager tabs.
