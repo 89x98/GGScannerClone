@@ -724,6 +724,16 @@ fn update_phase(tab: &mut CaptureTabState) {
                             let wc = export.weapons.as_ref().map_or(0, |v| v.len());
                             let ac = export.artifacts.as_ref().map_or(0, |v| v.len());
                             let hc = export.achievements.as_ref().map_or(0, |v| v.len());
+                            // Captured inventory includes gear excluded by export
+                            // filters. Once saved, progress must describe this file.
+                            {
+                                let mut shared =
+                                    tab.capture_state.lock().expect("capture state poisoned");
+                                shared.character_count = cc;
+                                shared.weapon_count = wc;
+                                shared.artifact_count = ac;
+                                shared.achievement_count = hc;
+                            }
                             let summary = UiText::new(
                                 format!(
                                     "已导出: {} 角色, {} 武器, {} 圣遗物, {} 成就",
