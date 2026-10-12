@@ -647,6 +647,49 @@ pub struct GridPageLayout {
     pub screen_start_row: usize,
 }
 
+impl GridPageLayout {
+    fn cell_position(&self, index: usize) -> Option<(usize, usize)> {
+        let offset = index.checked_sub(self.page_start_idx)?;
+        if offset >= self.page_items {
+            return None;
+        }
+        Some((
+            self.screen_start_row + offset / GRID_COLS,
+            offset % GRID_COLS,
+        ))
+    }
+}
+
+/// Only reselect a failed item if its original grid page is still visible.
+pub fn focus_failed_item(
+    ctrl: &mut GenshinGameController,
+    layout: Option<GridPageLayout>,
+    index: usize,
+    delay_ms: u64,
+) {
+    if ctrl.check_rmb() {
+        return;
+    }
+    if let Some((row, col)) = layout.and_then(|page| page.cell_position(index)) {
+        ctrl.click_at(
+            GRID_FIRST_X + col as f64 * GRID_OFFSET_X,
+            GRID_FIRST_Y + row as f64 * GRID_OFFSET_Y,
+        );
+        utils::sleep(delay_ms as u32);
+        log_info!(
+            "[OCR] 已选中识别失败的物品（索引{}），请截图反馈",
+            "[OCR] Selected the failed item (index {}); please attach a screenshot to your report",
+            index
+        );
+    } else {
+        log_warn!(
+            "[OCR] 识别失败的物品（索引{}）已不在当前页，无法回选",
+            "[OCR] Failed item (index {}) is no longer on the current page; cannot reselect it",
+            index
+        );
+    }
+}
+
 pub enum GridEvent {
     /// Fired at the start of each page if `probe_last_cell_per_page` is set.
     /// `scan_grid` has already clicked the bottom-right visible cell, waited
@@ -1760,6 +1803,20 @@ mod tests {
     use image::Rgb;
 
     use super::*;
+
+    #[test]
+    fn failed_item_position_respects_partial_tail_pages_and_page_boundaries() {
+        let page = GridPageLayout {
+            page_start_idx: 56,
+            page_items: 11,
+            screen_start_row: 3,
+        };
+        assert_eq!(page.cell_position(55), None);
+        assert_eq!(page.cell_position(56), Some((3, 0)));
+        assert_eq!(page.cell_position(64), Some((4, 0)));
+        assert_eq!(page.cell_position(66), Some((4, 2)));
+        assert_eq!(page.cell_position(67), None);
+    }
 
     fn fill_grid_cell(
         image: &mut RgbImage,

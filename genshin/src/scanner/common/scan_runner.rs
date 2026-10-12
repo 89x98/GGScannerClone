@@ -48,9 +48,28 @@ impl<T> ScanPhaseResult<T> {
     }
 }
 
+fn stop_after_failure<T>(stop_on_failure: bool, phase: &ScanPhaseResult<T>) -> bool {
+    stop_on_failure && matches!(phase, ScanPhaseResult::Failed(_))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_on_ocr_failure_preserves_the_failed_phase_before_later_navigation() {
+        let failed = ScanPhaseResult::<()>::Failed(anyhow::anyhow!("OCR error"));
+        assert!(stop_after_failure(true, &failed));
+        assert!(!stop_after_failure(false, &failed));
+        assert!(!stop_after_failure(
+            true,
+            &ScanPhaseResult::<()>::Complete(vec![])
+        ));
+        assert!(!stop_after_failure(
+            true,
+            &ScanPhaseResult::<()>::Incomplete
+        ));
+    }
 
     #[test]
     fn lifecycle_never_reports_cancelled_partial_exports_as_complete() {
@@ -275,7 +294,9 @@ pub fn run_scan_phases(
         };
     }
 
-    if scan_cancelled(&cancel_token, ctrl) {
+    if scan_cancelled(&cancel_token, ctrl)
+        || stop_after_failure(config.stop_on_failure, &characters)
+    {
         return Ok(ScanRunResult {
             characters,
             weapons: skipped_due_to_cancel(config.scan_weapons),
@@ -299,7 +320,7 @@ pub fn run_scan_phases(
         report_phase(phase_fn, "weapons", &weapons, &cancel_token);
     }
 
-    if scan_cancelled(&cancel_token, ctrl) {
+    if scan_cancelled(&cancel_token, ctrl) || stop_after_failure(config.stop_on_failure, &weapons) {
         return Ok(ScanRunResult {
             characters,
             weapons,
@@ -322,6 +343,15 @@ pub fn run_scan_phases(
         };
         artifacts = phase_result(scan_result, &cancel_token, options, "artifact")?;
         report_phase(phase_fn, "artifacts", &artifacts, &cancel_token);
+    }
+
+    if stop_after_failure(config.stop_on_failure, &artifacts) {
+        return Ok(ScanRunResult {
+            characters,
+            weapons,
+            artifacts,
+            achievements: skipped_due_to_cancel(config.scan_achievements),
+        });
     }
 
     // Achievements run after all requested roster and inventory scans.

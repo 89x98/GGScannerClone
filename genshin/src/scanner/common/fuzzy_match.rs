@@ -10,6 +10,9 @@ use yas::log_debug;
 /// Prefer whole-name pairs when the wrong glyph occurs in legitimate names;
 /// broad substitutions can make noisy text match the wrong entity.
 const OCR_CONFUSIONS: &[(&str, &str)] = &[
+    // The default weapon v6 tiny dictionary lacks 釭. The reported OCR splits
+    // its components into 金红; scope this correction to the complete name.
+    ("银金红", "银釭"),
     // Citlali: v4's dictionary cannot emit 菈. Account for a simultaneous loss
     // of 茜's 艹 radical (西) and 菈 being read as 拉/莱. Keep these whole-name
     // corrections scoped: 西 and 莱 occur in other legitimate character names.
@@ -706,6 +709,23 @@ mod tests {
             fuzzy_match_map("西特拉莉", &map),
             Some("Wanderer".to_string())
         );
+    }
+
+    #[test]
+    fn silver_light_split_glyph_is_scoped_and_exact_names_still_win() {
+        let mut map = HashMap::from([
+            ("银釭".to_string(), "SilverLight".to_string()),
+            ("东花坊时雨".to_string(), "ToukabouShigure".to_string()),
+        ]);
+        assert_eq!(fuzzy_match_map("银金红", &map), Some("SilverLight".into()));
+        assert_eq!(fuzzy_match_map("银釭", &map), Some("SilverLight".into()));
+        assert_eq!(fuzzy_match_map("金红", &map), None);
+        assert_eq!(
+            fuzzy_match_map("东花坊时雨", &map),
+            Some("ToukabouShigure".into())
+        );
+        map.insert("银金红".into(), "Wanderer".into());
+        assert_eq!(fuzzy_match_map("银金红", &map), Some("Wanderer".into()));
     }
 
     #[test]

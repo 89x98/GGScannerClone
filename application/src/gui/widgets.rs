@@ -165,24 +165,6 @@ pub fn scan_export_options(
     );
 }
 
-pub fn server_address(ui: &mut egui::Ui, lang: Lang, port: u16) {
-    let address = format!("http://127.0.0.1:{port}");
-    ui.horizontal_wrapped(|ui| {
-        ui.label(
-            egui::RichText::new(&address)
-                .monospace()
-                .size(12.0)
-                .color(super::theme::MUTED),
-        );
-        if ui
-            .small_button(lang.t("复制地址", "Copy address"))
-            .clicked()
-        {
-            ui.ctx().copy_text(address);
-        }
-    });
-}
-
 pub fn scan_debug_options(
     ui: &mut egui::Ui,
     lang: Lang,
@@ -360,9 +342,13 @@ pub fn delay_group(
 
 pub fn server_port(ui: &mut egui::Ui, lang: Lang, port: &mut u16, enabled: bool) {
     ui.add_enabled_ui(enabled, |ui| {
-        field_row(ui, lang.t("服务器端口", "Server port"), |ui| {
-            ui.add(egui::DragValue::new(port).range(1024..=65535).speed(0.0));
-        });
+        field_row(
+            ui,
+            lang.t("本地服务器端口", "Local server port"),
+            |ui| {
+                ui.add(egui::DragValue::new(port).range(1024..=65535).speed(0.0));
+            },
+        );
     });
     ui.add_space(4.0);
 }

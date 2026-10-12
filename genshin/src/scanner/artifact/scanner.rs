@@ -1764,6 +1764,7 @@ impl GoodArtifactScanner {
             pf(0, total, "", "");
         }
         let mut voter: PagedGridVoter<()> = PagedGridVoter::new(total, GridMode::Artifact);
+        let mut visible_layout = None;
 
         // Helper to emit a batch of ready items to the worker channel.
         // Returns Err(()) on channel close (caller should Stop).
@@ -1794,12 +1795,22 @@ impl GoodArtifactScanner {
         bp.scan_grid(total, &scan_config, start_at, |ctrl, event| {
             match event {
                 GridEvent::PageStarted { .. } => ScanAction::Continue,
-                GridEvent::PageCompleted { .. } => ScanAction::Continue,
+                GridEvent::PageCompleted { .. } => {
+                    if worker_handle.stop_requested() {
+                        ScanAction::Stop
+                    } else {
+                        ScanAction::Continue
+                    }
+                },
                 GridEvent::PageScrolled => {
+                    visible_layout = None;
                     voter.reset_page();
                     ScanAction::Continue
                 },
-                GridEvent::Item { idx, frame, .. } => {
+                GridEvent::Item {
+                    idx, frame, layout, ..
+                } => {
+                    visible_layout = Some(layout);
                     // Check if worker has signaled stop (e.g., too many errors)
                     if worker_handle.stop_requested() {
                         return ScanAction::Stop;
@@ -1821,7 +1832,15 @@ impl GoodArtifactScanner {
                         return ScanAction::Stop;
                     }
 
-                    let ready = voter.record(idx, frame, (), &scaler);
+                    let ready = voter.record_with_layout(
+                        idx,
+                        frame,
+                        (),
+                        &scaler,
+                        layout.page_start_idx,
+                        layout.page_items,
+                        layout.screen_start_row,
+                    );
                     if emit_ready(ready, &item_tx).is_err() {
                         return ScanAction::Stop;
                     }
@@ -1839,7 +1858,14 @@ impl GoodArtifactScanner {
         drop(item_tx);
 
         // Wait for all OCR work to complete and collect results
-        let (artifacts, index_map) = worker_handle.join()?;
+        let (artifacts, index_map) = worker_handle.join(|index| {
+            crate::scanner::common::backpack_scanner::focus_failed_item(
+                ctrl,
+                visible_layout,
+                index + start_at,
+                self.config.panel_timeout + self.config.extra_delay,
+            );
+        })?;
 
         // Write index map for debug image correlation (output position → folder name)
         if self.config.dump_images {

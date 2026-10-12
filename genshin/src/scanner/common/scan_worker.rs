@@ -21,6 +21,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn late_ocr_failure_is_focused_after_capture_has_closed() {
+        let (release_tx, release_rx) = crossbeam_channel::bounded::<()>(0);
+        let (sender, worker) =
+            start_worker(true, move |_: WorkItem<()>| -> anyhow::Result<Option<()>> {
+                release_rx.recv().unwrap();
+                anyhow::bail!("late OCR failure");
+            });
+        sender
+            .send(WorkItem {
+                index: 0,
+                frame: CaptureFrame::full(image::RgbImage::new(1, 1)),
+                metadata: (),
+                grid_annotation: None,
+            })
+            .unwrap();
+        drop(sender);
+        release_tx.send(()).unwrap();
+        let mut focused = None;
+        let error = worker.join(|index| focused = Some(index)).unwrap_err();
+        assert_eq!(focused, Some(0));
+        assert!(error.to_string().contains("late OCR failure"));
+    }
+
+    #[test]
     fn individual_ocr_errors_continue_or_fail_the_scan_according_to_policy() {
         for stop in [false, true] {
             let (sender, worker) = start_worker(stop, |item: WorkItem<()>| {
@@ -40,10 +64,13 @@ mod tests {
                     .unwrap();
             }
             drop(sender);
-            let result = worker.join();
+            let mut failed_index = None;
+            let result = worker.join(|index| failed_index = Some(index));
             if stop {
                 assert!(result.unwrap_err().to_string().contains("OCR_MARKER"));
+                assert_eq!(failed_index, Some(1));
             } else {
+                assert_eq!(failed_index, None);
                 let (items, indices) = result.unwrap();
                 assert_eq!(items, [0, 2]);
                 assert_eq!(indices, [0, 2]);
@@ -58,7 +85,7 @@ pub struct WorkerHandle<R> {
     /// Set to true by the worker when it detects problems (e.g., consecutive
     /// duplicates). The capture thread should check this periodically and stop.
     pub should_stop: Arc<AtomicBool>,
-    failure: Arc<Mutex<Option<String>>>,
+    failure: Arc<Mutex<Option<(usize, String)>>>,
 }
 
 impl<R> WorkerHandle<R> {
@@ -67,12 +94,15 @@ impl<R> WorkerHandle<R> {
     /// Returns `(items, index_map)` where `index_map[i]` is the original
     /// work item index that produced `items[i]`. This allows correlating
     /// output positions with debug image folder names.
-    pub fn join(self) -> anyhow::Result<(Vec<R>, Vec<usize>)> {
+    /// After all OCR completes, let the controller focus the failed item before
+    /// returning the error. This also covers errors arriving after capture ends.
+    pub fn join(self, focus_failure: impl FnOnce(usize)) -> anyhow::Result<(Vec<R>, Vec<usize>)> {
         let output = self
             .handle
             .join()
             .expect("工作线程崩溃 / Worker thread panicked");
-        if let Some(error) = self.failure.lock().unwrap().take() {
+        if let Some((index, error)) = self.failure.lock().unwrap().take() {
+            focus_failure(index);
             anyhow::bail!("识别失败时停止 / Stopped on OCR error: {error}");
         }
         Ok(output)
@@ -238,7 +268,7 @@ where
                                 consecutive_errors += 1;
                                 if stop_on_failure {
                                     worker_failure.lock().unwrap().get_or_insert_with(|| {
-                                        format!("item {current_index}: {e:#}")
+                                        (current_index, format!("item {current_index}: {e:#}"))
                                     });
                                     should_stop_clone.store(true, Ordering::Relaxed);
                                 }

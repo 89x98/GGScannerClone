@@ -60,14 +60,6 @@ pub fn show_status(
                 lang.t("在 GGArtifact 中选择操作", "Choose an action in GGArtifact"),
             );
         }
-        if running
-            && !state
-                .manager_handle
-                .as_ref()
-                .is_some_and(worker::TaskHandle::is_stopping)
-        {
-            widgets::server_address(ui, lang, settings.manager_port);
-        }
     });
     ui.add_space(12.0);
     widgets::server_port(ui, lang, &mut settings.manager_port, !running && !game_busy);

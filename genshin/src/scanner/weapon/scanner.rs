@@ -667,6 +667,7 @@ impl GoodWeaponScanner {
             pf(0, total, "", "");
         }
         let mut voter: PagedGridVoter<()> = PagedGridVoter::new(total, GridMode::Weapon);
+        let mut visible_layout = None;
 
         let emit_ready = |ready: Vec<ReadyItem<()>>,
                           item_tx: &crossbeam_channel::Sender<WorkItem<Option<GridIconResult>>>|
@@ -691,12 +692,22 @@ impl GoodWeaponScanner {
 
         bp.scan_grid(total, &scan_config, start_at, |ctrl, event| match event {
             GridEvent::PageStarted { .. } => ScanAction::Continue,
-            GridEvent::PageCompleted { .. } => ScanAction::Continue,
+            GridEvent::PageCompleted { .. } => {
+                if worker_handle.stop_requested() {
+                    ScanAction::Stop
+                } else {
+                    ScanAction::Continue
+                }
+            },
             GridEvent::PageScrolled => {
+                visible_layout = None;
                 voter.reset_page();
                 ScanAction::Continue
             },
-            GridEvent::Item { idx, frame, .. } => {
+            GridEvent::Item {
+                idx, frame, layout, ..
+            } => {
+                visible_layout = Some(layout);
                 if worker_handle.stop_requested() {
                     return ScanAction::Stop;
                 }
@@ -713,7 +724,15 @@ impl GoodWeaponScanner {
                     let _ = emit_ready(ready, &item_tx);
                     return ScanAction::Stop;
                 }
-                let ready = voter.record(idx, frame, (), &scaler);
+                let ready = voter.record_with_layout(
+                    idx,
+                    frame,
+                    (),
+                    &scaler,
+                    layout.page_start_idx,
+                    layout.page_items,
+                    layout.screen_start_row,
+                );
                 if emit_ready(ready, &item_tx).is_err() {
                     return ScanAction::Stop;
                 }
@@ -726,7 +745,14 @@ impl GoodWeaponScanner {
         let _ = emit_ready(leftover, &item_tx);
 
         drop(item_tx);
-        let (weapons, index_map) = worker_handle.join()?;
+        let (weapons, index_map) = worker_handle.join(|index| {
+            crate::scanner::common::backpack_scanner::focus_failed_item(
+                ctrl,
+                visible_layout,
+                index + start_at,
+                self.config.panel_delay,
+            );
+        })?;
 
         // Write index map for debug image correlation (output position → folder name)
         if self.config.dump_images {

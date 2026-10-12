@@ -100,9 +100,6 @@ pub fn show_status(
         } else {
             super::manager_progress::show(ui, l, &state.server_job, status.as_ref());
         }
-        if running && !handle.as_ref().is_some_and(TaskHandle::is_stopping) {
-            widgets::server_address(ui, l, state.server_port);
-        }
     });
     ui.add_space(12.0);
     widgets::server_port(ui, l, &mut state.server_port, !running && !game_busy);

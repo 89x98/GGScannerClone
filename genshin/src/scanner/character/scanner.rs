@@ -1652,7 +1652,7 @@ impl GoodCharacterScanner {
         let worker_mappings = self.mappings.clone();
         let worker_scaler = ctrl.scaler.clone();
         let worker_config = self.config.clone();
-        let ocr_failure = Arc::new(Mutex::new(None::<String>));
+        let ocr_failure = Arc::new(Mutex::new(None::<(usize, String)>));
         let worker_failure = ocr_failure.clone();
 
         let worker_handle = std::thread::spawn(move || {
@@ -1669,6 +1669,7 @@ impl GoodCharacterScanner {
                 }
                 match work {
                     CharacterWork::Scan(captures) => {
+                        let viewed_index = captures.viewed_index;
                         let result = scanner.process_scan_captures(
                             captures,
                             &worker_ocr_pool,
@@ -1680,12 +1681,13 @@ impl GoodCharacterScanner {
                                 "Stopped on Character OCR error: {}",
                                 error
                             );
-                            *worker_failure.lock().unwrap() = Some(error);
+                            *worker_failure.lock().unwrap() = Some((viewed_index, error));
                         } else {
                             let _ = result_tx.send(result);
                         }
                     },
                     CharacterWork::Rescan(captures) => {
+                        let viewed_index = captures.viewed_index;
                         let result = scanner.process_rescan_captures(
                             captures,
                             &worker_ocr_pool,
@@ -1697,7 +1699,7 @@ impl GoodCharacterScanner {
                                 "Stopped on Character reread error: {}",
                                 error
                             );
-                            *worker_failure.lock().unwrap() = Some(error);
+                            *worker_failure.lock().unwrap() = Some((viewed_index, error));
                         } else {
                             let _ = result_tx.send(result);
                         }
@@ -1731,8 +1733,8 @@ impl GoodCharacterScanner {
         pb.set_message("0 characters scanned");
 
         loop {
-            if let Some(error) = ocr_failure.lock().unwrap().as_ref() {
-                bail!("识别失败时停止 / Stopped on OCR error: {error}");
+            if ocr_failure.lock().unwrap().is_some() {
+                break;
             }
             if ctrl.check_rmb() {
                 log_info!(
@@ -1995,15 +1997,19 @@ impl GoodCharacterScanner {
 
         pb.finish_with_message(format!("{} characters scanned", characters.len()));
 
+        let phase1_failure = ocr_failure.lock().unwrap().clone();
+        if let Some((index, error)) = phase1_failure {
+            self.focus_failed_character(ctrl, viewed_count, index);
+            drop(work_tx);
+            let _ = worker_handle.join();
+            bail!("识别失败时停止 / Stopped on OCR error: {error}");
+        }
+
         // Close character screen
         ctrl.key_press(enigo::Key::Escape);
         utils::sleep(self.config.close_delay as u32);
 
         // ── Phase 2: Rescan suspicious characters ───────────────────────────
-        if let Some(error) = ocr_failure.lock().unwrap().as_ref() {
-            bail!("识别失败时停止 / Stopped on OCR error: {error}");
-        }
-
         let suspicious: Vec<(usize, usize)> = characters
             .iter()
             .enumerate()
@@ -2042,13 +2048,14 @@ impl GoodCharacterScanner {
                 &mut characters,
                 &scan_metas,
                 &suspicious,
+                &ocr_failure,
             );
         }
 
         // Signal worker to exit
         drop(work_tx);
         let _ = worker_handle.join();
-        if let Some(error) = ocr_failure.lock().unwrap().as_ref() {
+        if let Some((_, error)) = ocr_failure.lock().unwrap().as_ref() {
             bail!("识别失败时停止 / Stopped on OCR error: {error}");
         }
 
@@ -2184,6 +2191,7 @@ impl GoodCharacterScanner {
         characters: &mut Vec<GoodCharacter>,
         scan_metas: &[ScanMeta],
         suspicious: &[(usize, usize)], // (char_index, viewed_index)
+        ocr_failure: &Mutex<Option<(usize, String)>>,
     ) {
         // Return to main world and reopen character screen
         ctrl.return_to_main_ui(4);
@@ -2220,6 +2228,9 @@ impl GoodCharacterScanner {
         let td = self.config.tab_delay;
 
         for &(char_idx, viewed_idx) in suspicious {
+            if ocr_failure.lock().unwrap().is_some() {
+                break;
+            }
             if ctrl.check_rmb() {
                 log_info!(
                     "[character] 第二轮: 用户中断",
@@ -2453,9 +2464,39 @@ impl GoodCharacterScanner {
             }
         }
 
+        if let Some((index, _)) = ocr_failure.lock().unwrap().as_ref() {
+            self.focus_failed_character(ctrl, current_index, *index);
+            return;
+        }
+
         // Close character screen
         ctrl.key_press(enigo::Key::Escape);
         utils::sleep(self.config.close_delay as u32);
+    }
+
+    fn focus_failed_character(
+        &self,
+        ctrl: &mut GenshinGameController,
+        current_index: usize,
+        failed_index: usize,
+    ) {
+        let Some(steps) = current_index.checked_sub(failed_index) else {
+            return;
+        };
+        for _ in 0..steps {
+            if ctrl.check_rmb() {
+                return;
+            }
+            click_character_ui(ctrl, CHAR_PREV_POS, self.config.next_delay);
+        }
+        if !ctrl.check_rmb() {
+            click_character_ui(ctrl, CHAR_TAB_ATTRIBUTES, self.config.tab_delay);
+            log_info!(
+                "[OCR] 已选中识别失败的角色（索引{}），请截图反馈",
+                "[OCR] Selected the failed character (index {}); please attach a screenshot to your report",
+                failed_index
+            );
+        }
     }
 }
 
