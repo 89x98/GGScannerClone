@@ -745,6 +745,10 @@ fn update_phase(tab: &mut CaptureTabState) {
                                 ),
                             );
                             yas::log_info!("{} → {}", "{} → {}", summary, path.display());
+                            yas::log_info!(
+                                "导出范围：武器 3–5★，圣遗物 4–5★（包含五星套装的四星圣遗物）；可在网站导入时进一步筛选。",
+                                "Export scope: 3–5★ weapons and 4–5★ artifacts, including 4★ pieces from 5★ sets. Further filtering is available when importing on the website."
+                            );
                             tab.phase = Phase::Done {
                                 summary,
                                 path: path.display().to_string(),

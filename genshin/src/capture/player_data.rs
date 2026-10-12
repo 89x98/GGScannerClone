@@ -26,8 +26,7 @@ const AVATAR_TYPE_FORMAL: u32 = 1;
 ///
 /// Rarity rules are hardcoded (not user-configurable):
 /// - Weapons: 3★ and above
-/// - Artifacts: 4★ and above, only at their set's max rarity
-///   (e.g. 4★ drops of a 5★ set are excluded)
+/// - Artifacts: 4★ and above, including 4★ drops of 5★ sets
 #[derive(Clone, Debug)]
 pub struct CaptureExportSettings {
     pub include_characters: bool,
@@ -68,27 +67,6 @@ impl Default for CaptureExportSettings {
 const MIN_WEAPON_RARITY: u32 = 3;
 /// Minimum artifact rarity to export (4★+).
 const MIN_ARTIFACT_RARITY: u32 = 4;
-
-/// Artifact sets whose max rarity is 4★ (sourced from mappings.json).
-/// The data_cache incorrectly lists some of these at rarity 5, so we hardcode
-/// the true max rarity to avoid filtering out valid 4★ artifacts.
-const MAX_4STAR_ARTIFACT_SETS: &[&str] = &[
-    "Berserker",
-    "BraveHeart",
-    "DefendersWill",
-    "Gambler",
-    "Instructor",
-    "MartialArtist",
-    "PrayersForDestiny",
-    "PrayersForIllumination",
-    "PrayersForWisdom",
-    "PrayersToSpringtime",
-    "PrayersToTheFirmament",
-    "ResolutionOfSojourner",
-    "Scholar",
-    "TheExile",
-    "TinyMiracle",
-];
 
 /// Accumulates packet data and exports to GOOD format.
 pub struct PlayerData {
@@ -368,21 +346,6 @@ impl PlayerData {
                     return None;
                 }
 
-                // Skip artifacts below their set's max rarity (e.g. 4★ of a 5★ set).
-                // Use the hardcoded MAX_4STAR_ARTIFACT_SETS list as ground truth for
-                // 4★-max sets, since data_cache incorrectly reports some as rarity 5.
-                let good_key = to_good_key(&artifact_data.set);
-                let true_max_rarity = if MAX_4STAR_ARTIFACT_SETS.contains(&good_key.as_str()) {
-                    4u32
-                } else {
-                    self.data_cache
-                        .artifact_set_max_rarity(&artifact_data.set)
-                        .unwrap_or(5)
-                };
-                if (rarity as u32) < true_max_rarity {
-                    return None;
-                }
-
                 Some(GoodArtifact {
                     set_key: to_good_key(&artifact_data.set),
                     slot_key: artifact_data.slot.good_name().to_string(),
@@ -535,6 +498,75 @@ mod tests {
         assert_eq!(export.weapons.unwrap().len(), 0);
         assert_eq!(export.artifacts.unwrap().len(), 0);
         assert_eq!(export.achievements.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn export_keeps_all_four_and_five_star_artifacts_and_three_to_five_star_weapons() {
+        use crate::game_data::types::{Artifact, ArtifactSlot, Weapon};
+        use auto_artifactarium::r#gen::protos::{Equip, Reliquary, Weapon as ProtoWeapon};
+
+        let mut cache: DataCache =
+            serde_json::from_str(r#"{"version":1,"git_hash":"test"}"#).unwrap();
+        cache.property_map.insert(1, Property::Hp);
+        let mut items = Vec::new();
+        for rarity in 1..=5 {
+            let mut item = Item::new();
+            item.item_id = rarity;
+            item.guid = u64::from(rarity);
+            cache.artifact_map.insert(
+                rarity,
+                Artifact {
+                    set: "Gladiator's Finale".to_string(),
+                    slot: ArtifactSlot::Flower,
+                    rarity,
+                },
+            );
+            let mut reliquary = Reliquary::new();
+            reliquary.level = 1;
+            reliquary.main_prop_id = 1;
+            let mut equip = Equip::new();
+            equip.set_reliquary(reliquary);
+            item.set_equip(equip);
+            items.push(item);
+
+            let mut item = Item::new();
+            item.item_id = rarity + 10;
+            item.guid = u64::from(rarity + 10);
+            cache.weapon_map.insert(
+                rarity + 10,
+                Weapon {
+                    name: format!("Test Weapon {}", rarity),
+                    rarity,
+                },
+            );
+            let mut weapon = ProtoWeapon::new();
+            weapon.level = 1;
+            let mut equip = Equip::new();
+            equip.set_weapon(weapon);
+            item.set_equip(equip);
+            items.push(item);
+        }
+        let mut player = PlayerData::new(cache);
+        player.process_items(&items);
+        let export = player.export(&CaptureExportSettings::default()).unwrap();
+        assert_eq!(
+            export
+                .artifacts
+                .unwrap()
+                .iter()
+                .map(|a| a.rarity)
+                .collect::<Vec<_>>(),
+            vec![4, 5]
+        );
+        assert_eq!(
+            export
+                .weapons
+                .unwrap()
+                .iter()
+                .map(|w| w.rarity)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
     }
 
     #[test]
