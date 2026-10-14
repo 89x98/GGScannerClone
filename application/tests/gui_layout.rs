@@ -752,7 +752,7 @@ fn sidebar_language_button_names_the_target_language_and_toggles_it() {
         };
         draw(vec![]);
         let frame = draw(vec![]);
-        let label = initial.t("EN", "中");
+        let label = initial.t("English", "中文");
         let point = painted_text(&frame.shapes)
             .into_iter()
             .find(|(text, _)| text == label)
@@ -1091,7 +1091,7 @@ fn sidebar_footer_buttons_fit_their_clip_in_both_languages() {
         };
         draw(vec![]);
         let initial = draw(vec![]);
-        for label in [initial_lang.t("EN", "中"), initial_lang.t("关于", "About")] {
+        for label in [initial_lang.t("English", "中文"), initial_lang.t("关于", "About")] {
             let point = painted_text(&initial.shapes)
                 .into_iter()
                 .find(|(text, _)| text == label)

@@ -54,7 +54,7 @@ pub fn run(
                 _ => panic!("unsupported appearance"),
             };
             config.config.navigation.select_tab(tab);
-            let mut app = GuiApp::new(state, config, &cc.egui_ctx);
+            let mut app = GuiApp::new(state, config, &cc.egui_ctx, false);
             app.save_settings = false;
             app.data_refresh.preview_age(5 * 3600);
             if tab == ToolTab::Scanner && scenario == "partial" {

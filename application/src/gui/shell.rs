@@ -116,7 +116,7 @@ pub fn titlebar(
                         game_switcher::show(ui, *lang, game, enabled, Some(logos));
                     },
                 );
-                ui.add_space(24.0);
+                ui.add_space(36.0);
                 let label = lang.t("打开 GGArtifact", "Open GGArtifact");
                 let url = site(*game);
                 let width = ui.fonts_mut(|fonts| {
@@ -128,7 +128,7 @@ pub fn titlebar(
                         )
                         .size()
                         .x
-                }) + 40.0;
+                }) + 48.0;
                 if icons::button(
                     ui,
                     label,
@@ -275,7 +275,7 @@ pub fn sidebar(
             ui.spacing_mut().item_spacing.y = 4.0;
             if icons::button(
                 ui,
-                lang.t("EN", "中"),
+                lang.t("English", "中文"),
                 Icon::Language,
                 egui::vec2(ui.available_width(), 32.0),
                 false,
@@ -325,7 +325,7 @@ pub fn sidebar(
                 ui,
                 lang.t("关于", "About"),
                 Icon::About,
-                egui::vec2(ui.available_width(), 42.0),
+                egui::vec2(ui.available_width(), 32.0),
                 navigation.active_tab() == ToolTab::Credits,
                 false,
             )

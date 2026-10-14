@@ -160,6 +160,40 @@ pub fn scan_export_options(ui: &mut egui::Ui, lang: Lang, only_latest: &mut bool
     );
 }
 
+pub fn partial_export_hint(
+    lang: Lang,
+    progress: &super::task_progress::TaskProgress,
+    limits: &[(&str, usize)],
+) -> &'static str {
+    let limit_reached = limits.iter().any(|(key, limit)| {
+        *limit > 0
+            && progress
+                .steps
+                .iter()
+                .any(|step| step.key == *key && step.completed >= *limit)
+    });
+    if limit_reached {
+        lang.t(
+            "已达到扫描上限，当前结果已导出。提高“扫描上限”后可继续扫描。",
+            "A scan limit was reached, and the results collected so far were exported. Increase the Scan limits to scan more.",
+        )
+    } else if progress
+        .steps
+        .iter()
+        .any(|step| step.state == super::task_progress::StepState::Interrupted)
+    {
+        lang.t(
+            "有类别未完整扫描，已导出其余结果。请查看下方未完成的类别；如果游戏界面切换较慢，可在“延迟设置”中增加等待时间后重试。",
+            "Some categories did not finish, so the completed results were exported. Check the unfinished categories below. If the game was slow to change screens, increase the delays in Timing and retry.",
+        )
+    } else {
+        lang.t(
+            "扫描未完整结束，当前结果已导出。",
+            "The scan did not finish completely; the results collected so far were exported.",
+        )
+    }
+}
+
 pub fn scan_debug_options(
     ui: &mut egui::Ui,
     lang: Lang,
@@ -168,7 +202,11 @@ pub fn scan_debug_options(
     dump_images: &mut bool,
 ) {
     ui.horizontal_wrapped(|ui| {
-        ui.checkbox(verbose, lang.t("详细日志", "Detailed logs"));
+        ui.checkbox(verbose, lang.t("开发者调试日志", "Developer debug logs"))
+            .on_hover_text(lang.t(
+                "仅供开发调试使用。普通错误排查所需的信息会默认记录。",
+                "For developer debugging only. Information needed to diagnose ordinary failures is logged by default.",
+            ));
         ui.checkbox(
         stop_on_failure,
         lang.t("识别失败时停止", "Stop on OCR errors"),
@@ -189,7 +227,11 @@ pub fn manager_debug_options(
     dump_job_data: &mut bool,
 ) {
     ui.horizontal_wrapped(|ui| {
-        ui.checkbox(verbose, lang.t("详细日志", "Detailed logs"));
+        ui.checkbox(verbose, lang.t("开发者调试日志", "Developer debug logs"))
+            .on_hover_text(lang.t(
+                "仅供开发调试使用。普通错误排查所需的信息会默认记录。",
+                "For developer debugging only. Information needed to diagnose ordinary failures is logged by default.",
+            ));
         ui.checkbox(dump_images, lang.t("保存 OCR 截图", "Save OCR screenshots"));
         ui.checkbox(dump_job_data, lang.t("保存请求数据", "Save request data"));
     });
@@ -336,7 +378,29 @@ pub fn delay_group(
                                     ui.with_layout(
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
-                                            ui.add(egui::Label::new(rich).truncate())
+                                            ui.spacing_mut().item_spacing.x = 3.0;
+                                            // Reserve the help icon even when a long label truncates.
+                                            let label_width = (ui.available_width() - 19.0).max(0.0);
+                                            ui.add_sized(
+                                                egui::vec2(label_width, 20.0),
+                                                egui::Label::new(rich)
+                                                    .halign(egui::Align::Min)
+                                                    .truncate(),
+                                            )
+                                            .on_hover_cursor(egui::CursorIcon::Help)
+                                            .on_hover_text(*tooltip);
+                                            let (rect, response) = ui.allocate_exact_size(
+                                                egui::Vec2::splat(16.0),
+                                                egui::Sense::hover(),
+                                            );
+                                            super::icons::paint(
+                                                ui,
+                                                rect,
+                                                super::icons::Icon::Help,
+                                                super::theme::palette(ui.visuals().dark_mode).muted,
+                                            );
+                                            response
+                                                .on_hover_cursor(egui::CursorIcon::Help)
                                                 .on_hover_text(*tooltip);
                                         },
                                     );
