@@ -1,4 +1,5 @@
 use super::{
+    icons::{self, Icon},
     state::{Lang, RefreshState, UiError, UiText},
     theme, widgets,
 };
@@ -154,10 +155,11 @@ impl DataRefresh {
         };
         ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = 32.0;
-            if ui.available_width() < 620.0 {
+            ui.spacing_mut().item_spacing.x = 24.0;
+            if ui.available_width() < 700.0 {
                 ui.heading(title);
                 let additional = Source::additional_for_page(game, tab, capture_achievements);
-                let combined = ui.available_width() >= 450.0;
+                let combined = ui.available_width() >= 600.0;
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if combined {
@@ -207,27 +209,24 @@ impl DataRefresh {
                         + 2.0 * ui.spacing().button_padding.y,
                 );
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
                 let busy = cache.refresh.is_running();
                 let label = if busy {
                     lang.t("刷新中…", "Refreshing…")
                 } else {
                     source.refresh_label(lang)
                 };
-                let width = ui.fonts_mut(|fonts| {
-                    fonts
-                        .layout_no_wrap(
-                            label.into(),
-                            egui::FontId::proportional(14.0),
-                            theme::palette(ui.visuals().dark_mode).muted,
-                        )
-                        .size()
-                        .x
-                }) + 18.0;
                 if ui
-                    .add_enabled_ui(!busy && enabled, |ui| {
-                        theme::text_button(ui, label, egui::vec2(width, 30.0), false)
-                    })
-                    .inner
+                    .add_enabled(
+                        !busy && enabled,
+                        egui::Button::new((
+                            egui::RichText::new(icons::glyph(Icon::Refresh))
+                                .family(egui::FontFamily::Name("icons".into()))
+                                .size(14.0),
+                            egui::RichText::new(label).size(14.0),
+                        ))
+                        .min_size(egui::vec2(0.0, 30.0)),
+                    )
                     .clicked()
                 {
                     let hint = UiText::new(
@@ -252,9 +251,13 @@ impl DataRefresh {
                 }
                 let age = age_text(lang, cache.updated_at, now_secs());
                 if !age.is_empty() {
+                    let updated = match lang {
+                        Lang::Zh => format!("{age}更新"),
+                        Lang::En => format!("Updated {age}"),
+                    };
                     ui.label(
-                        egui::RichText::new(age)
-                            .size(12.0)
+                        egui::RichText::new(updated)
+                            .size(14.0)
                             .color(theme::palette(ui.visuals().dark_mode).muted),
                     )
                     .on_hover_text(lang.t(

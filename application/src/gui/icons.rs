@@ -4,7 +4,7 @@ use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 
 egui_phosphor::subset! {
     pub mod bundled {
-        use regular::{BROADCAST, SCAN, SLIDERS_HORIZONTAL, TRANSLATE, SUN, MOON, INFO, QUESTION, ARROW_SQUARE_OUT, MINUS, SQUARE, COPY_SIMPLE, X};
+        use regular::{BROADCAST, SCAN, SLIDERS_HORIZONTAL, TRANSLATE, SUN, MOON, INFO, QUESTION, ARROW_CLOCKWISE, ARROW_SQUARE_OUT, MINUS, SQUARE, COPY_SIMPLE, X};
     }
 }
 
@@ -18,6 +18,7 @@ pub enum Icon {
     Moon,
     About,
     Help,
+    Refresh,
     External,
     Minimize,
     Maximize,
@@ -36,6 +37,7 @@ pub fn glyph(icon: Icon) -> &'static str {
         Icon::Moon => ph::MOON,
         Icon::About => ph::INFO,
         Icon::Help => ph::QUESTION,
+        Icon::Refresh => ph::ARROW_CLOCKWISE,
         Icon::External => ph::ARROW_SQUARE_OUT,
         Icon::Minimize => ph::MINUS,
         Icon::Maximize => ph::SQUARE,
