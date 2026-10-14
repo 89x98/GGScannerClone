@@ -461,9 +461,9 @@ fn painted_text(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Pos
 }
 
 #[test]
-fn delay_fields_switch_columns_without_overflow_or_losing_warnings() {
+fn delay_fields_keep_two_columns_without_overflow_or_losing_warnings() {
     use good_tools_app::gui::{state::Lang, widgets};
-    for (width, two_columns) in [(300.0, false), (600.0, true)] {
+    for width in [240.0, 300.0, 400.0, 600.0] {
         let ctx = egui::Context::default();
         theme::setup(&ctx);
         let mut values = [100, 50, 100];
@@ -497,13 +497,8 @@ fn delay_fields_switch_columns_without_overflow_or_losing_warnings() {
             let first = position("First");
             let second = position("Second*");
             let third = position("Third");
-            if two_columns {
-                assert!((first.y - second.y).abs() < 1.0);
-                assert!(second.x > first.x + 200.0);
-            } else {
-                assert!(second.y > first.y);
-                assert!((first.x - second.x).abs() < 20.0);
-            }
+            assert!((first.y - second.y).abs() < 1.0);
+            assert!(second.x > first.x + width / 3.0);
             assert!(third.y > second.y);
             assert!(texts.iter().any(|(text, _)| text.contains("Below default")));
         }

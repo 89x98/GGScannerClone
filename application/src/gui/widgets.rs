@@ -284,11 +284,7 @@ pub fn delay_group(
         .any(|(_, value, default, _)| **value < *default);
     let warn_color = super::theme::WARNING;
     let gap = 16.0;
-    let columns = if ui.available_width() >= 2.0 * 235.0 + gap {
-        2
-    } else {
-        1
-    };
+    let columns = 2;
     let width = (ui.available_width() - gap * (columns - 1) as f32) / columns as f32;
     ui.push_id(id, |ui| {
         for row in fields.chunks_mut(columns) {
