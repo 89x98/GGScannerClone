@@ -343,7 +343,7 @@ fn extract_onnxruntime_dll(zip_bytes: &[u8], dest: &std::path::Path) -> Result<(
         let mut file = archive
             .by_index(i)
             .map_err(|e| anyhow!("无法读取压缩包条目 / Cannot read zip entry: {}", e))?;
-        let name = file.name().to_string();
+        let name = file.name()?.into_owned();
         if suffixes.iter().any(|s| name.ends_with(s)) {
             let mut buf = Vec::new();
             file.read_to_end(&mut buf)?;

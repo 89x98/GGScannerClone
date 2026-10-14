@@ -162,14 +162,17 @@ pub fn workspace(
         content_region(ui, rect, id, |ui| {
             let content_width = ui.available_width();
             if matches!(pane, Pane::Status) {
-                egui::Frame::none()
+                egui::Frame::new()
                     .fill(theme::palette(ui.visuals().dark_mode).surface)
-                    .stroke(egui::Stroke::new(1.0, theme::palette(ui.visuals().dark_mode).border))
-                    .rounding(8.0)
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        theme::palette(ui.visuals().dark_mode).border,
+                    ))
+                    .corner_radius(8.0)
                     .inner_margin(14.0)
                     .show(ui, |ui| {
-                        ui.set_width((content_width - 28.0).max(1.0));
-                        ui.set_max_height((rect.height() - 28.0).max(1.0));
+                        ui.set_width((content_width - 30.0).max(1.0));
+                        ui.set_max_height((rect.height() - 30.0).max(1.0));
                         ui.spacing_mut().item_spacing.y = 4.0;
                         ui.spacing_mut().interact_size.y = 22.0;
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);

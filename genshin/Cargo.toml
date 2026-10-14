@@ -32,19 +32,19 @@ yas = { path = "../yas", package = "yas_core", features = ["ort", "capturer_scre
 anyhow = "1.0"
 log = "0.4"
 clap = { version = "4.4", features = ["derive", "cargo"] }
-image = "0.24"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp", "rayon"] }
 serde_json = "1.0"
 regex = "1.5"
 lazy_static = "1.4"
 ab_glyph = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 enigo = "0.1"
-reqwest = { version = "0.11", features = ["blocking", "json"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "native-tls"] }
 crossbeam-channel = "0.5"
 rayon = "1.7"
-indicatif = "0.17"
+indicatif = "0.18.6"
 indicatif-log-bridge = "0.2"
-zip = "2"
+zip = "9.0.3"
 tiny_http = "0.12"
 uuid = { version = "1", features = ["v4"] }
 
@@ -52,7 +52,7 @@ uuid = { version = "1", features = ["v4"] }
 auto-artifactarium = { git = "https://github.com/konkers/auto-artifactarium", rev = "4ba25fac64b88970143af6bc2a2ef51338e620d0", optional = true }
 protobuf = { version = "3.7", optional = true }
 indexmap = { version = "2", optional = true }
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23.1", optional = true }
 tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"], optional = true }
 tokio-util = { version = "0.7", optional = true }
 

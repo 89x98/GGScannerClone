@@ -632,7 +632,7 @@ pub fn frame_fingerprint(image: &RgbImage, rect: NormRect) -> HsrResult<String> 
     hasher.update(crop.width().to_le_bytes());
     hasher.update(crop.height().to_le_bytes());
     hasher.update(crop.as_raw());
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 pub fn frames_similar(left: &RgbImage, right: &RgbImage) -> bool {

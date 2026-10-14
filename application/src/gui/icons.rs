@@ -2,13 +2,18 @@
 use super::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 
+egui_phosphor::subset! {
+    pub mod bundled {
+        use regular::{BROADCAST, SCAN, SLIDERS_HORIZONTAL, TRANSLATE, SUN, MOON, INFO, ARROW_UP_RIGHT, MINUS, SQUARE, COPY_SIMPLE, X};
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum Icon {
     Capture,
     Scan,
     Manager,
     Language,
-    System,
     Sun,
     Moon,
     About,
@@ -20,13 +25,12 @@ pub enum Icon {
 }
 
 pub fn glyph(icon: Icon) -> &'static str {
-    use egui_phosphor::regular as ph;
+    use bundled::regular as ph;
     match icon {
         Icon::Capture => ph::BROADCAST,
         Icon::Scan => ph::SCAN,
         Icon::Manager => ph::SLIDERS_HORIZONTAL,
         Icon::Language => ph::TRANSLATE,
-        Icon::System => ph::DESKTOP,
         Icon::Sun => ph::SUN,
         Icon::Moon => ph::MOON,
         Icon::About => ph::INFO,
@@ -41,7 +45,7 @@ pub fn glyph(icon: Icon) -> &'static str {
 pub fn add_to_fonts(fonts: &mut egui::FontDefinitions) {
     fonts.font_data.insert(
         "phosphor".into(),
-        egui_phosphor::Variant::Regular.font_data().into(),
+        egui::FontData::from_static(&bundled::regular::FONT).into(),
     );
     fonts.families.insert(
         egui::FontFamily::Name("icons".into()),
@@ -87,6 +91,7 @@ pub fn button(
             rect.shrink(0.5),
             5.,
             Stroke::new(1., if hover || pressed { p.accent } else { p.border }),
+            egui::StrokeKind::Inside,
         );
     }
     let color = if selected || hover {

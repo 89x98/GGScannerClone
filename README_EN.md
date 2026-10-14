@@ -130,8 +130,8 @@ Timing parameters and character names are configured via `data/good_config.json`
 ## Building from Source
 
 ```shell
-# Requires stable Rust toolchain
-rustup default stable
+# rust-toolchain.toml pins Rust 1.95.0 for this repository
+rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
 # Make sure Git LFS is installed
 git lfs pull

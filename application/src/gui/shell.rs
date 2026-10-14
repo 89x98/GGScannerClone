@@ -64,20 +64,21 @@ impl Logos {
 }
 
 pub fn titlebar(
-    ctx: &egui::Context,
+    root_ui: &mut egui::Ui,
     lang: &mut Lang,
     game: &mut Game,
     enabled: bool,
     logos: &Logos,
 ) {
-    egui::TopBottomPanel::top("titlebar")
-        .exact_height(TITLEBAR_HEIGHT)
+    let ctx = root_ui.ctx().clone();
+    egui::Panel::top("titlebar")
+        .exact_size(TITLEBAR_HEIGHT)
         .frame(
-            egui::Frame::none()
-                .fill(theme::palette(ctx.style().visuals.dark_mode).surface)
+            egui::Frame::new()
+                .fill(theme::palette(ctx.theme() == egui::Theme::Dark).surface)
                 .inner_margin(egui::Margin::ZERO),
         )
-        .show(ctx, |ui| {
+        .show(root_ui, |ui| {
             let drag = ui.interact(
                 ui.max_rect(),
                 ui.id().with("window-drag"),
@@ -213,7 +214,7 @@ pub fn sidebar(
 ) {
     let rect = ui.available_rect_before_wrap();
     let footer = egui::Rect::from_min_max(
-        egui::pos2(rect.left(), (rect.bottom() - 84.0).max(rect.top())),
+        egui::pos2(rect.left(), (rect.bottom() - 124.0).max(rect.top())),
         rect.max,
     );
     let tabs = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), footer.top() - 12.0));
@@ -224,7 +225,7 @@ pub fn sidebar(
             .id_salt("navigation-scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                egui::Frame::none().inner_margin(2.0).show(ui, |ui| {
+                egui::Frame::new().inner_margin(2.0).show(ui, |ui| {
                     let width = (width - 4.0).max(1.0);
                     ui.set_width(width);
                     ui.visuals_mut().selection.bg_fill =
@@ -265,57 +266,57 @@ pub fn sidebar(
             });
     });
     super::layout::region(ui, footer, "sidebar-footer", |ui| {
-        egui::Frame::none().inner_margin(2.0).show(ui, |ui| {
+        egui::Frame::new().inner_margin(2.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 4.0;
-            ui.horizontal(|ui| {
-                let width = (ui.available_width() - 38.0).max(1.0);
-                if icons::button(
-                    ui,
-                    lang.t("EN", "中"),
-                    Icon::Language,
-                    egui::vec2(width, 32.0),
-                    false,
-                    false,
-                )
-                .on_hover_text(lang.t("Switch to English", "切换到中文"))
-                .clicked()
-                {
-                    *lang = match lang {
-                        Lang::Zh => Lang::En,
-                        Lang::En => Lang::Zh,
-                    };
-                }
-                let (icon, title) = match *appearance {
-                    Appearance::System => (Icon::System, lang.t("跟随系统", "System theme")),
-                    Appearance::Light => (Icon::Sun, lang.t("浅色模式", "Light theme")),
-                    Appearance::Dark => (Icon::Moon, lang.t("深色模式", "Dark theme")),
+            if icons::button(
+                ui,
+                lang.t("EN", "中"),
+                Icon::Language,
+                egui::vec2(ui.available_width(), 32.0),
+                false,
+                false,
+            )
+            .on_hover_text(lang.t("Switch to English", "切换到中文"))
+            .clicked()
+            {
+                *lang = match lang {
+                    Lang::Zh => Lang::En,
+                    Lang::En => Lang::Zh,
                 };
-                let response = icons::button(ui, title, icon, egui::vec2(30.0, 32.0), false, true)
-                    .on_hover_text(title);
-                egui::popup::popup_below_widget(
-                    ui,
-                    egui::Id::new("appearance-menu"),
-                    &response,
-                    egui::PopupCloseBehavior::CloseOnClickOutside,
-                    |ui| {
-                        ui.set_min_width(150.0);
-                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                        for (value, label) in [
-                            (Appearance::System, lang.t("跟随系统", "System theme")),
-                            (Appearance::Light, lang.t("浅色模式", "Light theme")),
-                            (Appearance::Dark, lang.t("深色模式", "Dark theme")),
-                        ] {
-                            if ui.selectable_value(appearance, value, label).clicked() {
-                                ui.memory_mut(|memory| memory.close_popup());
-                            }
-                        }
-                    },
-                );
-                if response.clicked() {
-                    ui.memory_mut(|memory| memory.toggle_popup(egui::Id::new("appearance-menu")));
-                }
-            });
+            }
+            let dark = ui.visuals().dark_mode;
+            let (icon, label, hint) = if dark {
+                (
+                    Icon::Sun,
+                    lang.t("浅色模式", "Light theme"),
+                    lang.t("切换为浅色模式", "Switch to light theme"),
+                )
+            } else {
+                (
+                    Icon::Moon,
+                    lang.t("深色模式", "Dark theme"),
+                    lang.t("切换为深色模式", "Switch to dark theme"),
+                )
+            };
+            if icons::button(
+                ui,
+                label,
+                icon,
+                egui::vec2(ui.available_width(), 32.0),
+                false,
+                false,
+            )
+            .on_hover_text(hint)
+            .clicked()
+            {
+                *appearance = if dark {
+                    Appearance::Light
+                } else {
+                    Appearance::Dark
+                };
+                ui.ctx().set_theme(theme::preference(*appearance));
+            }
             if icons::button(
                 ui,
                 lang.t("关于", "About"),
@@ -336,7 +337,7 @@ pub fn window_resize(ctx: &egui::Context) {
     if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
         return;
     }
-    let rect = ctx.screen_rect();
+    let rect = ctx.content_rect();
     let Some(pointer) = ctx.input(|i| i.pointer.hover_pos()) else {
         return;
     };

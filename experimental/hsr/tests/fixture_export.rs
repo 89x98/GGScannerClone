@@ -215,7 +215,7 @@ fn legacy_v2_goldens_remain_byte_exact() {
         ),
     ] {
         let bytes = fs::read(fixture(name)).expect("legacy fixture must exist");
-        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), expected_sha256);
+        assert_eq!(hex::encode(Sha256::digest(&bytes)), expected_sha256);
         let value: Value = serde_json::from_slice(&bytes).expect("legacy fixture must be JSON");
         assert_eq!(value["schema"], "goodscanner.hsr.experimental");
         assert_eq!(value["schemaVersion"], 2);

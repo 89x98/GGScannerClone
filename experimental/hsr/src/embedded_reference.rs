@@ -176,7 +176,7 @@ fn validate_embedded_document(document: &EmbeddedReferenceDocument) -> HsrResult
 }
 
 fn require_sha256(label: &str, bytes: &[u8], expected: &str, code: &'static str) -> HsrResult<()> {
-    let actual = format!("{:x}", Sha256::digest(bytes));
+    let actual = hex::encode(Sha256::digest(bytes));
     if actual != expected {
         return Err(embedded_error(
             code,

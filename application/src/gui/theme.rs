@@ -142,13 +142,13 @@ fn styled(mut style: egui::Style, dark: bool) -> egui::Style {
         widget.bg_fill = p.surface;
         widget.weak_bg_fill = p.surface;
         widget.bg_stroke = Stroke::new(1.0, p.control_border);
-        widget.rounding = egui::Rounding::same(4.0);
+        widget.corner_radius = egui::CornerRadius::same(4);
     }
     style.visuals.widgets.hovered.bg_fill = p.hover;
     style.visuals.widgets.hovered.weak_bg_fill = p.hover;
     style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, p.accent);
-    style.visuals.widgets.hovered.rounding = egui::Rounding::same(4.0);
-    style.visuals.widgets.active.rounding = egui::Rounding::same(4.0);
+    style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(4);
+    style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(4);
     style.spacing.item_spacing = egui::vec2(8.0, 5.0);
     style.spacing.button_padding = egui::vec2(9.0, 4.0);
     style.spacing.interact_size.y = 26.0;
@@ -191,7 +191,7 @@ pub fn primary_action(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Res
                     palette(ui.visuals().dark_mode).muted
                 }))
                 .stroke(Stroke::NONE)
-                .rounding(5.0),
+                .corner_radius(5.0),
             )
         })
         .inner

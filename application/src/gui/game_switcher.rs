@@ -63,6 +63,6 @@ fn game_button<'a>(label: &'a str, logo: Option<&egui::TextureHandle>) -> egui::
         Some(logo) => egui::Button::image_and_text((logo.id(), egui::vec2(24.0, 24.0)), text),
         None => egui::Button::new(text),
     }
-    .rounding(7.0)
+    .corner_radius(7.0)
     .wrap_mode(egui::TextWrapMode::Extend)
 }

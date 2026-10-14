@@ -26,26 +26,27 @@ capture = [
 test-as-invoker = []
 
 [dependencies]
-reqwest = { version = "0.11", features = ["blocking", "json"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "native-tls"] }
 enigo = "0.1"
-image = "0.24"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp", "rayon"] }
 log = "0.4"
 regex = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha2 = "0.10"
+sha2 = "0.11.1"
+hex = "0.4.3"
 yas = { path = "../../yas", package = "yas_core", features = ["ort", "capturer_wgc"] }
 # Source of the embedded PaddleOCR v5 / v6 tiny weights (`ocr_factory`).
 genshin_scanner = { path = "../../genshin" }
 
 # Packet capture is compiled only into GGScanner.
-etherparse = { version = "0.17", optional = true }
+etherparse = { version = "0.21.0", optional = true }
 kcp = { git = "https://github.com/hashblen/mhy-kcp", rev = "1acf4ba5938ff91f7f2d2a31e16bf1f8d2db9c8f", optional = true }
 protobuf = { version = "=3.7.1", optional = true }
-rand_mt = { version = "5.0", optional = true }
+rand_mt = { version = "6.1.0", optional = true }
 thiserror = { version = "2", optional = true }
 tracing = { version = "0.1", optional = true }
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23.1", optional = true }
 futures = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"], optional = true }
 tokio-util = { version = "0.7", optional = true }

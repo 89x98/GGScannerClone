@@ -18,7 +18,7 @@ pub enum CreditSet {
 /// Shared About page; every attribution is retained in its game column.
 pub fn show(ui: &mut egui::Ui, l: Lang, set: CreditSet) {
     let width = (ui.available_width() - ui.spacing().scroll.allocated_width() - 4.0).max(1.0);
-    egui::Frame::none().inner_margin(2.0).show(ui, |ui| {
+    egui::Frame::new().inner_margin(2.0).show(ui, |ui| {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -225,16 +225,25 @@ fn licenses(ui: &mut egui::Ui, l: Lang) {
 
 fn entry(ui: &mut egui::Ui, _l: Lang, name: &str, author: &str, url: &str, description: &str) {
     let width = ui.available_width();
-    egui::Frame::none()
+    egui::Frame::new()
         .fill(super::theme::palette(ui.visuals().dark_mode).surface)
-        .stroke(egui::Stroke::new(1.0, super::theme::palette(ui.visuals().dark_mode).border))
-        .rounding(8.0)
+        .stroke(egui::Stroke::new(
+            1.0,
+            super::theme::palette(ui.visuals().dark_mode).border,
+        ))
+        .corner_radius(8.0)
         .inner_margin(egui::vec2(12.0, 8.0))
         .outer_margin(2.0)
         .show(ui, |ui| {
             ui.set_width((width - 28.0).max(1.0));
             ui.horizontal_wrapped(|ui| {
-                ui.hyperlink_to(egui::RichText::new(name).strong().size(14.0).color(super::theme::palette(ui.visuals().dark_mode).accent), url);
+                ui.hyperlink_to(
+                    egui::RichText::new(name)
+                        .strong()
+                        .size(14.0)
+                        .color(super::theme::palette(ui.visuals().dark_mode).accent),
+                    url,
+                );
                 ui.label(
                     egui::RichText::new(author)
                         .size(12.0)

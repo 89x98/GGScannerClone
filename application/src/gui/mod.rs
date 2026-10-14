@@ -6,8 +6,8 @@ pub mod credits;
 pub mod data_refresh;
 mod file_location;
 pub mod game_switcher;
-pub mod icons;
 pub mod hsr_manager_progress;
+pub mod icons;
 pub mod layout;
 pub mod log_bridge;
 pub mod log_panel;
@@ -93,7 +93,7 @@ pub fn run_gui() {
             ),
             &error,
         );
-        log::warn!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", warning.copy_text(state.lang));
+        log::warn!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", warning.hint_text(state.lang));
     }
 
     // Install a panic hook that writes to the log file (the default hook
@@ -130,7 +130,7 @@ pub fn run_gui() {
                 ),
                 error,
             );
-            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.copy_text(state.lang));
+            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.hint_text(state.lang));
         },
     }
 
@@ -160,7 +160,7 @@ pub fn run_gui() {
             ),
             error,
         );
-        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.copy_text(lang));
+        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.hint_text(lang));
         show_startup_error(PRODUCT_NAME, lang, &failure);
     }
     if matches!(
@@ -218,7 +218,7 @@ fn install_panic_hook() {
         } else {
             Lang::Zh
         };
-        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.copy_text(lang));
+        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.hint_text(lang));
     }));
 }
 
@@ -263,7 +263,7 @@ impl GuiApp {
 }
 
 impl eframe::App for GuiApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_theme(theme::preference(self.app_config.config.appearance));
         if self.restart_started {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -283,13 +283,32 @@ impl eframe::App for GuiApp {
                 ),
                 &error,
             );
-                log::warn!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.copy_text(self.state.lang));
+                log::warn!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.hint_text(self.state.lang));
             }
         }
         #[cfg(feature = "capture")]
         self.star_rail.capture.tick();
         #[cfg(feature = "capture")]
         self.capture_tab.tick();
+
+        self.data_refresh.poll();
+        // Logic also runs while the viewport is hidden; keep capture/export
+        // polling and debounced settings saves moving without painting a frame.
+        #[cfg(feature = "capture")]
+        let capture_busy = self.capture_tab.is_busy() || self.star_rail.capture.is_busy();
+        #[cfg(not(feature = "capture"))]
+        let capture_busy = false;
+        if capture_busy
+            || self.data_refresh.is_pending()
+            || self.state.config_dirty_since.is_some()
+            || self.app_config.save_pending()
+        {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = root_ui.ctx().clone();
 
         let is_scan_running = self
             .scan_handle
@@ -312,13 +331,12 @@ impl eframe::App for GuiApp {
         let star_rail_capture_busy = false;
         let star_rail_busy =
             star_rail_scan_running || star_rail_manager_running || star_rail_capture_busy;
-        self.data_refresh.poll();
         let data_refreshing = self.data_refresh.is_running();
         let game_task_busy = genshin_busy || star_rail_busy || data_refreshing;
 
-        shell::window_resize(ctx);
+        shell::window_resize(&ctx);
         shell::titlebar(
-            ctx,
+            root_ui,
             &mut self.state.lang,
             &mut self.app_config.config.navigation.active_game,
             !game_task_busy,
@@ -329,7 +347,7 @@ impl eframe::App for GuiApp {
 
         // Update banner (between tabs and content)
         update_banner::show(
-            ctx,
+            root_ui,
             self.state.lang,
             &self.state.update_state,
             game_task_busy,
@@ -383,8 +401,11 @@ impl eframe::App for GuiApp {
         let restart_required = restart_required || self.star_rail.requires_restart();
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(theme::palette(ctx.style().visuals.dark_mode).background))
-            .show(ctx, |ui| {
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::palette(ctx.theme() == egui::Theme::Dark).background),
+            )
+            .show(root_ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let [sidebar, right] = layout::split(
                     ui,
@@ -736,7 +757,7 @@ impl eframe::App for GuiApp {
                 ),
                 &error,
             );
-            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.copy_text(self.state.lang));
+            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.hint_text(self.state.lang));
         }
     }
 }

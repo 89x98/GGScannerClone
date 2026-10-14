@@ -738,7 +738,12 @@ impl AppState {
 
     /// Character-name fields that must be filled before starting a scan.
     pub fn missing_required_character_names(&self) -> bool {
-        self.user_config.traveler_name.trim().is_empty()
+        self.needs_character_names() && self.user_config.traveler_name.trim().is_empty()
+    }
+
+    /// Inventory OCR also resolves equipped owners through renamed characters.
+    pub fn needs_character_names(&self) -> bool {
+        self.scan_characters || self.scan_weapons || self.scan_artifacts
     }
 
     /// Sync GUI fields back into user_config so they get serialized on save.

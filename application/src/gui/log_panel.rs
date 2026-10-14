@@ -23,13 +23,23 @@ pub fn show_with(ui: &mut egui::Ui, l: Lang, log_lines: &Arc<LogStore>) {
     ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
     ui.spacing_mut().interact_size.y = 20.0;
     ui.horizontal(|ui| {
-        ui.colored_label(super::theme::palette(ui.visuals().dark_mode).muted, l.t("日志", "Log"));
+        ui.colored_label(
+            super::theme::palette(ui.visuals().dark_mode).muted,
+            l.t("日志", "Log"),
+        );
         if count > 0 {
-            ui.colored_label(super::theme::palette(ui.visuals().dark_mode).muted, format!("({})", count));
-            if super::theme::text_button(ui, l.t("复制", "Copy"), egui::vec2(44.0, 26.0), false).clicked() {
+            ui.colored_label(
+                super::theme::palette(ui.visuals().dark_mode).muted,
+                format!("({})", count),
+            );
+            if super::theme::text_button(ui, l.t("复制", "Copy"), egui::vec2(44.0, 26.0), false)
+                .clicked()
+            {
                 ui.ctx().copy_text(full_text.clone());
             }
-            if super::theme::text_button(ui, l.t("清除", "Clear"), egui::vec2(44.0, 26.0), false).clicked() {
+            if super::theme::text_button(ui, l.t("清除", "Clear"), egui::vec2(44.0, 26.0), false)
+                .clicked()
+            {
                 log_lines.clear();
             }
         }
@@ -45,7 +55,7 @@ pub fn show_with(ui: &mut egui::Ui, l: Lang, log_lines: &Arc<LogStore>) {
         .show(ui, |ui| {
             // Preserve unwrapped log lines and text selection, while letting
             // the read-only field fill the log pane even before the first log.
-            let mut layouter = |ui: &egui::Ui, _: &str, _: f32| {
+            let mut layouter = |ui: &egui::Ui, _: &dyn egui::TextBuffer, _: f32| {
                 let mut job = egui::text::LayoutJob::default();
                 job.wrap.max_width = f32::INFINITY;
                 for (index, entry) in lines.iter().enumerate() {
@@ -69,12 +79,12 @@ pub fn show_with(ui: &mut egui::Ui, l: Lang, log_lines: &Arc<LogStore>) {
                         },
                     );
                 }
-                ui.fonts(|fonts| fonts.layout_job(job))
+                ui.fonts_mut(|fonts| fonts.layout_job(job))
             };
             ui.add(
                 egui::TextEdit::multiline(&mut full_text.as_str())
                     .font(egui::TextStyle::Monospace)
-                    .frame(false)
+                    .frame(egui::Frame::new())
                     .layouter(&mut layouter)
                     .desired_width(content_width)
                     .min_size(egui::vec2(content_width, content_height))

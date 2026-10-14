@@ -261,7 +261,8 @@ impl StarRailSettings {
     }
 
     pub fn missing_trailblazer(&self) -> bool {
-        self.scan_characters && self.trailblazer().is_none()
+        (self.scan_characters || self.scan_light_cones || self.scan_relics_and_ornaments)
+            && self.trailblazer().is_none()
     }
 
     fn populate_default_paths(&mut self, executable_dir: &Path) {

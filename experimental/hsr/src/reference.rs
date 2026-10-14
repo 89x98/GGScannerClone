@@ -485,7 +485,7 @@ impl GiloreBundleReferenceProvider {
                 ),
             ));
         }
-        let actual_sha = format!("{:x}", Sha256::digest(&bytes));
+        let actual_sha = hex::encode(Sha256::digest(&bytes));
         if actual_sha != manifest_file.sha256 {
             return Err(HsrError::new(
                 "HSR-GILORE-HASH",
@@ -1736,9 +1736,15 @@ mod name_tests {
     fn rich_text_markup_does_not_hide_silver_wolf_lv999() {
         let references = crate::load_embedded_gilore_reference().unwrap();
 
-        assert_eq!(header_id(&references, "银狼LV.999", Some("欢愉"), None), Some(1506));
+        assert_eq!(
+            header_id(&references, "银狼LV.999", Some("欢愉"), None),
+            Some(1506)
+        );
         assert_eq!(header_id(&references, "银狼LV.999", None, None), Some(1506));
-        assert_eq!(header_id(&references, "银狼", Some("虚无"), None), Some(1006));
+        assert_eq!(
+            header_id(&references, "银狼", Some("虚无"), None),
+            Some(1006)
+        );
     }
 
     #[test]
@@ -1753,11 +1759,26 @@ mod name_tests {
             ..stelle.clone()
         };
 
-        assert_eq!(header_id(&references, "青雀又又又和了", Some("欢愉"), Some(&stelle)), Some(8010));
-        assert_eq!(header_id(&references, "青雀又又又和了", Some("毁灭"), Some(&stelle)), Some(8002));
-        assert_eq!(header_id(&references, "青雀又又又和了", Some("欢愉"), Some(&caelus)), Some(8009));
-        assert_eq!(header_id(&references, "青雀又又又和了", Some("欢愉"), None), None);
+        assert_eq!(
+            header_id(&references, "青雀又又又和了", Some("欢愉"), Some(&stelle)),
+            Some(8010)
+        );
+        assert_eq!(
+            header_id(&references, "青雀又又又和了", Some("毁灭"), Some(&stelle)),
+            Some(8002)
+        );
+        assert_eq!(
+            header_id(&references, "青雀又又又和了", Some("欢愉"), Some(&caelus)),
+            Some(8009)
+        );
+        assert_eq!(
+            header_id(&references, "青雀又又又和了", Some("欢愉"), None),
+            None
+        );
         assert_eq!(header_id(&references, "NICKNAME", Some("欢愉"), None), None);
-        assert_eq!(header_id(&references, "青雀", Some("智识"), Some(&stelle)), Some(1201));
+        assert_eq!(
+            header_id(&references, "青雀", Some("智识"), Some(&stelle)),
+            Some(1201)
+        );
     }
 }

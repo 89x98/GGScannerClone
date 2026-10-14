@@ -407,7 +407,7 @@ fn provider_rejects_cross_revision_members_even_when_their_hash_is_valid() {
         serde_json::from_slice(&fs::read(&manifest_path).expect("copied manifest must read"))
             .expect("copied manifest must be JSON");
     manifest["files"]["characters.json"]["sha256"] =
-        Value::String(format!("{:x}", Sha256::digest(&member_bytes)));
+        Value::String(hex::encode(Sha256::digest(&member_bytes)));
     manifest["files"]["characters.json"]["byte_count"] = Value::from(member_bytes.len() as u64);
     let mut manifest_bytes = serde_json::to_vec_pretty(&manifest).expect("manifest must serialize");
     manifest_bytes.push(b'\n');
@@ -518,7 +518,7 @@ fn write_member_and_update_manifest(
     manifest["files"][filename] = json!({
         "byte_count": bytes.len() as u64,
         "entity_count": entity_count,
-        "sha256": format!("{:x}", Sha256::digest(&bytes))
+        "sha256": hex::encode(Sha256::digest(&bytes))
     });
 }
 

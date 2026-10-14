@@ -113,7 +113,9 @@ pub(crate) mod feedback_tests {
                 egui::Shape::Text(text) => {
                     for section in &text.galley.job.sections {
                         texts.push((
-                            text.galley.job.text[section.byte_range.clone()].into(),
+                            text.galley.job.text
+                                [section.byte_range.start.0..section.byte_range.end.0]
+                                .into(),
                             section.format.color,
                         ));
                     }
@@ -126,7 +128,7 @@ pub(crate) mod feedback_tests {
         super::super::theme::setup(&ctx);
         let mut texts = Vec::new();
         for _ in 0..2 {
-            let output = ctx.run(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -138,6 +140,7 @@ pub(crate) mod feedback_tests {
                     egui::CentralPanel::default().show(ctx, |ui| draw(ui));
                 },
             );
+            output.textures_delta.clear();
             texts.clear();
             for clipped in output.shapes {
                 collect(&clipped.shape, &mut texts);

@@ -2051,7 +2051,7 @@ fn compute_instruction_idempotency_key(
             "could not serialize semantic manager instruction material",
         )
     })?;
-    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
 }
 
 fn compute_plan_digest(
@@ -2089,7 +2089,7 @@ fn compute_plan_digest(
             "could not serialize plan digest material",
         )
     })?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(hex::encode(Sha256::digest(bytes)))
 }
 
 fn compute_inventory_fingerprint(inventory: &[ManagedGearObservation]) -> HsrResult<String> {
@@ -2113,7 +2113,7 @@ fn compute_inventory_fingerprint(inventory: &[ManagedGearObservation]) -> HsrRes
         digest.update((observation.len() as u64).to_be_bytes());
         digest.update(observation);
     }
-    Ok(format!("sha256:{:x}", digest.finalize()))
+    Ok(format!("sha256:{}", hex::encode(digest.finalize())))
 }
 
 fn is_sha256_key(value: &str) -> bool {

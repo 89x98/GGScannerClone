@@ -1,3 +1,5 @@
+mod common;
+use common::HeadlessContext;
 use eframe::egui::{self, epaint::Shape, Color32};
 use good_tools_app::gui::{
     log_panel, scanner_tab, star_rail_scanner_tab,
@@ -12,7 +14,8 @@ fn text_shapes(shape: &Shape, out: &mut Vec<(String, f32, Color32)>) {
         Shape::Text(text) => {
             for section in &text.galley.job.sections {
                 out.push((
-                    text.galley.job.text[section.byte_range.clone()].into(),
+                    text.galley.job.text[section.byte_range.start.0..section.byte_range.end.0]
+                        .into(),
                     text.pos.y,
                     section.format.color,
                 ));
@@ -28,7 +31,7 @@ fn render(mut draw: impl FnMut(&mut egui::Ui)) -> Vec<(String, f32, Color32)> {
     theme::setup(&ctx);
     let mut texts = Vec::new();
     for _ in 0..2 {
-        let frame = ctx.run(
+        let frame = ctx.run_headless(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -126,24 +129,64 @@ fn missing_scan_targets_explain_why_start_is_disabled() {
 }
 
 #[test]
+fn inventory_only_scans_require_names_for_equipped_owners() {
+    let mut genshin = AppState::new();
+    genshin.scan_characters = false;
+    genshin.scan_artifacts = false;
+    genshin.scan_weapons = true;
+    genshin.user_config.traveler_name.clear();
+    assert!(genshin.missing_required_character_names());
+    genshin.user_config.traveler_name = "Player".into();
+    assert!(!genshin.missing_required_character_names());
+    let mut hsr = good_tools_app::config::StarRailSettings::default();
+    hsr.scan_characters = false;
+    hsr.scan_relics_and_ornaments = false;
+    hsr.scan_light_cones = true;
+    hsr.trailblazer_name.clear();
+    assert!(hsr.missing_trailblazer());
+}
+
+#[test]
 fn genshin_name_settings_remain_visible_and_preserved_without_character_scanning() {
-    let mut state=AppState::new();
-    state.lang=Lang::En;
-    state.user_config.traveler_name="Player".into();
-    state.user_config.wanderer_name="Wanderer nickname".into();
-    state.user_config.manekin_name="Manekin nickname".into();
-    state.user_config.manekina_name="Manekina nickname".into();
-    for selected in [true,false] {
-        state.scan_characters=selected;
-        let before=(state.user_config.traveler_name.clone(),state.user_config.wanderer_name.clone(),state.user_config.manekin_name.clone(),state.user_config.manekina_name.clone());
-        let texts=render(|ui| {
-            ui.ctx().memory_mut(|m|m.set_everything_is_visible(true));
-            scanner_tab::show_settings(ui,&mut state,false);
+    let mut state = AppState::new();
+    state.lang = Lang::En;
+    state.user_config.traveler_name = "Player".into();
+    state.user_config.wanderer_name = "Wanderer nickname".into();
+    state.user_config.manekin_name = "Manekin nickname".into();
+    state.user_config.manekina_name = "Manekina nickname".into();
+    for selected in [true, false] {
+        state.scan_characters = selected;
+        let before = (
+            state.user_config.traveler_name.clone(),
+            state.user_config.wanderer_name.clone(),
+            state.user_config.manekin_name.clone(),
+            state.user_config.manekina_name.clone(),
+        );
+        let texts = render(|ui| {
+            ui.ctx().memory_mut(|m| m.set_everything_is_visible(true));
+            scanner_tab::show_settings(ui, &mut state, false);
         });
-        for label in [if selected {"In-game nickname*"}else{"In-game nickname"},"Other renamed characters","Wanderer","Manekin","Manekina"] {
-            assert!(texts.iter().any(|(text,_,_)|text==label),"missing {label}");
+        for label in [
+            "In-game nickname*",
+            "Other renamed characters",
+            "Wanderer",
+            "Manekin",
+            "Manekina",
+        ] {
+            assert!(
+                texts.iter().any(|(text, _, _)| text == label),
+                "missing {label}"
+            );
         }
-        assert_eq!((state.user_config.traveler_name.clone(),state.user_config.wanderer_name.clone(),state.user_config.manekin_name.clone(),state.user_config.manekina_name.clone()),before);
+        assert_eq!(
+            (
+                state.user_config.traveler_name.clone(),
+                state.user_config.wanderer_name.clone(),
+                state.user_config.manekin_name.clone(),
+                state.user_config.manekina_name.clone()
+            ),
+            before
+        );
     }
 }
 
@@ -166,7 +209,14 @@ fn exported_scans_place_folder_before_scan_again_in_both_games() {
         let mut handle = None;
         let texts = render(|ui| {
             if hsr {
-                star_rail_scanner_tab::show_status(ui, Lang::En, &mut settings, &mut state, false, false);
+                star_rail_scanner_tab::show_status(
+                    ui,
+                    Lang::En,
+                    &mut settings,
+                    &mut state,
+                    false,
+                    false,
+                );
             } else {
                 scanner_tab::show_status(ui, &mut genshin, &mut handle, false, false);
             }
@@ -180,7 +230,10 @@ fn exported_scans_place_folder_before_scan_again_in_both_games() {
 
 #[test]
 fn export_result_shows_only_filename_for_windows_and_slash_paths() {
-    for path in ["C:\\Users\\Player\\Exports\\scan.json", "D:/exports/scan.json"] {
+    for path in [
+        "C:\\Users\\Player\\Exports\\scan.json",
+        "D:/exports/scan.json",
+    ] {
         let texts = render(|ui| good_tools_app::gui::widgets::export_location(ui, path));
         assert!(texts.iter().any(|(text, _, _)| text == "scan.json"));
         assert!(!texts.iter().any(|(text, _, _)| text == path));

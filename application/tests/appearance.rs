@@ -1,3 +1,5 @@
+mod common;
+use common::HeadlessContext;
 use eframe::egui;
 use good_tools_app::{
     config::{Appearance, ApplicationConfigStore, APPLICATION_CONFIG_SCHEMA_VERSION},
@@ -55,7 +57,7 @@ fn system_theme_tracks_os_changes_and_manual_choices_override_them() {
         (Appearance::System, egui::Theme::Light, false),
     ] {
         ctx.set_theme(theme::preference(appearance));
-        let _ = ctx.run(
+        let _ = ctx.run_headless(
             egui::RawInput {
                 system_theme: Some(os),
                 ..Default::default()
@@ -75,7 +77,7 @@ fn system_theme_tracks_os_changes_and_manual_choices_override_them() {
 }
 
 #[test]
-fn sidebar_theme_menu_selects_each_mode_with_real_pointer_events() {
+fn sidebar_theme_toggle_switches_on_one_click_in_its_own_row() {
     use good_tools_app::{
         config::GameNavigation,
         gui::{shell, state::Lang},
@@ -88,13 +90,14 @@ fn sidebar_theme_menu_selects_each_mode_with_real_pointer_events() {
     let mut lang = Lang::En;
     let selected = std::cell::Cell::new(Appearance::System);
     let mut draw = |events| {
-        ctx.run(
+        ctx.run_headless(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
                     egui::vec2(760., 500.),
                 )),
                 events,
+                system_theme: Some(egui::Theme::Light),
                 ..Default::default()
             },
             |ctx| {
@@ -106,67 +109,36 @@ fn sidebar_theme_menu_selects_each_mode_with_real_pointer_events() {
             },
         )
     };
-    draw(vec![]);
-    let frame = draw(vec![]);
-    let button = frame
-        .shapes
-        .iter()
-        .find_map(|s| match &s.shape {
-            egui::Shape::Text(t) if t.galley.job.text == egui_phosphor::regular::DESKTOP => {
-                Some(t.pos + t.galley.size() / 2.0)
-            },
-            _ => None,
-        })
-        .unwrap();
     let click = |pos, pressed| egui::Event::PointerButton {
         pos,
         button: egui::PointerButton::Primary,
         pressed,
         modifiers: egui::Modifiers::NONE,
     };
-    for label in ["Light theme", "Dark theme", "System theme"] {
-        draw(vec![egui::Event::PointerMoved(button), click(button, true)]);
-        draw(vec![click(button, false)]);
-        draw(vec![]);
+    for (label, expected) in [
+        ("Dark theme", Appearance::Dark),
+        ("Light theme", Appearance::Light),
+    ] {
         draw(vec![]);
         let frame = draw(vec![]);
-        fn collect(shape: &egui::Shape, texts: &mut Vec<(String, egui::Pos2)>) {
-            match shape {
-                egui::Shape::Text(t) => {
-                    texts.push((t.galley.job.text.clone(), t.pos + t.galley.size() / 2.))
-                },
-                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, texts)),
-                _ => {},
-            }
-        }
-        let mut texts = Vec::new();
-        frame
+        let texts: Vec<_> = frame
             .shapes
             .iter()
-            .for_each(|s| collect(&s.shape, &mut texts));
-        let option = texts
-            .iter()
-            .find(|(text, _)| text == label)
-            .unwrap_or_else(|| {
-                panic!(
-                    "missing {label}; open={}; captions={texts:?}",
-                    ctx.memory(|m| m.is_popup_open(egui::Id::new("appearance-menu")))
-                )
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => {
+                    Some((t.galley.job.text.as_str(), t.pos + t.galley.size() / 2.))
+                },
+                _ => None,
             })
-            .1;
-        draw(vec![egui::Event::PointerMoved(option), click(option, true)]);
-        draw(vec![click(option, false)]);
-        draw(vec![]);
-        assert_eq!(
-            selected.get(),
-            match label {
-                "Light theme" => Appearance::Light,
-                "Dark theme" => Appearance::Dark,
-                _ => Appearance::System,
-            }
-        );
-        assert!(!ctx.memory(|m| m.is_popup_open(egui::Id::new("appearance-menu"))));
+            .collect();
+        let button = texts.iter().find(|(text, _)| *text == label).unwrap().1;
+        let language = texts.iter().find(|(text, _)| *text == "中").unwrap().1;
+        assert!(button.y > language.y + 20.0);
+        assert!(!texts.iter().any(|(text, _)| *text == "System theme"));
+        draw(vec![egui::Event::PointerMoved(button), click(button, true)]);
+        draw(vec![click(button, false)]);
+        assert_eq!(selected.get(), expected);
     }
     drop(draw);
-    assert_eq!(appearance, Appearance::System);
+    assert_eq!(appearance, Appearance::Light);
 }

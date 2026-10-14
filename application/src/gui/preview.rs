@@ -225,8 +225,12 @@ impl eframe::App for Preview {
             });
         }
     }
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        self.app.update(ctx, frame);
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.app.logic(ctx, frame);
+    }
+    fn ui(&mut self, root_ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = root_ui.ctx().clone();
+        self.app.ui(root_ui, frame);
         self.frames += 1;
         let screenshot = ctx.input(|i| {
             i.events.iter().find_map(|event| match event {

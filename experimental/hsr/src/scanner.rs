@@ -2420,7 +2420,7 @@ pub fn gear_fingerprint(parsed: &ParsedGearPanel) -> String {
     if let Some(location) = &parsed.location_key {
         hasher.update(location.as_bytes());
     }
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 pub fn managed_observation(parsed: &ParsedGearPanel) -> ManagedGearObservation {

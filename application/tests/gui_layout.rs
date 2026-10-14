@@ -1,3 +1,5 @@
+mod common;
+use common::HeadlessContext;
 use eframe::egui::{self, Event, Modifiers, PointerButton};
 use good_tools_app::gui::{
     hsr_manager_progress::{plan_steps, TrackedJournal},
@@ -35,7 +37,7 @@ fn both_games_expose_and_toggle_the_same_scan_export_preferences() {
                 good_tools_app::gui::star_rail_state::StarRailState::new(String::new());
             let mut scan_handle = None;
             let mut draw = |events| {
-                ctx.run(
+                ctx.run_headless(
                     egui::RawInput {
                         events,
                         ..Default::default()
@@ -112,7 +114,7 @@ fn single_line_input_text_is_centered_at_every_control_height_and_scale() {
         for height in [26.0, 40.0] {
             for value in ["Traveler", "无星夜空", ""] {
                 let mut text = value.to_owned();
-                let _ = ctx.run(Default::default(), |ctx| {
+                let _ = ctx.run_headless(Default::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         widgets::section(ui, "Character names", |ui| {
                             let output = widgets::singleline_input(&mut text)
@@ -139,7 +141,7 @@ fn progress_rows_keep_the_same_height_at_narrow_and_wide_widths() {
     let ctx = egui::Context::default();
     theme::setup(&ctx);
     for width in [180.0, 220.0, 360.0] {
-        let _ = ctx.run(Default::default(), |ctx| {
+        let _ = ctx.run_headless(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 layout::region(
                     ui,
@@ -196,7 +198,7 @@ fn expanded_settings_fit_narrow_forms_in_both_languages() {
         genshin.lang = lang;
         for width in [250.0, 360.0] {
             for tool in 0..3 {
-                let _ = ctx.run(Default::default(), |ctx| {
+                let _ = ctx.run_headless(Default::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         layout::region(
                             ui,
@@ -249,7 +251,7 @@ fn manager_connection_settings_fit_narrow_panels_with_legacy_paths_saved() {
     );
     let mut state = StarRailState::new(String::new());
     for lang in [Lang::Zh, Lang::En] {
-        let _ = ctx.run(Default::default(), |ctx| {
+        let _ = ctx.run_headless(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 layout::region(
                     ui,
@@ -286,7 +288,7 @@ fn draw_split(
     events: Vec<Event>,
 ) -> [egui::Rect; 2] {
     let mut panes = [egui::Rect::NOTHING; 2];
-    let _ = ctx.run(
+    let _ = ctx.run_headless(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
             events,
@@ -294,7 +296,7 @@ fn draw_split(
         },
         |ctx| {
             egui::CentralPanel::default()
-                .frame(egui::Frame::none())
+                .frame(egui::Frame::new())
                 .show(ctx, |ui| {
                     panes = layout::split(
                         ui,
@@ -318,15 +320,15 @@ fn workspace_cards_use_the_same_inset_at_outer_edges_and_divider() {
         let outer = egui::Rect::from_min_size(egui::pos2(20.0, 20.0), size);
         let mut settings = egui::Rect::NOTHING;
         let mut status = egui::Rect::NOTHING;
-        let _ = ctx.run(Default::default(), |ctx| {
+        let _ = ctx.run_headless(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 layout::region(ui, layout::workspace_bounds(outer), "workspace", |ui| {
                     let bounds = ui.max_rect();
                     assert_eq!(bounds, outer.shrink(layout::PANE_GAP));
                     layout::workspace(ui, &mut 0.5, |ui, pane| match pane {
                         layout::Pane::Settings => settings = ui.max_rect(),
-                        // The status frame has 14px of padding inside its border.
-                        layout::Pane::Status => status = ui.max_rect().expand(14.0),
+                        // Frame bounds include 14px padding and the 1px border.
+                        layout::Pane::Status => status = ui.max_rect().expand(15.0),
                     });
                 });
             });
@@ -403,7 +405,7 @@ fn splitter_drag_changes_ratio_and_resize_keeps_the_requested_ratio() {
 #[test]
 fn overflowing_pane_content_keeps_its_own_clip_rect() {
     let ctx = egui::Context::default();
-    let _ = ctx.run(Default::default(), |ctx| {
+    let _ = ctx.run_headless(Default::default(), |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
             let expected =
                 egui::Rect::from_min_size(egui::pos2(20.0, 30.0), egui::vec2(200.0, 100.0));
@@ -429,7 +431,7 @@ fn titlebar_stays_fixed_and_window_buttons_remain_clickable() {
         let mut lang = Lang::Zh;
         let mut game = Game::Genshin;
         let mut draw = |events| {
-            ctx.run(
+            ctx.run_headless(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -440,7 +442,10 @@ fn titlebar_stays_fixed_and_window_buttons_remain_clickable() {
                 },
                 |ctx| {
                     shell::titlebar(ctx, &mut lang, &mut game, true, &logos);
-                    assert_eq!(ctx.available_rect().top(), shell::TITLEBAR_HEIGHT);
+                    assert_eq!(
+                        ctx.available_rect_before_wrap().top(),
+                        shell::TITLEBAR_HEIGHT
+                    );
                 },
             )
         };
@@ -504,7 +509,7 @@ fn delay_fields_keep_two_columns_without_overflow_or_losing_warnings() {
         theme::setup(&ctx);
         let mut values = [100, 50, 100];
         for _ in 0..2 {
-            let output = ctx.run(Default::default(), |ctx| {
+            let output = ctx.run_headless(Default::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     layout::region(
                         ui,
@@ -562,7 +567,7 @@ fn manager_port_is_above_the_start_action_and_absent_from_settings() {
         let mut handle = None;
         for status in [false, true] {
             for _ in 0..2 {
-                let output = ctx.run(Default::default(), |ctx| {
+                let output = ctx.run_headless(Default::default(), |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         ui.set_width(350.0);
                         match (star_rail, status) {
@@ -629,7 +634,7 @@ fn long_export_paths_do_not_change_pane_width_when_resized() {
             };
             for width in [250.0, 500.0, 250.0] {
                 for _ in 0..3 {
-                    let output = ctx.run(Default::default(), |ctx| {
+                    let output = ctx.run_headless(Default::default(), |ctx| {
                         egui::CentralPanel::default().show(ctx, |ui| {
                             layout::region(
                                 ui,
@@ -640,7 +645,11 @@ fn long_export_paths_do_not_change_pane_width_when_resized() {
                                 "export-result",
                                 |ui| {
                                     theme::task_status(ui, lang, Some(&status), "Ready");
-                                    good_tools_app::gui::widgets::export_action(ui, lang, Some(&status));
+                                    good_tools_app::gui::widgets::export_action(
+                                        ui,
+                                        lang,
+                                        Some(&status),
+                                    );
                                     assert!(ui.min_rect().width() <= width);
                                 },
                             );
@@ -650,9 +659,7 @@ fn long_export_paths_do_not_change_pane_width_when_resized() {
                     assert!(texts
                         .iter()
                         .any(|(text, _)| text == lang.t("打开文件夹", "Open folder")));
-                    assert!(texts
-                        .iter()
-                        .any(|(text, _)| text == "scan.json"));
+                    assert!(texts.iter().any(|(text, _)| text == "scan.json"));
                     assert!(!texts.iter().any(|(text, _)| text == &path));
                 }
             }
@@ -669,7 +676,7 @@ fn opening_a_missing_export_reports_a_visible_error() {
         std::env::temp_dir().join(format!("missing-good-export-{}.json", std::process::id()));
     assert!(!path.exists());
     let draw = |events| {
-        ctx.run(
+        ctx.run_headless(
             egui::RawInput {
                 events,
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -724,7 +731,7 @@ fn sidebar_language_button_names_the_target_language_and_toggles_it() {
         let mut lang = initial;
         let mut navigation = GameNavigation::default();
         let mut draw = |events| {
-            ctx.run(
+            ctx.run_headless(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -734,8 +741,9 @@ fn sidebar_language_button_names_the_target_language_and_toggles_it() {
                     ..Default::default()
                 },
                 |ctx| {
-                    egui::CentralPanel::default()
-                        .show(ctx, |ui| shell::sidebar(ui, &mut lang, &mut navigation, &mut Default::default()));
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        shell::sidebar(ui, &mut lang, &mut navigation, &mut Default::default())
+                    });
                 },
             )
         };
@@ -783,7 +791,7 @@ fn quiet_buttons_have_a_visible_hover_fill_and_hand_cursor() {
     let ctx = egui::Context::default();
     theme::setup(&ctx);
     let draw = |events| {
-        ctx.run(
+        ctx.run_headless(
             egui::RawInput {
                 events,
                 ..Default::default()
@@ -828,7 +836,7 @@ fn refresh_heading_borders_fit_the_pane_when_hovered_and_pressed() {
             theme::setup(&ctx);
             let mut refresh = DataRefresh::default();
             let mut draw = |events| {
-                ctx.run(
+                ctx.run_headless(
                     egui::RawInput {
                         events,
                         ..Default::default()
@@ -844,7 +852,10 @@ fn refresh_heading_borders_fit_the_pane_when_hovered_and_pressed() {
                                 "heading",
                                 |ui| {
                                     refresh.heading(ui, lang, game, tab, true, false);
-                                    assert!(ui.min_rect().height() < 140.0, "heading consumed workspace height");
+                                    assert!(
+                                        ui.min_rect().height() < 140.0,
+                                        "heading consumed workspace height"
+                                    );
                                 },
                             );
                         });
@@ -871,7 +882,10 @@ fn refresh_heading_borders_fit_the_pane_when_hovered_and_pressed() {
                 let mut borders = 0;
                 for clipped in frame.shapes {
                     if let egui::Shape::Rect(rect) = clipped.shape {
-                        if rect.stroke.width > 0.0 || rect.fill == theme::HOVER || rect.fill == theme::PRESSED {
+                        if rect.stroke.width > 0.0
+                            || rect.fill == theme::HOVER
+                            || rect.fill == theme::PRESSED
+                        {
                             borders += 1;
                             assert!(
                                 clipped
@@ -902,7 +916,7 @@ fn sidebar_tab_borders_stay_inside_the_scroll_clip_while_pressed() {
         let mut navigation = GameNavigation::default();
         let mut lang = Lang::En;
         let mut draw = |events| {
-            ctx.run(
+            ctx.run_headless(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -912,8 +926,9 @@ fn sidebar_tab_borders_stay_inside_the_scroll_clip_while_pressed() {
                     ..Default::default()
                 },
                 |ctx| {
-                    egui::CentralPanel::default()
-                        .show(ctx, |ui| shell::sidebar(ui, &mut lang, &mut navigation, &mut Default::default()));
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        shell::sidebar(ui, &mut lang, &mut navigation, &mut Default::default())
+                    });
                 },
             )
         };
@@ -970,7 +985,7 @@ fn ordinary_controls_keep_their_borders_inside_pane_edges_in_every_state() {
         let mut text = "Player".to_owned();
         let point = std::cell::Cell::new(egui::Pos2::ZERO);
         let mut draw = |events| {
-            ctx.run(
+            ctx.run_headless(
                 egui::RawInput {
                     events,
                     ..Default::default()
@@ -1022,7 +1037,10 @@ fn ordinary_controls_keep_their_borders_inside_pane_edges_in_every_state() {
             let mut borders = 0;
             for clipped in frame.shapes {
                 if let egui::Shape::Rect(rect) = clipped.shape {
-                    if rect.stroke.width > 0.0 || rect.fill == theme::HOVER || rect.fill == theme::PRESSED {
+                    if rect.stroke.width > 0.0
+                        || rect.fill == theme::HOVER
+                        || rect.fill == theme::PRESSED
+                    {
                         borders += 1;
                         assert!(
                             clipped
@@ -1052,7 +1070,7 @@ fn sidebar_footer_buttons_fit_their_clip_in_both_languages() {
         let mut navigation = GameNavigation::default();
         let mut lang = initial_lang;
         let mut draw = |events| {
-            ctx.run(
+            ctx.run_headless(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -1062,17 +1080,15 @@ fn sidebar_footer_buttons_fit_their_clip_in_both_languages() {
                     ..Default::default()
                 },
                 |ctx| {
-                    egui::CentralPanel::default()
-                        .show(ctx, |ui| shell::sidebar(ui, &mut lang, &mut navigation, &mut Default::default()));
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        shell::sidebar(ui, &mut lang, &mut navigation, &mut Default::default())
+                    });
                 },
             )
         };
         draw(vec![]);
         let initial = draw(vec![]);
-        for label in [
-            initial_lang.t("EN", "中"),
-            initial_lang.t("关于", "About"),
-        ] {
+        for label in [initial_lang.t("EN", "中"), initial_lang.t("关于", "About")] {
             let point = painted_text(&initial.shapes)
                 .into_iter()
                 .find(|(text, _)| text == label)
@@ -1131,7 +1147,7 @@ fn capture_count_rows_use_empty_meter_space_for_readable_labels() {
     step.state = StepState::Running;
     let mut output = None;
     for _ in 0..2 {
-        output = Some(ctx.run(
+        output = Some(ctx.run_headless(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
@@ -1174,7 +1190,7 @@ fn about_retains_all_credits_and_card_edges_inside_the_scroll_clip() {
             theme::setup(&ctx);
             let mut frame = None;
             for _ in 0..2 {
-                frame = Some(ctx.run(
+                frame = Some(ctx.run_headless(
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -1407,7 +1423,7 @@ fn scanner_actions_stay_visible_when_task_details_exceed_a_small_window() {
         *genshin.scan_status.lock().unwrap() = error.clone();
         *hsr.scan_status.lock().unwrap() = error;
         for _ in 0..2 {
-            let output = ctx.run(
+            let output = ctx.run_headless(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,

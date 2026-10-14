@@ -8,9 +8,15 @@ use super::widgets;
 
 /// Show the update notification banner when an update is available.
 ///
-/// Call this from the `eframe::App::update` method, before the central panel.
+/// Call this from the `eframe::App::ui` method, before the central panel.
 /// `update_state` is the shared state that tracks the update lifecycle.
-pub fn show(ctx: &egui::Context, l: Lang, update_state: &Arc<Mutex<UpdateState>>, game_busy: bool) {
+pub fn show(
+    root_ui: &mut egui::Ui,
+    l: Lang,
+    update_state: &Arc<Mutex<UpdateState>>,
+    game_busy: bool,
+) {
+    let ctx = root_ui.ctx().clone();
     let state_snapshot = update_state.lock().unwrap().clone();
 
     let show = !matches!(state_snapshot, UpdateState::None | UpdateState::Checking);
@@ -18,7 +24,7 @@ pub fn show(ctx: &egui::Context, l: Lang, update_state: &Arc<Mutex<UpdateState>>
         return;
     }
 
-    egui::TopBottomPanel::top("update_banner").show(ctx, |ui| match state_snapshot {
+    egui::Panel::top("update_banner").show(root_ui, |ui| match state_snapshot {
         UpdateState::Available {
             ref latest_version,
             ref download_url,

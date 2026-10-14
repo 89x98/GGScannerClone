@@ -25,7 +25,7 @@ fn embedded_reference_is_integrity_pinned_private_and_live_complete() {
     );
     assert_eq!(EMBEDDED_BYTES.len(), EMBEDDED_REFERENCE_BYTE_COUNT);
     assert_eq!(
-        format!("{:x}", Sha256::digest(EMBEDDED_BYTES)),
+        hex::encode(Sha256::digest(EMBEDDED_BYTES)),
         EMBEDDED_REFERENCE_SHA256
     );
 

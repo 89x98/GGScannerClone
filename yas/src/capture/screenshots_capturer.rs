@@ -19,9 +19,13 @@ impl ScreenshotsCapturer {
 impl Capturer<RgbaImage> for ScreenshotsCapturer {
     fn capture_rect(&self, rect: Rect<i32>) -> Result<RgbaImage> {
         let screen = &self.screens[0];
-        let capture_result =
-            screen.capture_area(rect.left, rect.top, rect.width as u32, rect.height as u32);
-        capture_result
+        let captured =
+            screen.capture_area(rect.left, rect.top, rect.width as u32, rect.height as u32)?;
+        let (width, height) = captured.dimensions();
+        // screenshots still uses image 0.24; move its RGBA pixels across the
+        // crate boundary without changing channel order or copying the buffer.
+        Ok(RgbaImage::from_raw(width, height, captured.into_raw())
+            .expect("valid screenshot RGBA buffer"))
     }
 }
 

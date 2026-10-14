@@ -129,8 +129,8 @@ GGScannerOCR.exe --characters --weapons  # 组合扫描
 ## 从源码构建
 
 ```shell
-# 需要 stable Rust 工具链
-rustup default stable
+# rust-toolchain.toml 为本仓库固定 Rust 1.95.0
+rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
 # 确保安装 Git LFS
 git lfs pull

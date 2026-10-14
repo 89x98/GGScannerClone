@@ -57,7 +57,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Setup Toolchain
-        run: rustup default stable-msvc
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
       - name: Test user-facing error diagnostics
         run: |

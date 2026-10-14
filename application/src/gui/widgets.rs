@@ -38,13 +38,16 @@ pub fn fold(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
 
 pub fn form(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
     let width = ui.available_width();
-    egui::Frame::none()
+    egui::Frame::new()
         .fill(super::theme::palette(ui.visuals().dark_mode).surface)
-        .stroke(egui::Stroke::new(1.0, super::theme::palette(ui.visuals().dark_mode).border))
-        .rounding(8.0)
+        .stroke(egui::Stroke::new(
+            1.0,
+            super::theme::palette(ui.visuals().dark_mode).border,
+        ))
+        .corner_radius(8.0)
         .inner_margin(egui::vec2(12.0, 10.0))
         .show(ui, |ui| {
-            ui.set_width((width - 24.0).max(1.0));
+            ui.set_width((width - 26.0).max(1.0));
             ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
             ui.spacing_mut().item_spacing = egui::vec2(7.0, 4.0);
             ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
@@ -150,11 +153,7 @@ pub fn singleline_input(text: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
 }
 
 /// Both games expose the same export choices with identical copy and order.
-pub fn scan_export_options(
-    ui: &mut egui::Ui,
-    lang: Lang,
-    only_latest: &mut bool,
-) {
+pub fn scan_export_options(ui: &mut egui::Ui, lang: Lang, only_latest: &mut bool) {
     ui.checkbox(
         only_latest,
         lang.t("仅保留最新导出", "Keep latest export only"),
@@ -212,7 +211,10 @@ pub fn error_card(ui: &mut egui::Ui, l: Lang, error: &UiError) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui
-                .add(egui::Button::new(l.t("复制完整错误", "Copy full error")).min_size(egui::vec2(0.0, 26.0)))
+                .add(
+                    egui::Button::new(l.t("复制完整错误", "Copy full error"))
+                        .min_size(egui::vec2(0.0, 26.0)),
+                )
                 .clicked()
             {
                 ui.ctx().copy_text(copy_text.clone());
@@ -258,9 +260,19 @@ pub fn export_file(ui: &mut egui::Ui, l: Lang, path: &str) {
 
 /// Keep the saved location selectable in the result, and its action in the footer.
 pub fn export_location(ui: &mut egui::Ui, path: &str) {
-    let filename = path.rsplit(['/', '\\']).find(|part| !part.is_empty()).unwrap_or(path);
-    ui.add(egui::Label::new(egui::RichText::new(filename).size(12.0).color(super::theme::palette(ui.visuals().dark_mode).muted)).truncate())
-        .on_hover_text(path);
+    let filename = path
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(path);
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(filename)
+                .size(12.0)
+                .color(super::theme::palette(ui.visuals().dark_mode).muted),
+        )
+        .truncate(),
+    )
+    .on_hover_text(path);
 }
 
 pub fn export_action(ui: &mut egui::Ui, lang: Lang, status: Option<&super::state::TaskStatus>) {
@@ -362,20 +374,34 @@ pub fn server_port(ui: &mut egui::Ui, lang: Lang, port: &mut u16, enabled: bool)
 
 /// Character names section — shared between scanner and manager tabs.
 /// Shows the 4 renameable character name fields with required-field validation.
-pub fn character_names_section(ui: &mut egui::Ui, state: &mut AppState, enabled: bool, required: bool) {
+pub fn character_names_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    enabled: bool,
+    required: bool,
+) {
     let l = state.lang;
 
     ui.add_enabled_ui(enabled, |ui| {
-        field_row(ui, if required { l.t("游戏内昵称*", "In-game nickname*") } else { l.t("游戏内昵称", "In-game nickname") }, |ui| {
-            if required && state.user_config.traveler_name.trim().is_empty() {
-                ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::palette(ui.visuals().dark_mode).warning;
-            }
-            ui.add(
-                singleline_input(&mut state.user_config.traveler_name)
-                    .desired_width(ui.available_width())
-                    .min_size(egui::vec2(0.0, 26.0)),
-            );
-        });
+        field_row(
+            ui,
+            if required {
+                l.t("游戏内昵称*", "In-game nickname*")
+            } else {
+                l.t("游戏内昵称", "In-game nickname")
+            },
+            |ui| {
+                if required && state.user_config.traveler_name.trim().is_empty() {
+                    ui.visuals_mut().widgets.inactive.bg_stroke.color =
+                        super::theme::palette(ui.visuals().dark_mode).warning;
+                }
+                ui.add(
+                    singleline_input(&mut state.user_config.traveler_name)
+                        .desired_width(ui.available_width())
+                        .min_size(egui::vec2(0.0, 26.0)),
+                );
+            },
+        );
         egui::CollapsingHeader::new(l.t("其他可改名角色", "Other renamed characters"))
             .show_unindented(ui, |ui| {
                 for (label, name) in [

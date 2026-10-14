@@ -180,7 +180,9 @@ impl DataRefresh {
             ui.horizontal(|ui| {
                 ui.heading(title);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(source) = Source::additional_for_page(game, tab, capture_achievements) {
+                    if let Some(source) =
+                        Source::additional_for_page(game, tab, capture_achievements)
+                    {
                         self.cache_row(ui, lang, source, enabled);
                     }
                     self.cache_row(ui, lang, source, enabled);
@@ -211,8 +213,21 @@ impl DataRefresh {
                 } else {
                     source.refresh_label(lang)
                 };
-                let width = ui.fonts(|fonts| fonts.layout_no_wrap(label.into(), egui::FontId::proportional(14.0), theme::palette(ui.visuals().dark_mode).muted).size().x) + 18.0;
-                if ui.add_enabled_ui(!busy && enabled, |ui| theme::text_button(ui, label, egui::vec2(width, 30.0), false)).inner
+                let width = ui.fonts_mut(|fonts| {
+                    fonts
+                        .layout_no_wrap(
+                            label.into(),
+                            egui::FontId::proportional(14.0),
+                            theme::palette(ui.visuals().dark_mode).muted,
+                        )
+                        .size()
+                        .x
+                }) + 18.0;
+                if ui
+                    .add_enabled_ui(!busy && enabled, |ui| {
+                        theme::text_button(ui, label, egui::vec2(width, 30.0), false)
+                    })
+                    .inner
                     .clicked()
                 {
                     let hint = UiText::new(
