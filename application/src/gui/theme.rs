@@ -89,6 +89,9 @@ pub fn preference(appearance: crate::config::Appearance) -> egui::ThemePreferenc
 }
 
 pub fn setup(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    super::icons::add_to_fonts(&mut fonts);
+    ctx.set_fonts(fonts);
     install(ctx, crate::config::Appearance::Dark);
 }
 

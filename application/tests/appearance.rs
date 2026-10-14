@@ -45,6 +45,7 @@ fn old_configs_gain_system_theme_without_changing_saved_task_settings() {
 #[test]
 fn system_theme_tracks_os_changes_and_manual_choices_override_them() {
     let ctx = egui::Context::default();
+    theme::setup(&ctx);
     theme::install(&ctx, Appearance::System);
     for (appearance, os, dark) in [
         (Appearance::System, egui::Theme::Light, false),
@@ -80,6 +81,7 @@ fn sidebar_theme_menu_selects_each_mode_with_real_pointer_events() {
         gui::{shell, state::Lang},
     };
     let ctx = egui::Context::default();
+    theme::setup(&ctx);
     theme::install(&ctx, Appearance::System);
     let mut appearance = Appearance::System;
     let mut navigation = GameNavigation::default();
@@ -110,10 +112,8 @@ fn sidebar_theme_menu_selects_each_mode_with_real_pointer_events() {
         .shapes
         .iter()
         .find_map(|s| match &s.shape {
-            egui::Shape::Rect(r)
-                if (r.rect.width() - 14.4).abs() < 0.1 && (r.rect.height() - 9.9).abs() < 0.1 =>
-            {
-                Some(r.rect.center())
+            egui::Shape::Text(t) if t.galley.job.text == egui_phosphor::regular::DESKTOP => {
+                Some(t.pos + t.galley.size() / 2.0)
             },
             _ => None,
         })

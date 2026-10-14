@@ -32,7 +32,6 @@ pub fn run(
         options,
         Box::new(move |cc| {
             super::setup_fonts(&cc.egui_ctx);
-            super::theme::setup(&cc.egui_ctx);
             let mut state = AppState::new();
             state.lang = lang;
             state.user_config.traveler_name = "旅行者".into();

@@ -145,7 +145,6 @@ pub fn run_gui() {
         options,
         Box::new(|cc| {
             setup_fonts(&cc.egui_ctx);
-            theme::setup(&cc.egui_ctx);
             Ok(Box::new(GuiApp::new(state, app_config, &cc.egui_ctx)))
         }),
     ) {
@@ -794,5 +793,6 @@ fn setup_fonts(ctx: &egui::Context) {
     fonts
         .families
         .insert(egui::FontFamily::Name("bold".into()), bold_fonts);
+    icons::add_to_fonts(&mut fonts);
     ctx.set_fonts(fonts);
 }

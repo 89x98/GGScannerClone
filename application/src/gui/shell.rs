@@ -164,7 +164,7 @@ pub fn titlebar(
         });
 }
 
-/// Windows caption proportions and painted glyphs avoid font-dependent symbols.
+/// Standard window controls use the same bundled icon font as the navigation.
 fn caption_button(ui: &mut egui::Ui, label: &str, index: u8, maximized: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(46.0, 32.0), egui::Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
@@ -190,30 +190,18 @@ fn caption_button(ui: &mut egui::Ui, label: &str, index: u8, maximized: bool) ->
             theme::palette(ui.visuals().dark_mode).muted
         },
     );
-    let glyph = egui::Rect::from_center_size(rect.center(), egui::vec2(10.0, 10.0));
-    match index {
-        0 => {
-            ui.painter()
-                .line_segment([glyph.left_center(), glyph.right_center()], stroke);
-        },
-        1 if maximized => {
-            let back = glyph.translate(egui::vec2(2.0, -2.0));
-            ui.painter()
-                .line_segment([back.left_top(), back.right_top()], stroke);
-            ui.painter()
-                .line_segment([back.right_top(), back.right_bottom()], stroke);
-            ui.painter().rect_stroke(glyph, 0.0, stroke);
-        },
-        1 => {
-            ui.painter().rect_stroke(glyph, 0.0, stroke);
-        },
-        _ => {
-            ui.painter()
-                .line_segment([glyph.left_top(), glyph.right_bottom()], stroke);
-            ui.painter()
-                .line_segment([glyph.right_top(), glyph.left_bottom()], stroke);
-        },
-    }
+    let icon = match index {
+        0 => Icon::Minimize,
+        1 if maximized => Icon::Restore,
+        1 => Icon::Maximize,
+        _ => Icon::Close,
+    };
+    icons::paint(
+        ui,
+        egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 14.0)),
+        icon,
+        stroke.color,
+    );
     response.on_hover_text(label)
 }
 

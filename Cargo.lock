@@ -1221,6 +1221,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-phosphor"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebe75c81cd796bfb6718df8a5339c47695bfb33e400fae03a77200305519f2c2"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui-winit"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1857,6 +1866,7 @@ dependencies = [
  "clap",
  "crossbeam-queue",
  "eframe",
+ "egui-phosphor",
  "enigo",
  "env_logger",
  "genshin_scanner",
