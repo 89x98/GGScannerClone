@@ -127,7 +127,11 @@ pub fn main() {
                 good_tools_app::gui::state::Lang::Zh
             };
             let full_error = error.copy_text(lang);
-            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", full_error);
+            log::error!(
+                target: yas::lang::LOCALIZED_LOG_TARGET,
+                "{}",
+                error.hint_text(lang)
+            );
             if error.is_native_exception() {
                 match good_tools_app::gui::state::persist_error_report(
                     "cli_native_error.txt",

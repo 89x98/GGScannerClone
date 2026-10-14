@@ -63,7 +63,7 @@ impl CaptureHandle {
         } else {
             Lang::Zh
         };
-        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.copy_text(lang));
+        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.hint_text(lang));
     }
 
     pub fn is_finished(&self) -> bool {
@@ -376,7 +376,7 @@ fn spawn_capture(
                 Lang::Zh
             };
             let msg = failure.technical_details(lang);
-            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.copy_text(lang));
+            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.hint_text(lang));
             if let Ok(mut s) = state_for_crash.lock() {
                 s.error = Some(msg);
             }

@@ -92,7 +92,7 @@ struct InventoryScanBounds {
 /// at independently confirmed empty/page-end evidence long before this limit.
 /// Keeping a generous floor prevents a clipped denominator OCR (for example,
 /// 210 instead of 2100) from truncating a real inventory.
-const MANAGER_SCAN_BUDGET: usize = 10_000;
+const MANAGER_SCAN_BUDGET: usize = backpack_scanner::FILTERED_BACKPACK_SCAN_BUDGET;
 
 fn inventory_scan_bounds(readings: &[(i32, i32)]) -> InventoryScanBounds {
     let observed_count = readings

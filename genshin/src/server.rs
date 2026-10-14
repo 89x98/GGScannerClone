@@ -1056,10 +1056,10 @@ where
             Ok(()) => {},
             Err(e) => {
                 log_error!(
-                    "[job {}] 游戏初始化失败:\n{:#}",
-                    "[job {}] Game init failed:\n{:#}",
+                    "[job {}] 游戏初始化失败: {}",
+                    "[job {}] Game init failed: {}",
                     job_id,
-                    e
+                    yas::lang::localize(&format!("{:#}", e))
                 );
                 let mut state = job_state.lock().unwrap();
                 let total_count = match &request {
@@ -1409,10 +1409,10 @@ where
                     },
                     Err(e) => {
                         log_error!(
-                            "[job {}] 扫描失败: {:#}",
-                            "[job {}] Scan failed: {:#}",
+                            "[job {}] 扫描失败: {}",
+                            "[job {}] Scan failed: {}",
                             job_id,
-                            e
+                            yas::lang::localize(&format!("{:#}", e))
                         );
                         let results = vec![InstructionResult::failure(
                             "scan",

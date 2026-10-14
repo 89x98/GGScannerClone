@@ -521,7 +521,7 @@ fn spawn_with_safety_net(
             } else {
                 Lang::Zh
             };
-            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.copy_text(lang));
+            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.hint_text(lang));
             let mut guard = lock_status_recover(&status_for_crash);
             // Only overwrite if still Running — don't clobber a proper Failed/Completed
             if matches!(*guard, TaskStatus::Running(_)) {
@@ -636,7 +636,7 @@ impl TaskHandle {
         } else {
             Lang::Zh
         };
-        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.copy_text(lang));
+        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.hint_text(lang));
 
         // Keep the ordinary status in sync when possible, but never block on
         // it after an abnormal thread exit.
@@ -700,7 +700,7 @@ pub(super) fn set_task_failure(status: &Arc<Mutex<TaskStatus>>, error: UiError) 
     } else {
         Lang::Zh
     };
-    log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.copy_text(lang));
+    log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.hint_text(lang));
     *lock_status_recover(status) = TaskStatus::Failed(error);
 }
 

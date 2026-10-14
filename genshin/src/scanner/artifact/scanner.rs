@@ -1646,7 +1646,7 @@ impl GoodArtifactScanner {
 
         let mut bp = BackpackScanner::new(ctrl);
 
-        if total_count == 0 {
+        if total_count == 0 && !self.config.keep_five_star_filter {
             log_info!(
                 "[artifact] 背包中没有圣遗物",
                 "[artifact] no artifacts in backpack"
@@ -1654,16 +1654,32 @@ impl GoodArtifactScanner {
             return Ok(Vec::new());
         }
 
+        // The header's count describes the unfiltered inventory. When the
+        // recent-five-star filter is retained, use it only as a diagnostic;
+        // traverse a bounded budget and stop on visually confirmed empty cells.
+        let filtered_scan = self.config.keep_five_star_filter;
+        let scan_budget = if filtered_scan {
+            backpack_scanner::FILTERED_BACKPACK_SCAN_BUDGET
+        } else {
+            total_count.max(0) as usize
+        };
         let total_count = if self.config.max_count > 0 {
-            let capped = (total_count as usize).min(self.config.max_count + start_at) as i32;
+            let capped = scan_budget.min(self.config.max_count.saturating_add(start_at)) as i32;
             log_debug!(
-                "[artifact] 总计: {}（限制为{}，max_count={}）",
-                "[artifact] total: {} (capped to {} by max_count={})",
+                "[artifact] 扫描上限: {}（限制为{}，max_count={}）",
+                "[artifact] scan limit: {} (capped to {} by max_count={})",
                 total_count,
                 capped,
                 self.config.max_count
             );
             capped
+        } else if filtered_scan {
+            log_debug!(
+                "[artifact] 近期五星筛选已保留；标题数量仅作参考，使用有界视觉扫描上限 {}",
+                "[artifact] Recent-five-star filter retained; header count is informational, using bounded visual scan limit {}",
+                scan_budget
+            );
+            scan_budget as i32
         } else {
             log_debug!("[artifact] 总计: {}", "[artifact] total: {}", total_count);
             total_count
@@ -1760,14 +1776,20 @@ impl GoodArtifactScanner {
             grid_vote_schedule: GridVoteSchedule::for_page,
             probe_last_cell_per_page: false,
             detect_grid_duplicates: false,
-            detect_empty_cells: false,
+            detect_empty_cells: filtered_scan,
             min_items_before_visual_end: 0,
         };
 
         // Per-page 3-pass voting state (shared across artifact / weapon / manager).
         let total = total_count as usize;
+        // A filtered scan's traversal budget is not an item-count estimate.
+        let progress_total = if filtered_scan && self.config.max_count == 0 {
+            0
+        } else {
+            total
+        };
         if let Some(pf) = progress_fn {
-            pf(0, total, "", "");
+            pf(0, progress_total, "", "");
         }
         let mut voter: PagedGridVoter<()> = PagedGridVoter::new(total, GridMode::Artifact);
         let mut visible_layout = None;
@@ -1823,7 +1845,7 @@ impl GoodArtifactScanner {
                     }
 
                     if let Some(pf) = progress_fn {
-                        pf(idx + 1, total, "", "");
+                        pf(idx + 1, progress_total, "", "");
                     }
 
                     // Quick rarity check on main thread to stop early.

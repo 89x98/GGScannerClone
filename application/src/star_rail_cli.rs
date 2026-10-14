@@ -228,7 +228,7 @@ pub fn run() -> i32 {
             0
         },
         Err(error) => {
-            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.copy_text(lang));
+            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.hint_text(lang));
             1
         },
     }

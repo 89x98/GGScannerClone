@@ -529,7 +529,7 @@ pub fn open_backpack_to_tab(
         Err(ref e) => log_warn!(
             "[backpack] 首次物品数量读取失败，重新打开背包后重试: {}",
             "[backpack] first item-count read failed; reopening the backpack before retrying: {}",
-            e
+            yas::lang::localize(&e.to_string())
         ),
     }
 
@@ -817,6 +817,10 @@ const SCROLL_STABLE_INTERVAL_MS: u32 = 80;
 /// A first unchanged page turn is never terminal; reposition the pointer and
 /// send the same atomic wheel input once more before deciding the list ended.
 const SCROLL_RETRY_COUNT: usize = 1;
+
+/// Upper bound used when the backpack header count cannot describe the visible
+/// list (for example, after a set or recent-five-star filter is applied).
+pub const FILTERED_BACKPACK_SCAN_BUDGET: usize = 10_000;
 
 fn scroll_ticks_for_rows(row_count: usize, completed_pages: u32) -> i32 {
     let ticks_per_row = SCROLL_TICKS_PER_PAGE as f64 / GRID_ROWS as f64;
@@ -1740,7 +1744,7 @@ impl<'a> BackpackScanner<'a> {
                         log_error!(
                             "[backpack] 无法确认完整翻页距离: {}",
                             "[backpack] Could not confirm the requested scroll distance: {}",
-                            e
+                            yas::lang::localize(&e.to_string())
                         );
                         missed_count += 1;
                         termination = ScanTermination::CaptureFailure;

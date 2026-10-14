@@ -69,7 +69,7 @@ impl StarRailCaptureHandle {
         } else {
             Lang::Zh
         };
-        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.copy_text(lang));
+        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.hint_text(lang));
     }
 
     fn is_finished(&self) -> bool {

@@ -415,7 +415,11 @@ fn phase_result<T>(
                 Some(yas::cancel::StopReason::UserAbort)
             ) =>
         {
-            log_info!("阶段被用户中断: {:#}", "Phase aborted by user: {:#}", e);
+            log_info!(
+                "阶段被用户中断: {}",
+                "Phase aborted by user: {}",
+                yas::lang::localize(&format!("{:#}", e))
+            );
             if options.save_on_cancel {
                 Ok(ScanPhaseResult::Complete(Vec::new()))
             } else {
@@ -424,10 +428,10 @@ fn phase_result<T>(
         },
         Err(e) => {
             log_warn!(
-                "[scan] {}阶段失败: {:#}",
-                "[scan] {} phase failed: {:#}",
+                "[scan] {}阶段失败: {}",
+                "[scan] {} phase failed: {}",
                 phase_name,
-                e
+                yas::lang::localize(&format!("{:#}", e))
             );
             match options.failure_policy {
                 ScanFailurePolicy::StopOnError => Err(e),
