@@ -424,7 +424,10 @@ fn titlebar_stays_fixed_and_window_buttons_remain_clickable() {
         config::Game,
         gui::{shell, state::Lang},
     };
-    for (x, expected) in [(638.0, "minimize"), (684.0, "maximize"), (730.0, "close")] {
+    for (x, y, expected) in [(638.0, "minimize"), (684.0, "maximize"), (730.0, "close")]
+        .into_iter()
+        .flat_map(|(x, expected)| [1.0, 20.0, 39.0].map(|y| (x, y, expected)))
+    {
         let ctx = egui::Context::default();
         theme::setup(&ctx);
         let logos = shell::Logos::load(&ctx);
@@ -450,7 +453,7 @@ fn titlebar_stays_fixed_and_window_buttons_remain_clickable() {
             )
         };
         draw(vec![]);
-        let pos = egui::pos2(x, 28.0);
+        let pos = egui::pos2(x, y);
         draw(vec![
             Event::PointerMoved(pos),
             Event::PointerButton {

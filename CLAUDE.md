@@ -353,7 +353,6 @@ cargo build --release --features capture --bin GOODCapture
 
 - `HashMap<u16, String>` mapping game version → base64-encoded key
 - External key file (`keys/gi.json` next to exe) overrides embedded keys, allowing updates without recompiling
-- Keys are per game version, NOT per server channel — same keys work for official (官服) and Bilibili (B服) servers
 
 ### Dependencies (capture-only)
 

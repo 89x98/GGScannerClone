@@ -7,6 +7,51 @@ use good_tools_app::{
 };
 
 #[test]
+fn per_game_tabs_migrate_to_the_last_active_games_page() {
+    let root = std::env::temp_dir().join(format!("ggscanner-shared-tab-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("app.json");
+    for version in 1..=6 {
+        for (game, expected) in [
+            ("genshin", good_tools_app::config::ToolTab::Scanner),
+            ("starRail", good_tools_app::config::ToolTab::Manager),
+        ] {
+            let fixture = serde_json::json!({
+                "schemaVersion": version,
+                "appearance": "light",
+                "navigation": {"activeGame": game, "genshinTab": "scanner", "starRailTab": "manager"},
+                "starRail": {"outputDir": "D:/exports", "trailblazerName": "Player"}
+            });
+            std::fs::write(&path, fixture.to_string()).unwrap();
+            let mut store = ApplicationConfigStore::load(&path).unwrap();
+            assert_eq!(store.config.navigation.selected_tab, expected);
+            store.config.navigation.active_game = good_tools_app::config::Game::Genshin;
+            assert_eq!(store.config.navigation.active_tab(), expected);
+            store.config.navigation.active_game = good_tools_app::config::Game::StarRail;
+            assert_eq!(store.config.navigation.active_tab(), expected);
+            assert_eq!(store.config.appearance, Appearance::Light);
+            assert_eq!(store.config.star_rail.output_dir, "D:/exports");
+            store.persist_now().unwrap();
+            let saved: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(saved["schemaVersion"], APPLICATION_CONFIG_SCHEMA_VERSION);
+            assert!(saved["navigation"].get("genshinTab").is_none());
+            assert!(saved["navigation"].get("starRailTab").is_none());
+            assert_eq!(
+                ApplicationConfigStore::load(&path)
+                    .unwrap()
+                    .config
+                    .navigation
+                    .selected_tab,
+                expected
+            );
+        }
+    }
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[test]
 fn icon_family_has_a_replacement_glyph_without_losing_icons() {
     let ctx = egui::Context::default();
     theme::setup(&ctx);
@@ -131,10 +176,7 @@ fn sidebar_theme_toggle_switches_on_one_click_in_its_own_row() {
         pressed,
         modifiers: egui::Modifiers::NONE,
     };
-    for (label, expected) in [
-        ("Dark theme", Appearance::Dark),
-        ("Light theme", Appearance::Light),
-    ] {
+    for (label, expected) in [("Dark", Appearance::Dark), ("Light", Appearance::Light)] {
         draw(vec![]);
         let frame = draw(vec![]);
         let texts: Vec<_> = frame

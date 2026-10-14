@@ -1,4 +1,4 @@
-use eframe::egui;
+use eframe::egui::{self, AtomExt};
 
 use crate::config::Game;
 
@@ -26,7 +26,7 @@ pub fn show(
 
     let mut genshin_width = 0.0;
     let mut star_rail_width = 0.0;
-    ui.horizontal(|ui| {
+    ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = gap;
         let genshin = ui.add_enabled(
             enabled,
@@ -58,10 +58,17 @@ pub fn show(
 }
 
 fn game_button<'a>(label: &'a str, logo: Option<&egui::TextureHandle>) -> egui::Button<'a> {
-    let text = egui::RichText::new(label).size(14.0);
+    let text = egui::RichText::new(label)
+        .size(16.0)
+        .atom_align(egui::Align2::LEFT_CENTER);
     match logo {
-        Some(logo) => egui::Button::image_and_text((logo.id(), egui::vec2(24.0, 24.0)), text),
-        None => egui::Button::new(text),
+        Some(logo) => egui::Button::new((
+            egui::Image::new((logo.id(), egui::vec2(24.0, 24.0)))
+                .atom_align(egui::Align2::LEFT_CENTER),
+            text,
+            egui::Atom::grow(),
+        )),
+        None => egui::Button::new((text, egui::Atom::grow())),
     }
     .corner_radius(7.0)
     .wrap_mode(egui::TextWrapMode::Extend)

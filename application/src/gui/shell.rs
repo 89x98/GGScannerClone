@@ -7,7 +7,7 @@ use super::{
 use crate::config::{Appearance, Game, GameNavigation, ToolTab};
 use eframe::egui;
 
-pub const TITLEBAR_HEIGHT: f32 = 56.0;
+pub const TITLEBAR_HEIGHT: f32 = 48.0;
 pub const SIDEBAR_MIN_WIDTH: f32 = 128.0;
 
 pub fn product_name() -> &'static str {
@@ -17,10 +17,10 @@ pub fn product_name() -> &'static str {
         "GGScannerOCR"
     }
 }
-pub fn site(game: Game) -> (&'static str, &'static str) {
+pub fn site(game: Game) -> &'static str {
     match game {
-        Game::Genshin => ("GGArtifact", "https://ggartifact.com"),
-        Game::StarRail => ("GGArtifact", "https://hsr.ggartifact.com"),
+        Game::Genshin => "https://ggartifact.com",
+        Game::StarRail => "https://hsr.ggartifact.com",
     }
 }
 
@@ -92,12 +92,12 @@ pub fn titlebar(
             }
             let rect = ui.max_rect();
             let controls = egui::Rect::from_min_size(
-                egui::pos2(rect.right() - 138.0, rect.center().y - 16.0),
-                egui::vec2(138.0, 32.0),
+                egui::pos2(rect.right() - 138.0, rect.top()),
+                egui::vec2(138.0, 40.0),
             );
             let brand = egui::Rect::from_min_max(
-                egui::pos2(rect.left() + 12.0, rect.center().y - 18.0),
-                egui::pos2(controls.left() - 128.0, rect.center().y + 18.0),
+                egui::pos2(rect.left() + 12.0, rect.top() + 10.0),
+                egui::pos2(controls.left() - 8.0, rect.top() + 44.0),
             );
             let mut brand_ui = ui.new_child(
                 egui::UiBuilder::new()
@@ -107,38 +107,42 @@ pub fn titlebar(
             brand_ui.horizontal_centered(|ui| {
                 ui.add(egui::Image::new((logos.app.id(), egui::vec2(28.0, 28.0))));
                 ui.label(egui::RichText::new(product_name()).size(16.0).strong());
-                ui.add_space(16.0);
+                ui.add_space(40.0);
                 ui.allocate_ui_with_layout(
-                    egui::vec2(248.0, 36.0),
+                    egui::vec2(248.0, 34.0),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         game_switcher::show(ui, *lang, game, enabled, Some(logos));
                     },
                 );
+                ui.add_space(24.0);
+                let label = lang.t("打开 GGArtifact", "Open GGArtifact");
+                let url = site(*game);
+                let width = ui.fonts_mut(|fonts| {
+                    fonts
+                        .layout_no_wrap(
+                            label.into(),
+                            egui::FontId::proportional(14.0),
+                            theme::palette(ui.visuals().dark_mode).foreground,
+                        )
+                        .size()
+                        .x
+                }) + 40.0;
+                if icons::button(
+                    ui,
+                    label,
+                    Icon::External,
+                    egui::vec2(width, 34.0),
+                    false,
+                    false,
+                )
+                .on_hover_text(url)
+                .clicked()
+                {
+                    ctx.open_url(egui::OpenUrl::new_tab(url));
+                }
             });
-            let mut site_ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(egui::Rect::from_min_size(
-                        egui::pos2(controls.left() - 120.0, rect.center().y - 16.0),
-                        egui::vec2(112.0, 32.0),
-                    ))
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            );
-            let (label, url) = site(*game);
-            if icons::button(
-                &mut site_ui,
-                label,
-                Icon::External,
-                egui::vec2(112.0, 32.0),
-                false,
-                false,
-            )
-            .on_hover_text(url)
-            .clicked()
-            {
-                ctx.open_url(egui::OpenUrl::new_tab(url));
-            }
             let mut controls_ui = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(controls)
@@ -167,7 +171,7 @@ pub fn titlebar(
 
 /// Standard window controls use the same bundled icon font as the navigation.
 fn caption_button(ui: &mut egui::Ui, label: &str, index: u8, maximized: bool) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(46.0, 32.0), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(46.0, 40.0), egui::Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let hover = response.hovered() || response.is_pointer_button_down_on();
     if hover {
@@ -199,7 +203,7 @@ fn caption_button(ui: &mut egui::Ui, label: &str, index: u8, maximized: bool) ->
     };
     icons::paint(
         ui,
-        egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 14.0)),
+        egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0)),
         icon,
         stroke.color,
     );
@@ -289,13 +293,13 @@ pub fn sidebar(
             let (icon, label, hint) = if dark {
                 (
                     Icon::Sun,
-                    lang.t("浅色模式", "Light theme"),
+                    lang.t("浅色", "Light"),
                     lang.t("切换为浅色模式", "Switch to light theme"),
                 )
             } else {
                 (
                     Icon::Moon,
-                    lang.t("深色模式", "Dark theme"),
+                    lang.t("深色", "Dark"),
                     lang.t("切换为深色模式", "Switch to dark theme"),
                 )
             };

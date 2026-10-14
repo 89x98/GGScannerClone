@@ -110,7 +110,13 @@ pub fn button(
     let icon_center = if icon_only {
         rect.center()
     } else if external {
-        Pos2::new(rect.right() - 14., rect.center().y)
+        let text_width = ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(label.into(), egui::FontId::proportional(14.), color)
+                .size()
+                .x
+        });
+        Pos2::new(rect.left() + 8. + text_width + 6. + 9., rect.center().y)
     } else {
         Pos2::new(rect.left() + 19., rect.center().y)
     };

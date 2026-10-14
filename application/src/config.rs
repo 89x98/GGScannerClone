@@ -9,7 +9,7 @@ use hsr_scanner::scan_timing::ScanTimings;
 use hsr_scanner::{TrailblazerGender, TrailblazerIdentity};
 use serde::{Deserialize, Serialize};
 
-pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 6;
+pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 7;
 pub const APPLICATION_CONFIG_FILE_REL: &str = "data/good_app_config.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,44 +67,29 @@ impl Default for ToolTab {
     }
 }
 
-/// Navigation is stored independently for each game. Switching games changes
-/// only `active_game`; returning to a game restores the tab the user left.
+/// Both games share the selected tool page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameNavigation {
     #[serde(default)]
     pub active_game: Game,
     #[serde(default)]
-    pub genshin_tab: ToolTab,
-    #[serde(default)]
-    pub star_rail_tab: ToolTab,
+    pub selected_tab: ToolTab,
 }
-
 impl Default for GameNavigation {
     fn default() -> Self {
         Self {
             active_game: Game::Genshin,
-            genshin_tab: ToolTab::default_for_build(),
-            star_rail_tab: ToolTab::default_for_build(),
+            selected_tab: ToolTab::default_for_build(),
         }
     }
 }
-
 impl GameNavigation {
     pub fn active_tab(&self) -> ToolTab {
-        match self.active_game {
-            Game::Genshin => self.genshin_tab,
-            Game::StarRail => self.star_rail_tab,
-        }
-        .available_for_build()
+        self.selected_tab.available_for_build()
     }
-
     pub fn select_tab(&mut self, tab: ToolTab) {
-        let tab = tab.available_for_build();
-        match self.active_game {
-            Game::Genshin => self.genshin_tab = tab,
-            Game::StarRail => self.star_rail_tab = tab,
-        }
+        self.selected_tab = tab.available_for_build();
     }
 }
 
@@ -420,6 +405,32 @@ impl ApplicationConfigStore {
             let mut value: serde_json::Value = serde_json::from_str(&json)
                 .with_context(|| format!("could not parse {}", path.display()))?;
             migrate_star_rail_scan_settings(&mut value)?;
+            // v1-v6 saved genshinTab and starRailTab separately. Keep the page
+            // of the last active game when merging them into selectedTab.
+            if matches!(
+                value
+                    .get("schemaVersion")
+                    .and_then(serde_json::Value::as_u64),
+                Some(1..=6) | None
+            ) {
+                if let Some(nav) = value
+                    .get_mut("navigation")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    let key = if nav.get("activeGame").and_then(serde_json::Value::as_str)
+                        == Some("starRail")
+                    {
+                        "starRailTab"
+                    } else {
+                        "genshinTab"
+                    };
+                    if let Some(tab) = nav.get(key).cloned() {
+                        nav.entry("selectedTab").or_insert(tab);
+                    }
+                    nav.remove("genshinTab");
+                    nav.remove("starRailTab");
+                }
+            }
             serde_json::from_value::<ApplicationUiConfig>(value)
                 .with_context(|| format!("could not parse {}", path.display()))?
         } else {
@@ -439,7 +450,7 @@ impl ApplicationConfigStore {
         // v1-v5 had no appearance preference and always rendered dark. v6 adds
         // System/Light/Dark; older files default to following the system while
         // preserving every saved game, task and navigation setting.
-        if matches!(config.schema_version, 1..=5) {
+        if matches!(config.schema_version, 1..=6) {
             config.schema_version = APPLICATION_CONFIG_SCHEMA_VERSION;
         }
         config.validate_version()?;

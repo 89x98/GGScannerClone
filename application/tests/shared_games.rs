@@ -278,7 +278,7 @@ fn capture_settings_migrate_and_hdr_round_trips_through_public_config_load() {
             assert!(!store.config.star_rail.hdr_mode);
             assert_eq!(store.config.star_rail.capture_method.to_yas(), None);
             assert_eq!(store.config.navigation.active_game, Game::StarRail);
-            assert_eq!(store.config.navigation.star_rail_tab, ToolTab::Manager);
+            assert_eq!(store.config.navigation.selected_tab, ToolTab::Manager);
             assert_eq!(store.config.star_rail.output_dir, r"D:\exports");
             assert!(!store.config.star_rail.scan_characters);
             assert_eq!(store.config.star_rail.max_characters, 5);
@@ -481,6 +481,9 @@ fn obsolete_archive_import_path_is_removed_without_changing_saved_preferences() 
             saved["starRail"]["stopOnFailure"] = false.into();
             saved["starRail"]["dumpJobData"] = false.into();
             saved["appearance"] = "system".into();
+            saved["navigation"] = serde_json::json!({
+                "activeGame": "starRail", "selectedTab": "scanner"
+            });
             saved["starRail"]
                 .as_object_mut()
                 .unwrap()
@@ -494,18 +497,18 @@ fn obsolete_archive_import_path_is_removed_without_changing_saved_preferences() 
 }
 
 #[test]
-fn navigation_defaults_to_genshin_and_restores_each_games_tab() {
+fn navigation_shares_the_selected_tab_between_games() {
     let mut navigation = GameNavigation::default();
     assert_eq!(navigation.active_game, Game::Genshin);
     assert_eq!(navigation.active_tab(), ToolTab::default_for_build());
 
     navigation.select_tab(ToolTab::Manager);
     navigation.active_game = Game::StarRail;
-    assert_eq!(navigation.active_tab(), ToolTab::default_for_build());
+    assert_eq!(navigation.active_tab(), ToolTab::Manager);
     navigation.select_tab(ToolTab::Credits);
 
     navigation.active_game = Game::Genshin;
-    assert_eq!(navigation.active_tab(), ToolTab::Manager);
+    assert_eq!(navigation.active_tab(), ToolTab::Credits);
     navigation.active_game = Game::StarRail;
     assert_eq!(navigation.active_tab(), ToolTab::Credits);
 }
@@ -580,11 +583,10 @@ fn legacy_scan_guards_migrate_to_automatic_limits_and_total_timing_settings() {
 }
 
 #[test]
-fn unavailable_capture_tab_routes_to_scanner_without_changing_other_game() {
+fn unavailable_capture_tab_routes_to_scanner_without_erasing_saved_tab() {
     let mut navigation = GameNavigation {
         active_game: Game::Genshin,
-        genshin_tab: ToolTab::Manager,
-        star_rail_tab: ToolTab::Capture,
+        selected_tab: ToolTab::Capture,
     };
 
     navigation.active_game = Game::StarRail;
@@ -593,16 +595,15 @@ fn unavailable_capture_tab_routes_to_scanner_without_changing_other_game() {
     } else {
         assert_eq!(navigation.active_tab(), ToolTab::Scanner);
     }
-    assert_eq!(navigation.genshin_tab, ToolTab::Manager);
     assert_eq!(
-        navigation.star_rail_tab,
+        navigation.selected_tab,
         ToolTab::Capture,
         "runtime fallback must not erase GOODCapture's saved tab"
     );
 }
 
 #[test]
-fn star_rail_settings_and_per_game_navigation_round_trip_separately() {
+fn star_rail_settings_and_shared_navigation_round_trip() {
     let root = temp_root("shared-config-round-trip");
     let app_config_path = root.join(APPLICATION_CONFIG_FILE_REL);
     let genshin_config_path = root.join("data").join("good_config.json");
@@ -619,8 +620,7 @@ fn star_rail_settings_and_per_game_navigation_round_trip_separately() {
     let mut store =
         ApplicationConfigStore::load(&app_config_path).expect("default app config should load");
     store.config.navigation.active_game = Game::StarRail;
-    store.config.navigation.genshin_tab = ToolTab::Manager;
-    store.config.navigation.star_rail_tab = ToolTab::Capture;
+    store.config.navigation.selected_tab = ToolTab::Capture;
     store.config.star_rail.output_dir = "D:\\exports\\star-rail".to_owned();
     store.config.star_rail.scan_characters = false;
     store.config.star_rail.max_gear = 789;
@@ -637,8 +637,7 @@ fn star_rail_settings_and_per_game_navigation_round_trip_separately() {
     let reloaded =
         ApplicationConfigStore::load(&app_config_path).expect("saved app config should reload");
     assert_eq!(reloaded.config.navigation.active_game, Game::StarRail);
-    assert_eq!(reloaded.config.navigation.genshin_tab, ToolTab::Manager);
-    assert_eq!(reloaded.config.navigation.star_rail_tab, ToolTab::Capture);
+    assert_eq!(reloaded.config.navigation.selected_tab, ToolTab::Capture);
     assert_eq!(
         reloaded.config.star_rail.output_dir,
         "D:\\exports\\star-rail"
@@ -972,7 +971,10 @@ fn completed_capture_advances_and_exports_while_its_tab_is_inactive() {
         .to_str()
         .unwrap()
         .starts_with("star_rail_capture_"));
-    assert_eq!(common["quests"]["records"], serde_json::json!([{ "id": achievement_id, "status": 3, "progress": 1, "counters": [] }]));
+    assert_eq!(
+        common["quests"]["records"],
+        serde_json::json!([{ "id": achievement_id, "status": 3, "progress": 1, "counters": [] }])
+    );
     assert!(common.get("achievements").is_none());
     let extras: Vec<_> = fs::read_dir(&output_dir)
         .unwrap()
