@@ -15,22 +15,112 @@ pub const SELECTED: Color32 = Color32::from_rgb(35, 55, 51);
 pub const ERROR: Color32 = Color32::from_rgb(244, 132, 137);
 pub const WARNING: Color32 = Color32::from_rgb(238, 190, 110);
 
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub background: Color32,
+    pub surface: Color32,
+    pub border: Color32,
+    pub accent: Color32,
+    pub success: Color32,
+    pub control_border: Color32,
+    pub hover: Color32,
+    pub pressed: Color32,
+    pub muted: Color32,
+    pub selected: Color32,
+    pub error: Color32,
+    pub warning: Color32,
+    pub foreground: Color32,
+    pub input: Color32,
+    pub primary_text: Color32,
+    pub primary_hover: Color32,
+    pub primary_pressed: Color32,
+}
+
+pub fn palette(dark: bool) -> Palette {
+    if dark {
+        Palette {
+            background: BACKGROUND,
+            surface: SURFACE,
+            border: BORDER,
+            accent: ACCENT,
+            success: SUCCESS,
+            control_border: CONTROL_BORDER,
+            hover: HOVER,
+            pressed: PRESSED,
+            muted: MUTED,
+            selected: SELECTED,
+            error: ERROR,
+            warning: WARNING,
+            foreground: Color32::from_rgb(237, 242, 247),
+            input: Color32::from_rgb(17, 23, 30),
+            primary_text: Color32::from_rgb(16, 41, 31),
+            primary_hover: Color32::from_rgb(155, 234, 211),
+            primary_pressed: Color32::from_rgb(108, 203, 177),
+        }
+    } else {
+        Palette {
+            background: Color32::from_rgb(243, 246, 249),
+            surface: Color32::WHITE,
+            border: Color32::from_rgb(210, 219, 226),
+            accent: Color32::from_rgb(18, 112, 89),
+            success: Color32::from_rgb(47, 117, 57),
+            control_border: Color32::from_rgb(137, 154, 169),
+            hover: Color32::from_rgb(230, 238, 243),
+            pressed: Color32::from_rgb(216, 227, 235),
+            muted: Color32::from_rgb(88, 107, 123),
+            selected: Color32::from_rgb(219, 239, 230),
+            error: Color32::from_rgb(180, 44, 53),
+            warning: Color32::from_rgb(143, 90, 7),
+            foreground: Color32::from_rgb(30, 43, 55),
+            input: Color32::from_rgb(248, 250, 252),
+            primary_text: Color32::WHITE,
+            primary_hover: Color32::from_rgb(22, 130, 103),
+            primary_pressed: Color32::from_rgb(13, 91, 72),
+        }
+    }
+}
+
+pub fn preference(appearance: crate::config::Appearance) -> egui::ThemePreference {
+    match appearance {
+        crate::config::Appearance::System => egui::ThemePreference::System,
+        crate::config::Appearance::Light => egui::ThemePreference::Light,
+        crate::config::Appearance::Dark => egui::ThemePreference::Dark,
+    }
+}
+
 pub fn setup(ctx: &egui::Context) {
-    // Keep native widgets on the same dark theme as the custom panel backgrounds.
-    ctx.set_theme(egui::Theme::Dark);
-    let mut style = (*ctx.style()).clone();
-    style.visuals = egui::Visuals::dark();
-    style.visuals.panel_fill = BACKGROUND;
-    style.visuals.window_fill = SURFACE;
-    style.visuals.faint_bg_color = SURFACE;
-    style.visuals.extreme_bg_color = Color32::from_rgb(17, 23, 30);
-    style.visuals.override_text_color = Some(Color32::from_rgb(237, 242, 247));
-    style.visuals.selection.bg_fill = Color32::from_rgb(38, 61, 53);
-    style.visuals.selection.stroke = Stroke::new(1.0, ACCENT);
-    style.visuals.hyperlink_color = ACCENT;
+    install(ctx, crate::config::Appearance::Dark);
+}
+
+pub fn install(ctx: &egui::Context, appearance: crate::config::Appearance) {
+    for mode in [egui::Theme::Light, egui::Theme::Dark] {
+        ctx.set_style_of(
+            mode,
+            styled((*ctx.style_of(mode)).clone(), mode == egui::Theme::Dark),
+        );
+    }
+    ctx.set_theme(preference(appearance));
+}
+
+fn styled(mut style: egui::Style, dark: bool) -> egui::Style {
+    let p = palette(dark);
+    // Native widgets and custom surfaces share the selected palette.
+    style.visuals = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    style.visuals.panel_fill = p.background;
+    style.visuals.window_fill = p.surface;
+    style.visuals.faint_bg_color = p.surface;
+    style.visuals.extreme_bg_color = p.input;
+    style.visuals.override_text_color = Some(p.foreground);
+    style.visuals.selection.bg_fill = p.selected;
+    style.visuals.selection.stroke = Stroke::new(1.0, p.accent);
+    style.visuals.hyperlink_color = p.accent;
     style.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
-    style.visuals.error_fg_color = ERROR;
-    style.visuals.warn_fg_color = WARNING;
+    style.visuals.error_fg_color = p.error;
+    style.visuals.warn_fg_color = p.warning;
     // Panes have independent clipping. Keep every interaction state within the
     // widget's allocated bounds instead of egui's default 1px hover/press growth.
     for widget in [
@@ -46,14 +136,14 @@ pub fn setup(ctx: &egui::Context) {
         &mut style.visuals.widgets.inactive,
         &mut style.visuals.widgets.noninteractive,
     ] {
-        widget.bg_fill = SURFACE;
-        widget.weak_bg_fill = SURFACE;
-        widget.bg_stroke = Stroke::new(1.0, CONTROL_BORDER);
+        widget.bg_fill = p.surface;
+        widget.weak_bg_fill = p.surface;
+        widget.bg_stroke = Stroke::new(1.0, p.control_border);
         widget.rounding = egui::Rounding::same(4.0);
     }
-    style.visuals.widgets.hovered.bg_fill = HOVER;
-    style.visuals.widgets.hovered.weak_bg_fill = HOVER;
-    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
+    style.visuals.widgets.hovered.bg_fill = p.hover;
+    style.visuals.widgets.hovered.weak_bg_fill = p.hover;
+    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, p.accent);
     style.visuals.widgets.hovered.rounding = egui::Rounding::same(4.0);
     style.visuals.widgets.active.rounding = egui::Rounding::same(4.0);
     style.spacing.item_spacing = egui::vec2(8.0, 5.0);
@@ -73,21 +163,32 @@ pub fn setup(ctx: &egui::Context) {
     style
         .text_styles
         .insert(egui::TextStyle::Heading, egui::FontId::proportional(23.0));
-    ctx.set_style(style);
+    style
 }
 
 pub fn primary_action(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Response {
     ui.scope(|ui| {
-        ui.visuals_mut().widgets.inactive.weak_bg_fill = if enabled { ACCENT } else { SELECTED };
-        ui.visuals_mut().widgets.noninteractive.weak_bg_fill = SELECTED;
-        ui.visuals_mut().widgets.hovered.weak_bg_fill = Color32::from_rgb(155, 234, 211);
-        ui.visuals_mut().widgets.active.weak_bg_fill = Color32::from_rgb(108, 203, 177);
+        ui.visuals_mut().widgets.inactive.weak_bg_fill = if enabled {
+            palette(ui.visuals().dark_mode).accent
+        } else {
+            palette(ui.visuals().dark_mode).selected
+        };
+        ui.visuals_mut().widgets.noninteractive.weak_bg_fill =
+            palette(ui.visuals().dark_mode).selected;
+        ui.visuals_mut().widgets.hovered.weak_bg_fill =
+            palette(ui.visuals().dark_mode).primary_hover;
+        ui.visuals_mut().widgets.active.weak_bg_fill =
+            palette(ui.visuals().dark_mode).primary_pressed;
         ui.add_enabled_ui(enabled, |ui| {
             ui.add_sized(
                 [ui.available_width(), 36.0],
-                egui::Button::new(RichText::new(text).color(if enabled { Color32::from_rgb(16, 41, 31) } else { MUTED }))
-                    .stroke(Stroke::NONE)
-                    .rounding(5.0),
+                egui::Button::new(RichText::new(text).color(if enabled {
+                    palette(ui.visuals().dark_mode).primary_text
+                } else {
+                    palette(ui.visuals().dark_mode).muted
+                }))
+                .stroke(Stroke::NONE)
+                .rounding(5.0),
             )
         })
         .inner
@@ -106,17 +207,22 @@ pub fn text_button(
     size: egui::Vec2,
     selected: bool,
 ) -> egui::Response {
+    let p = palette(ui.visuals().dark_mode);
     ui.scope(|ui| {
         let visuals = ui.visuals_mut();
         visuals.override_text_color = None;
-        visuals.widgets.inactive.weak_bg_fill = if selected { SELECTED } else { Color32::TRANSPARENT };
+        visuals.widgets.inactive.weak_bg_fill = if selected {
+            p.selected
+        } else {
+            Color32::TRANSPARENT
+        };
         visuals.widgets.inactive.bg_stroke = Stroke::NONE;
-        visuals.widgets.inactive.fg_stroke.color = if selected { ACCENT } else { MUTED };
+        visuals.widgets.inactive.fg_stroke.color = if selected { p.accent } else { p.muted };
         visuals.widgets.hovered.bg_stroke = Stroke::NONE;
         visuals.widgets.active.bg_stroke = Stroke::NONE;
-        visuals.widgets.active.weak_bg_fill = PRESSED;
-        visuals.widgets.hovered.fg_stroke.color = ACCENT;
-        visuals.widgets.active.fg_stroke.color = ACCENT;
+        visuals.widgets.active.weak_bg_fill = p.pressed;
+        visuals.widgets.hovered.fg_stroke.color = p.accent;
+        visuals.widgets.active.fg_stroke.color = p.accent;
         ui.add_sized(size, egui::Button::new(text))
     })
     .inner
@@ -137,7 +243,7 @@ pub fn task_status(ui: &mut egui::Ui, lang: Lang, status: Option<&TaskStatus>, i
             ) {
                 ui.visuals().warn_fg_color
             } else {
-                SUCCESS
+                palette(ui.visuals().dark_mode).success
             };
             ui.add(
                 egui::Label::new(
@@ -159,7 +265,7 @@ pub fn task_status(ui: &mut egui::Ui, lang: Lang, status: Option<&TaskStatus>, i
                 egui::Label::new(RichText::new(title).size(16.0).strong().color(if *partial {
                     ui.visuals().warn_fg_color
                 } else {
-                    SUCCESS
+                    palette(ui.visuals().dark_mode).success
                 }))
                 .wrap(),
             );

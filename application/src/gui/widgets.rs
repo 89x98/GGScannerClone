@@ -39,8 +39,8 @@ pub fn fold(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
 pub fn form(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
     let width = ui.available_width();
     egui::Frame::none()
-        .fill(super::theme::SURFACE)
-        .stroke(egui::Stroke::new(1.0, super::theme::BORDER))
+        .fill(super::theme::palette(ui.visuals().dark_mode).surface)
+        .stroke(egui::Stroke::new(1.0, super::theme::palette(ui.visuals().dark_mode).border))
         .rounding(8.0)
         .inner_margin(egui::vec2(12.0, 10.0))
         .show(ui, |ui| {
@@ -116,7 +116,7 @@ pub fn hint(ui: &mut egui::Ui, text: &str) {
         egui::Label::new(
             egui::RichText::new(text)
                 .size(12.0)
-                .color(super::theme::MUTED),
+                .color(super::theme::palette(ui.visuals().dark_mode).muted),
         )
         .wrap(),
     );
@@ -264,7 +264,7 @@ pub fn export_file(ui: &mut egui::Ui, l: Lang, path: &str) {
 /// Keep the saved location selectable in the result, and its action in the footer.
 pub fn export_location(ui: &mut egui::Ui, path: &str) {
     let filename = path.rsplit(['/', '\\']).find(|part| !part.is_empty()).unwrap_or(path);
-    ui.add(egui::Label::new(egui::RichText::new(filename).size(12.0).color(super::theme::MUTED)).truncate())
+    ui.add(egui::Label::new(egui::RichText::new(filename).size(12.0).color(super::theme::palette(ui.visuals().dark_mode).muted)).truncate())
         .on_hover_text(path);
 }
 
@@ -297,7 +297,7 @@ pub fn delay_group(
     let any_below = fields
         .iter()
         .any(|(_, value, default, _)| **value < *default);
-    let warn_color = super::theme::WARNING;
+    let warn_color = super::theme::palette(ui.visuals().dark_mode).warning;
     let gap = 16.0;
     let columns = 2;
     let width = (ui.available_width() - gap * (columns - 1) as f32) / columns as f32;
@@ -372,7 +372,7 @@ pub fn character_names_section(ui: &mut egui::Ui, state: &mut AppState, enabled:
     ui.add_enabled_ui(enabled, |ui| {
         field_row(ui, l.t("游戏内昵称*", "In-game nickname*"), |ui| {
             if state.user_config.traveler_name.trim().is_empty() {
-                ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::WARNING;
+                ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::palette(ui.visuals().dark_mode).warning;
             }
             ui.add(
                 singleline_input(&mut state.user_config.traveler_name)

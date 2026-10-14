@@ -18,6 +18,7 @@ pub fn run(
     scenario: String,
     hover: Option<[f32; 2]>,
     pressed: bool,
+    appearance: String,
 ) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -47,6 +48,12 @@ pub fn run(
                 &std::env::temp_dir().join("ggscanner-ui-preview"),
             );
             config.config.navigation.active_game = game;
+            config.config.appearance = match appearance.as_str() {
+                "light" => crate::config::Appearance::Light,
+                "dark" => crate::config::Appearance::Dark,
+                "system" => crate::config::Appearance::System,
+                _ => panic!("unsupported appearance"),
+            };
             config.config.navigation.select_tab(tab);
             let mut app = GuiApp::new(state, config, &cc.egui_ctx);
             app.save_settings = false;

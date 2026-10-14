@@ -149,7 +149,7 @@ pub fn show_settings(
             });
             if settings.scan_characters {
                 ui.add_space(4.0);
-                ui.indent("scan-character-options", |ui| trailblazer_row(ui, lang, settings, true));
+                trailblazer_row(ui, lang, settings, true);
             }
             ui.separator();
             if ui
@@ -205,7 +205,7 @@ pub(super) fn trailblazer_row(
         },
         |ui| {
             if required && settings.trailblazer_name.trim().is_empty() {
-                ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::WARNING;
+                ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::palette(ui.visuals().dark_mode).warning;
             }
             ui.add(
                 widgets::singleline_input(&mut settings.trailblazer_name)
@@ -223,7 +223,7 @@ pub(super) fn trailblazer_row(
         },
         |ui| {
             if required && settings.trailblazer_gender.is_none() {
-                ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::WARNING;
+                ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::palette(ui.visuals().dark_mode).warning;
             }
             egui::ComboBox::from_id_salt("star_rail_trailblazer_gender")
                 .width(140.0_f32.min(ui.available_width() - ui.spacing().button_padding.x * 2.0))

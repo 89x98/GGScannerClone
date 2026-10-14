@@ -211,7 +211,7 @@ impl DataRefresh {
                 } else {
                     source.refresh_label(lang)
                 };
-                let width = ui.fonts(|fonts| fonts.layout_no_wrap(label.into(), egui::FontId::proportional(14.0), theme::MUTED).size().x) + 18.0;
+                let width = ui.fonts(|fonts| fonts.layout_no_wrap(label.into(), egui::FontId::proportional(14.0), theme::palette(ui.visuals().dark_mode).muted).size().x) + 18.0;
                 if ui.add_enabled_ui(!busy && enabled, |ui| theme::text_button(ui, label, egui::vec2(width, 30.0), false)).inner
                     .clicked()
                 {
@@ -235,19 +235,22 @@ impl DataRefresh {
                         Err(error) => RefreshState::Failed(UiError::from_error(hint, error)),
                     };
                 }
-                ui.label(
-                    egui::RichText::new(age_text(lang, cache.updated_at, now_secs()))
-                        .size(12.0)
-                        .color(theme::MUTED),
-                )
-                .on_hover_text(lang.t(
-                    "这份数据上次成功下载的时间。",
-                    "Time since this data file was last successfully downloaded.",
-                ));
+                let age = age_text(lang, cache.updated_at, now_secs());
+                if !age.is_empty() {
+                    ui.label(
+                        egui::RichText::new(age)
+                            .size(12.0)
+                            .color(theme::palette(ui.visuals().dark_mode).muted),
+                    )
+                    .on_hover_text(lang.t(
+                        "这份数据上次成功下载的时间。",
+                        "Time since this data file was last successfully downloaded.",
+                    ));
+                }
                 if let RefreshState::Failed(error) = &cache.refresh {
                     ui.menu_button(
                         egui::RichText::new(lang.t("刷新失败", "Refresh failed"))
-                            .color(theme::ERROR)
+                            .color(theme::palette(ui.visuals().dark_mode).error)
                             .size(12.0),
                         |ui| {
                             ui.set_max_width(340.0);
@@ -276,10 +279,10 @@ fn now_secs() -> u64 {
 }
 pub fn age_text(lang: Lang, fetched: Option<u64>, now: u64) -> String {
     let Some(fetched) = fetched else {
-        return lang.t("更新时间未知", "Age unknown").into();
+        return String::new();
     };
     let Some(age) = now.checked_sub(fetched) else {
-        return lang.t("时间异常", "Clock mismatch").into();
+        return String::new();
     };
     if age < 60 {
         return lang.t("刚刚", "Just now").into();

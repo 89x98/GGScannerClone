@@ -9,7 +9,7 @@ use hsr_scanner::scan_timing::ScanTimings;
 use hsr_scanner::{TrailblazerGender, TrailblazerIdentity};
 use serde::{Deserialize, Serialize};
 
-pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 5;
+pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 6;
 pub const APPLICATION_CONFIG_FILE_REL: &str = "data/good_app_config.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,6 +17,15 @@ pub const APPLICATION_CONFIG_FILE_REL: &str = "data/good_app_config.json";
 pub enum Game {
     Genshin,
     StarRail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 impl Default for Game {
@@ -339,6 +348,8 @@ pub struct ApplicationUiConfig {
     #[serde(default)]
     pub navigation: GameNavigation,
     #[serde(default)]
+    pub appearance: Appearance,
+    #[serde(default)]
     pub star_rail: StarRailSettings,
 }
 
@@ -347,6 +358,7 @@ impl Default for ApplicationUiConfig {
         Self {
             schema_version: APPLICATION_CONFIG_SCHEMA_VERSION,
             navigation: GameNavigation::default(),
+            appearance: Appearance::System,
             star_rail: StarRailSettings::default(),
         }
     }
@@ -423,7 +435,10 @@ impl ApplicationConfigStore {
         // preferences. Earlier files lacked both export preferences: serde
         // supplies the shared defaults (keep latest, discard on user stop).
         // Existing values remain intact, including the manager's saved port.
-        if matches!(config.schema_version, 1..=4) {
+        // v1-v5 had no appearance preference and always rendered dark. v6 adds
+        // System/Light/Dark; older files default to following the system while
+        // preserving every saved game, task and navigation setting.
+        if matches!(config.schema_version, 1..=5) {
             config.schema_version = APPLICATION_CONFIG_SCHEMA_VERSION;
         }
         config.validate_version()?;

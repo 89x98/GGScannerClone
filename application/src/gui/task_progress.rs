@@ -66,10 +66,10 @@ pub fn row(ui: &mut egui::Ui, lang: Lang, step: &Step) {
 
 fn row_with_meter(ui: &mut egui::Ui, lang: Lang, step: &Step, reserve_meter: bool) {
     let color = match step.state {
-        StepState::Complete => theme::SUCCESS,
+        StepState::Complete => theme::palette(ui.visuals().dark_mode).success,
         StepState::Running => ui.visuals().text_color(),
         StepState::Interrupted => ui.visuals().warn_fg_color,
-        StepState::Pending => theme::MUTED,
+        StepState::Pending => theme::palette(ui.visuals().dark_mode).muted,
     };
     let count = if step.show_count && (step.state != StepState::Pending || step.total.is_some()) {
         match step.total {

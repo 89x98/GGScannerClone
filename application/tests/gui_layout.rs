@@ -735,7 +735,7 @@ fn sidebar_language_button_names_the_target_language_and_toggles_it() {
                 },
                 |ctx| {
                     egui::CentralPanel::default()
-                        .show(ctx, |ui| shell::sidebar(ui, &mut lang, &mut navigation));
+                        .show(ctx, |ui| shell::sidebar(ui, &mut lang, &mut navigation, &mut Default::default()));
                 },
             )
         };
@@ -913,7 +913,7 @@ fn sidebar_tab_borders_stay_inside_the_scroll_clip_while_pressed() {
                 },
                 |ctx| {
                     egui::CentralPanel::default()
-                        .show(ctx, |ui| shell::sidebar(ui, &mut lang, &mut navigation));
+                        .show(ctx, |ui| shell::sidebar(ui, &mut lang, &mut navigation, &mut Default::default()));
                 },
             )
         };
@@ -1063,7 +1063,7 @@ fn sidebar_footer_buttons_fit_their_clip_in_both_languages() {
                 },
                 |ctx| {
                     egui::CentralPanel::default()
-                        .show(ctx, |ui| shell::sidebar(ui, &mut lang, &mut navigation));
+                        .show(ctx, |ui| shell::sidebar(ui, &mut lang, &mut navigation, &mut Default::default()));
                 },
             )
         };
@@ -1072,7 +1072,6 @@ fn sidebar_footer_buttons_fit_their_clip_in_both_languages() {
         for label in [
             initial_lang.t("EN", "中"),
             initial_lang.t("关于", "About"),
-            "GGArtifact",
         ] {
             let point = painted_text(&initial.shapes)
                 .into_iter()

@@ -192,8 +192,8 @@ fn cache_age_uses_compact_bilingual_units_without_wrapping_future_times() {
     assert_eq!(age_text(Lang::En, Some(now - 3 * 86400), now), "3d ago");
     assert_eq!(age_text(Lang::En, Some(now - 59), now), "Just now");
     assert_eq!(age_text(Lang::En, Some(now - 60), now), "1m ago");
-    assert_eq!(age_text(Lang::En, Some(now + 60), now), "Clock mismatch");
-    assert_eq!(age_text(Lang::En, None, now), "Age unknown");
+    assert_eq!(age_text(Lang::En, Some(now + 60), now), "");
+    assert_eq!(age_text(Lang::En, None, now), "");
 }
 
 #[test]

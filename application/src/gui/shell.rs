@@ -1,5 +1,10 @@
-use super::{game_switcher, state::Lang, theme};
-use crate::config::{Game, GameNavigation, ToolTab};
+use super::{
+    game_switcher,
+    icons::{self, Icon},
+    state::Lang,
+    theme,
+};
+use crate::config::{Appearance, Game, GameNavigation, ToolTab};
 use eframe::egui;
 
 pub const TITLEBAR_HEIGHT: f32 = 56.0;
@@ -69,7 +74,7 @@ pub fn titlebar(
         .exact_height(TITLEBAR_HEIGHT)
         .frame(
             egui::Frame::none()
-                .fill(theme::SURFACE)
+                .fill(theme::palette(ctx.style().visuals.dark_mode).surface)
                 .inner_margin(egui::Margin::ZERO),
         )
         .show(ctx, |ui| {
@@ -86,12 +91,12 @@ pub fn titlebar(
             }
             let rect = ui.max_rect();
             let controls = egui::Rect::from_min_size(
-                egui::pos2(rect.right() - 138.0, rect.top()),
+                egui::pos2(rect.right() - 138.0, rect.center().y - 16.0),
                 egui::vec2(138.0, 32.0),
             );
             let brand = egui::Rect::from_min_max(
-                rect.min + egui::vec2(12.0, 0.0),
-                egui::pos2(controls.left() - 8.0, rect.bottom()),
+                egui::pos2(rect.left() + 12.0, rect.center().y - 18.0),
+                egui::pos2(controls.left() - 128.0, rect.center().y + 18.0),
             );
             let mut brand_ui = ui.new_child(
                 egui::UiBuilder::new()
@@ -102,11 +107,37 @@ pub fn titlebar(
                 ui.add(egui::Image::new((logos.app.id(), egui::vec2(28.0, 28.0))));
                 ui.label(egui::RichText::new(product_name()).size(16.0).strong());
                 ui.add_space(16.0);
-                ui.allocate_ui(egui::vec2(248.0, 36.0), |ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    game_switcher::show(ui, *lang, game, enabled, Some(logos));
-                });
+                ui.allocate_ui_with_layout(
+                    egui::vec2(248.0, 36.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        game_switcher::show(ui, *lang, game, enabled, Some(logos));
+                    },
+                );
             });
+            let mut site_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(egui::Rect::from_min_size(
+                        egui::pos2(controls.left() - 120.0, rect.center().y - 16.0),
+                        egui::vec2(112.0, 32.0),
+                    ))
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            let (label, url) = site(*game);
+            if icons::button(
+                &mut site_ui,
+                label,
+                Icon::External,
+                egui::vec2(112.0, 32.0),
+                false,
+                false,
+            )
+            .on_hover_text(url)
+            .clicked()
+            {
+                ctx.open_url(egui::OpenUrl::new_tab(url));
+            }
             let mut controls_ui = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(controls)
@@ -145,16 +176,18 @@ fn caption_button(ui: &mut egui::Ui, label: &str, index: u8, maximized: bool) ->
             if index == 2 {
                 egui::Color32::from_rgb(196, 43, 28)
             } else {
-                egui::Color32::from_rgb(48, 57, 68)
+                theme::palette(ui.visuals().dark_mode).hover
             },
         );
     }
     let stroke = egui::Stroke::new(
         1.0,
-        if hover {
+        if hover && index == 2 {
             egui::Color32::WHITE
+        } else if hover {
+            theme::palette(ui.visuals().dark_mode).foreground
         } else {
-            theme::MUTED
+            theme::palette(ui.visuals().dark_mode).muted
         },
     );
     let glyph = egui::Rect::from_center_size(rect.center(), egui::vec2(10.0, 10.0));
@@ -184,10 +217,15 @@ fn caption_button(ui: &mut egui::Ui, label: &str, index: u8, maximized: bool) ->
     response.on_hover_text(label)
 }
 
-pub fn sidebar(ui: &mut egui::Ui, lang: &mut Lang, navigation: &mut GameNavigation) {
+pub fn sidebar(
+    ui: &mut egui::Ui,
+    lang: &mut Lang,
+    navigation: &mut GameNavigation,
+    appearance: &mut Appearance,
+) {
     let rect = ui.available_rect_before_wrap();
     let footer = egui::Rect::from_min_max(
-        egui::pos2(rect.left(), (rect.bottom() - 124.0).max(rect.top())),
+        egui::pos2(rect.left(), (rect.bottom() - 84.0).max(rect.top())),
         rect.max,
     );
     let tabs = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), footer.top() - 12.0));
@@ -201,35 +239,33 @@ pub fn sidebar(ui: &mut egui::Ui, lang: &mut Lang, navigation: &mut GameNavigati
                 egui::Frame::none().inner_margin(2.0).show(ui, |ui| {
                     let width = (width - 4.0).max(1.0);
                     ui.set_width(width);
-                    ui.visuals_mut().selection.bg_fill = theme::SELECTED;
+                    ui.visuals_mut().selection.bg_fill =
+                        theme::palette(ui.visuals().dark_mode).selected;
                     ui.visuals_mut().selection.stroke = egui::Stroke::NONE;
                     ui.visuals_mut().widgets.hovered.bg_stroke =
-                        egui::Stroke::new(1.0, theme::ACCENT);
+                        egui::Stroke::new(1.0, theme::palette(ui.visuals().dark_mode).accent);
                     ui.visuals_mut().widgets.active.bg_stroke =
-                        egui::Stroke::new(1.0, theme::ACCENT);
+                        egui::Stroke::new(1.0, theme::palette(ui.visuals().dark_mode).accent);
                     let mut tab = navigation.active_tab();
                     let original = tab;
-                    for (value, zh, en) in [
-                        (ToolTab::Capture, "抓包器", "Capture"),
-                        (ToolTab::Scanner, "扫描器", "Scanner"),
-                        (ToolTab::Manager, "管理器", "Manager"),
+                    for (value, zh, en, icon) in [
+                        (ToolTab::Capture, "抓包器", "Capture", Icon::Capture),
+                        (ToolTab::Scanner, "扫描器", "Scanner", Icon::Scan),
+                        (ToolTab::Manager, "管理器", "Manager", Icon::Manager),
                     ] {
                         if value == ToolTab::Capture && !cfg!(feature = "capture") {
                             continue;
                         }
                         let selected = tab == value;
-                        let button = egui::SelectableLabel::new(
+                        if icons::button(
+                            ui,
+                            lang.t(zh, en),
+                            icon,
+                            egui::vec2(width, 42.0),
                             selected,
-                            egui::RichText::new(lang.t(zh, en)).color(if selected {
-                                theme::ACCENT
-                            } else {
-                                theme::MUTED
-                            }),
-                        );
-                        if ui
-                            .add_sized([width, 42.0], button)
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
+                            false,
+                        )
+                        .clicked()
                         {
                             tab = value;
                         }
@@ -244,36 +280,65 @@ pub fn sidebar(ui: &mut egui::Ui, lang: &mut Lang, navigation: &mut GameNavigati
         egui::Frame::none().inner_margin(2.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 4.0;
-            if theme::text_button(
-                ui,
-                lang.t("EN", "中"),
-                egui::vec2(ui.available_width(), 30.0),
-                false,
-            )
-            .on_hover_text(lang.t("Switch to English", "切换到中文"))
-            .clicked()
-            {
-                *lang = match lang {
-                    Lang::Zh => Lang::En,
-                    Lang::En => Lang::Zh,
+            ui.horizontal(|ui| {
+                let width = (ui.available_width() - 38.0).max(1.0);
+                if icons::button(
+                    ui,
+                    lang.t("EN", "中"),
+                    Icon::Language,
+                    egui::vec2(width, 32.0),
+                    false,
+                    false,
+                )
+                .on_hover_text(lang.t("Switch to English", "切换到中文"))
+                .clicked()
+                {
+                    *lang = match lang {
+                        Lang::Zh => Lang::En,
+                        Lang::En => Lang::Zh,
+                    };
+                }
+                let (icon, title) = match *appearance {
+                    Appearance::System => (Icon::System, lang.t("跟随系统", "System theme")),
+                    Appearance::Light => (Icon::Sun, lang.t("浅色模式", "Light theme")),
+                    Appearance::Dark => (Icon::Moon, lang.t("深色模式", "Dark theme")),
                 };
-            }
-            if theme::text_button(
+                let response = icons::button(ui, title, icon, egui::vec2(30.0, 32.0), false, true)
+                    .on_hover_text(title);
+                egui::popup::popup_below_widget(
+                    ui,
+                    egui::Id::new("appearance-menu"),
+                    &response,
+                    egui::PopupCloseBehavior::CloseOnClickOutside,
+                    |ui| {
+                        ui.set_min_width(150.0);
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                        for (value, label) in [
+                            (Appearance::System, lang.t("跟随系统", "System theme")),
+                            (Appearance::Light, lang.t("浅色模式", "Light theme")),
+                            (Appearance::Dark, lang.t("深色模式", "Dark theme")),
+                        ] {
+                            if ui.selectable_value(appearance, value, label).clicked() {
+                                ui.memory_mut(|memory| memory.close_popup());
+                            }
+                        }
+                    },
+                );
+                if response.clicked() {
+                    ui.memory_mut(|memory| memory.toggle_popup(egui::Id::new("appearance-menu")));
+                }
+            });
+            if icons::button(
                 ui,
                 lang.t("关于", "About"),
+                Icon::About,
                 egui::vec2(ui.available_width(), 42.0),
                 navigation.active_tab() == ToolTab::Credits,
+                false,
             )
             .clicked()
             {
                 navigation.select_tab(ToolTab::Credits);
-            }
-            let (label, url) = site(navigation.active_game);
-            if theme::text_button(ui, label, egui::vec2(ui.available_width(), 30.0), false)
-                .on_hover_text(url)
-                .clicked()
-            {
-                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
             }
         });
     });

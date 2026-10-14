@@ -23,7 +23,7 @@ pub fn show_settings(ui: &mut egui::Ui, state: &mut AppState, is_scanning: bool)
             });
             if state.scan_characters || state.names_need_attention {
                 ui.add_space(4.0);
-                ui.indent("scan-character-options", |ui| widgets::character_names_section(ui, state, true));
+                widgets::character_names_section(ui, state, true);
             }
             ui.separator();
             ui.checkbox(&mut state.hdr_mode, l.t("游戏使用 HDR", "Game uses HDR"));

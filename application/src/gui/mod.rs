@@ -6,6 +6,7 @@ pub mod credits;
 pub mod data_refresh;
 mod file_location;
 pub mod game_switcher;
+pub mod icons;
 pub mod hsr_manager_progress;
 pub mod layout;
 pub mod log_bridge;
@@ -239,6 +240,7 @@ struct GuiApp {
 
 impl GuiApp {
     fn new(state: AppState, app_config: ApplicationConfigStore, ctx: &egui::Context) -> Self {
+        theme::install(ctx, app_config.config.appearance);
         #[cfg(feature = "capture")]
         let capture_tab_state =
             capture_tab::CaptureTabState::from_config(state.output_dir.clone(), &state.user_config);
@@ -263,6 +265,7 @@ impl GuiApp {
 
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.set_theme(theme::preference(self.app_config.config.appearance));
         if self.restart_started {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -381,7 +384,7 @@ impl eframe::App for GuiApp {
         let restart_required = restart_required || self.star_rail.requires_restart();
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(theme::BACKGROUND))
+            .frame(egui::Frame::none().fill(theme::palette(ctx.style().visuals.dark_mode).background))
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 let [sidebar, right] = layout::split(
@@ -401,6 +404,7 @@ impl eframe::App for GuiApp {
                             ui,
                             &mut self.state.lang,
                             &mut self.app_config.config.navigation,
+                            &mut self.app_config.config.appearance,
                         )
                     },
                 );

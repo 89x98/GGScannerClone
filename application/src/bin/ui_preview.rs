@@ -22,6 +22,8 @@ struct Args {
     completed: bool,
     #[arg(long, default_value = "ready")]
     scenario: String,
+    #[arg(long, default_value = "dark")]
+    theme: String,
     /// Click a control in the real UI before taking the screenshot.
     #[arg(long, num_args = 2)]
     click: Vec<f32>,
@@ -63,5 +65,6 @@ fn main() -> eframe::Result {
         args.scenario,
         (!args.hover.is_empty()).then(|| [args.hover[0], args.hover[1]]),
         args.pressed,
+        args.theme,
     )
 }

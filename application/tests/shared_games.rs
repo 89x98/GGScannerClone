@@ -480,6 +480,7 @@ fn obsolete_archive_import_path_is_removed_without_changing_saved_preferences() 
             saved["starRail"]["verbose"] = false.into();
             saved["starRail"]["stopOnFailure"] = false.into();
             saved["starRail"]["dumpJobData"] = false.into();
+            saved["appearance"] = "system".into();
             saved["starRail"]
                 .as_object_mut()
                 .unwrap()
@@ -934,6 +935,25 @@ fn completed_capture_advances_and_exports_while_its_tab_is_inactive() {
         path
     });
     let exported_path = exported_path.expect("off-screen capture should finish its export");
+    let saved_bytes = fs::read(&exported_path).unwrap();
+    let saved_modified = fs::metadata(&exported_path).unwrap().modified().unwrap();
+    for _ in 0..200 {
+        capture.tick();
+        assert_eq!(
+            capture.completed_export_path_for_test().map(PathBuf::from),
+            Some(exported_path.clone()),
+            "completed capture must remain done until an explicit new Start"
+        );
+        assert!(
+            !capture.is_busy(),
+            "completed capture must not start another export"
+        );
+    }
+    assert_eq!(fs::read(&exported_path).unwrap(), saved_bytes);
+    assert_eq!(
+        fs::metadata(&exported_path).unwrap().modified().unwrap(),
+        saved_modified
+    );
     let common: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(&exported_path).expect("Fribbels export should be readable"),
     )

@@ -75,9 +75,9 @@ pub fn split(
         }
     }
     let color = if response.hovered() || response.dragged() {
-        theme::ACCENT
+        theme::palette(ui.visuals().dark_mode).accent
     } else {
-        theme::BORDER
+        theme::palette(ui.visuals().dark_mode).border
     };
     let ends = if horizontal {
         [
@@ -163,8 +163,8 @@ pub fn workspace(
             let content_width = ui.available_width();
             if matches!(pane, Pane::Status) {
                 egui::Frame::none()
-                    .fill(theme::SURFACE)
-                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .fill(theme::palette(ui.visuals().dark_mode).surface)
+                    .stroke(egui::Stroke::new(1.0, theme::palette(ui.visuals().dark_mode).border))
                     .rounding(8.0)
                     .inner_margin(14.0)
                     .show(ui, |ui| {
