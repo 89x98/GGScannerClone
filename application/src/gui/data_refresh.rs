@@ -4,7 +4,7 @@ use super::{
     theme, widgets,
 };
 use crate::config::{Game, ToolTab};
-use eframe::egui;
+use eframe::egui::{self, AtomExt};
 use std::{
     thread::JoinHandle,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -224,9 +224,13 @@ impl DataRefresh {
                             egui::Button::new((
                                 egui::RichText::new(icons::glyph(Icon::Refresh))
                                     .family(egui::FontFamily::Name("icons".into()))
-                                    .size(12.0),
-                                egui::RichText::new(label).size(12.0),
+                                    .size(14.0)
+                                    .atom_align(egui::Align2::CENTER_CENTER),
+                                egui::RichText::new(label)
+                                    .size(14.0)
+                                    .atom_align(egui::Align2::CENTER_CENTER),
                             ))
+                            .gap(4.0)
                             .min_size(egui::vec2(0.0, 24.0)),
                         )
                     })
@@ -261,7 +265,7 @@ impl DataRefresh {
                     };
                     ui.label(
                         egui::RichText::new(updated)
-                            .size(12.0)
+                            .size(14.0)
                             .color(theme::palette(ui.visuals().dark_mode).muted),
                     )
                     .on_hover_text(lang.t(
