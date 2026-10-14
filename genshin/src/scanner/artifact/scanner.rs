@@ -66,24 +66,31 @@ fn crop_region(
 /// Pick the best OCR candidate from a set (used when solver fails).
 /// Same-key candidates: prefer decimal value, then larger value.
 /// Different-key candidates: prefer first (primary engine).
-fn pick_best_candidate(candidates: &[OcrCandidate]) -> Option<&OcrCandidate> {
+fn pick_best_candidate(candidates: &[OcrCandidate], rarity: i32) -> Option<&OcrCandidate> {
+    let candidates: Vec<&OcrCandidate> = candidates
+        .iter()
+        .filter(|c| roll_solver::is_plausible_substat(c, rarity))
+        .collect();
     if candidates.len() <= 1 {
-        return candidates.first();
+        return candidates.first().copied();
     }
     if candidates.iter().all(|c| c.key == candidates[0].key) {
         // All same key — prefer candidate with decimal, then larger value
-        candidates.iter().max_by(|a, b| {
-            let a_dec = a.value.fract().abs() > 0.001;
-            let b_dec = b.value.fract().abs() > 0.001;
-            a_dec.cmp(&b_dec).then(
-                a.value
-                    .partial_cmp(&b.value)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
-        })
+        candidates
+            .iter()
+            .max_by(|a, b| {
+                let a_dec = a.value.fract().abs() > 0.001;
+                let b_dec = b.value.fract().abs() > 0.001;
+                a_dec.cmp(&b_dec).then(
+                    a.value
+                        .partial_cmp(&b.value)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+            })
+            .copied()
     } else {
         // Different keys — prefer first (primary engine)
-        Some(&candidates[0])
+        Some(candidates[0])
     }
 }
 
@@ -991,7 +998,7 @@ impl GoodArtifactScanner {
 
         // Filter out empty candidate lines (OCR failures) — the solver doesn't
         // care which physical line a substat came from, only the candidate sets.
-        let non_empty_candidates: Vec<Vec<OcrCandidate>> = solver_candidates
+        let mut non_empty_candidates: Vec<Vec<OcrCandidate>> = solver_candidates
             .iter()
             .filter(|c| !c.is_empty())
             .cloned()
@@ -1042,8 +1049,10 @@ impl GoodArtifactScanner {
                 let retry_input = SolverInput {
                     rarity,
                     level_candidates: level_candidates.clone(),
-                    substat_candidates: retry_non_empty,
+                    substat_candidates: retry_non_empty.clone(),
                 };
+                solver_candidates = retry_candidates;
+                non_empty_candidates = retry_non_empty;
                 solved = roll_solver::solve(&retry_input);
                 if solved.is_some() {
                     log_debug!(
@@ -1105,7 +1114,7 @@ impl GoodArtifactScanner {
             // but ALWAYS warn the user with detailed context.
             let mut line_details: Vec<String> = Vec::new();
             for (i, cands) in non_empty_candidates.iter().enumerate() {
-                let best = pick_best_candidate(cands);
+                let best = pick_best_candidate(cands, rarity);
                 let detail = match best {
                     Some(c) => format!(
                         "  sub[{}]: {}={}{}",
@@ -1114,9 +1123,21 @@ impl GoodArtifactScanner {
                         c.value,
                         if c.inactive { " (inactive)" } else { "" }
                     ),
-                    None => format!("  sub[{}]: (no candidates)", i),
+                    None => format!("  sub[{}]: out of range {:?}", i, cands),
                 };
                 line_details.push(detail);
+            }
+            // Preserve the whole item's identity: an unreadable value must not
+            // become either an impossible exported stat or a silently lost line.
+            if non_empty_candidates
+                .iter()
+                .any(|cands| pick_best_candidate(cands, rarity).is_none())
+            {
+                bail!(
+                    "圣遗物副词条数值超出合理范围，重识别后仍无法恢复: {} / Artifact substat value outside plausible range after OCR retries: {}",
+                    line_details.join("; "),
+                    line_details.join("; ")
+                );
             }
             log_warn!(
                 "[artifact] 求解失败 {}星 lv{} {}·{} (锁定={}, 星标={}, 祝圣之霜={})\n\
@@ -1139,7 +1160,7 @@ impl GoodArtifactScanner {
             let mut subs = Vec::new();
             let mut unact = Vec::new();
             for cands in &non_empty_candidates {
-                if let Some(best) = pick_best_candidate(cands) {
+                if let Some(best) = pick_best_candidate(cands, rarity) {
                     let sub = GoodSubStat {
                         key: best.key.clone(),
                         value: best.value,
@@ -2193,6 +2214,97 @@ impl GoodArtifactScanner {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_fallback_rejects_implausible_values_and_keeps_valid_alternatives() {
+        let candidates = vec![
+            OcrCandidate {
+                key: "critDMG_".into(),
+                value: 112.0,
+                inactive: false,
+            },
+            OcrCandidate {
+                key: "critDMG_".into(),
+                value: 11.2,
+                inactive: false,
+            },
+        ];
+        assert!(pick_best_candidate(&candidates[..1], 5).is_none());
+        assert_eq!(pick_best_candidate(&candidates, 5).unwrap().value, 11.2);
+        for value in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let invalid = [OcrCandidate {
+                key: "hp".into(),
+                value,
+                inactive: false,
+            }];
+            assert!(pick_best_candidate(&invalid, 5).is_none());
+        }
+        let inactive = [OcrCandidate {
+            key: "critDMG_".into(),
+            value: 11.2,
+            inactive: true,
+        }];
+        assert!(pick_best_candidate(&inactive, 5).is_none());
+        for key in [
+            "hp",
+            "hp_",
+            "atk",
+            "atk_",
+            "def",
+            "def_",
+            "eleMas",
+            "enerRech_",
+            "critRate_",
+            "critDMG_",
+        ] {
+            for rarity in 1..=5 {
+                let inflated = [OcrCandidate {
+                    key: key.into(),
+                    value: 99999.0,
+                    inactive: false,
+                }];
+                assert!(pick_best_candidate(&inflated, rarity).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn test_artifact_rejects_decimal_point_error_after_retries() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 5);
+        paint_elixir_banner(&mut image, false);
+        let mut level_responses = vec!["+20"];
+        level_responses.extend(vec![""; 100]);
+        let level_ocr = FakeOcr::new(level_responses);
+        let mut responses = vec![
+            "生之花",
+            "生命值",
+            "+20",
+            "暴击率+10.5%",
+            "暴击伤害+112.0%",
+            "攻击力+9.3%",
+            "元素充能效率+6.5%",
+        ];
+        // Retry crops remain unreadable, so the scanner must reject the item.
+        responses.extend(vec![""; 100]);
+        let general_ocr = FakeOcr::new(responses);
+        let result = GoodArtifactScanner::scan_single_artifact(
+            &level_ocr,
+            &general_ocr,
+            &CaptureFrame::full(image),
+            &make_1080p_scaler(),
+            &ArtifactOcrRegions::new(),
+            &make_test_mappings(),
+            &default_config(),
+            0,
+            None,
+        );
+        let error = result
+            .err()
+            .expect("impossible stat must fail instead of exporting");
+        assert!(error.to_string().contains("outside plausible range"));
+        assert!(error.to_string().contains("112"));
+    }
+
     use super::*;
     use crate::scanner::common::test_utils::*;
 
