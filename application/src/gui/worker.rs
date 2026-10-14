@@ -977,12 +977,15 @@ fn scan_result_status(
     match result {
         Ok(path) => TaskStatus::Exported {
             message: UiText::new("扫描已完成", "Scan completed"),
-            path,
             partial: cancelled
+                || std::path::Path::new(&path)
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("good_export_partial_"))
                 || progress.steps.iter().any(|step| {
                     step.state != super::task_progress::StepState::Complete
                         || step.total.is_some_and(|total| step.completed < total)
                 }),
+            path,
         },
         Err(error) if error.is::<genshin_scanner::scanner::common::progress::ScanCancelled>() => {
             TaskStatus::Stopped(UiText::new(
@@ -1013,6 +1016,14 @@ mod feedback_tests {
             panic!("write failure was hidden")
         };
         assert!(error.copy_text(Lang::En).contains("access denied"));
+    }
+
+    #[test]
+    fn partial_filename_marks_capped_exports_without_a_cancel_signal() {
+        assert!(matches!(
+            scan_result_status(Ok("C:/exports/good_export_partial_2026-10-13_12-00-00.json".into()), &TaskProgress::default(), false),
+            TaskStatus::Exported { partial: true, .. }
+        ));
     }
 
     #[test]

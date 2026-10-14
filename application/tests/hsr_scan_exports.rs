@@ -80,19 +80,13 @@ fn result(empty: bool, complete: bool) -> (ScanResult, ReferenceCache) {
 }
 
 #[test]
-fn stopping_obeys_the_save_choice_and_never_writes_an_empty_export() {
+fn stopping_always_saves_and_never_writes_an_empty_export() {
     let dir = temp_dir();
-    let mut settings = StarRailSettings {
+    let settings = StarRailSettings {
         output_dir: dir.display().to_string(),
         ..Default::default()
     };
     let (scanned, refs) = result(false, false);
-    assert!(matches!(
-        finish_scan_export(&settings, &scanned, &refs, true, None).unwrap(),
-        TaskStatus::Stopped(_)
-    ));
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
-    settings.scan_save_on_cancel = true;
     let (empty, _) = result(true, false);
     assert!(matches!(
         finish_scan_export(&settings, &empty, &refs, true, None).unwrap(),
@@ -105,6 +99,7 @@ fn stopping_obeys_the_save_choice_and_never_writes_an_empty_export() {
         panic!("stopped scan should save partial results")
     };
     assert!(partial);
+    assert!(path.contains("partial_"));
     let json: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     assert_eq!(json["version"], 4);
     assert_eq!(json["characters"].as_array().unwrap().len(), 1);
@@ -146,14 +141,16 @@ fn latest_scan_cleanup_preserves_capture_other_games_manual_and_future_files() {
 }
 
 #[test]
-fn history_mode_keeps_both_exports_and_scan_caps_still_save_partial_results() {
+fn partial_scans_keep_complete_exports_even_in_latest_only_mode() {
     let dir = temp_dir();
     let settings = StarRailSettings {
         output_dir: dir.display().to_string(),
-        scan_only_keep_latest_export: false,
+        scan_only_keep_latest_export: true,
         ..Default::default()
     };
     let (scanned, refs) = result(false, false);
+    let old = dir.join("star_rail_scan_2026-01-01_00-00-00.json");
+    fs::write(&old, b"complete export").unwrap();
     let mut paths = Vec::new();
     for _ in 0..2 {
         let TaskStatus::Exported { path, partial, .. } =
@@ -165,7 +162,13 @@ fn history_mode_keeps_both_exports_and_scan_caps_still_save_partial_results() {
         paths.push(path);
     }
     assert_ne!(paths[0], paths[1]);
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 3);
+    assert_eq!(fs::read(&old).unwrap(), b"complete export");
+    let (complete, refs) = result(false, true);
+    finish_scan_export(&settings, &complete, &refs, false, None).unwrap();
+    assert!(!old.exists());
+    assert!(paths.iter().all(|path| !std::path::Path::new(path).exists()));
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
     remove_temp_dir(&dir);
 }
 

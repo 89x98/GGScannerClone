@@ -151,7 +151,7 @@ fn scanner_config(
         max_characters: settings.max_characters,
         trailblazer,
         dump_images: settings.dump_images,
-        save_on_cancel: settings.scan_save_on_cancel,
+        save_on_cancel: true,
         stop_on_failure: settings.stop_on_failure,
         ..ScanConfig::default()
     })
@@ -192,9 +192,6 @@ pub fn finish_scan_export(
             "Scan stopped · no export",
         ))
     };
-    if cancelled && !settings.scan_save_on_cancel {
-        return Ok(stopped());
-    }
     let export = export_observations(
         &result.observations,
         references,
@@ -224,7 +221,14 @@ pub fn finish_scan_export(
         *status.lock().unwrap() = TaskStatus::Running(UiText::new("正在导出数据", "Saving export"));
     }
     let output_dir = ensure_output_dir(settings)?;
-    let path = super::star_rail_exports::write_scan_file(&output_dir, &export, settings.scan_only_keep_latest_export).map_err(|error| {
+    let partial = cancelled
+        || (settings.scan_characters
+            && result.coverage.characters != hsr_scanner::model::CoverageLevel::Complete)
+        || (settings.scan_light_cones
+            && result.coverage.light_cones != hsr_scanner::model::CoverageLevel::Complete)
+        || (settings.scan_relics_and_ornaments
+            && result.coverage.relics != hsr_scanner::model::CoverageLevel::Complete);
+    let path = super::star_rail_exports::write_scan_file(&output_dir, &export, settings.scan_only_keep_latest_export, partial).map_err(|error| {
         UiError::from_error(
             UiText::new(
                 "扫描导出未完成，请检查输出位置或旧文件的权限。新文件若已保存，其路径在完整错误中。",
@@ -233,13 +237,6 @@ pub fn finish_scan_export(
             error,
         )
     })?;
-    let partial = cancelled
-        || (settings.scan_characters
-            && result.coverage.characters != hsr_scanner::model::CoverageLevel::Complete)
-        || (settings.scan_light_cones
-            && result.coverage.light_cones != hsr_scanner::model::CoverageLevel::Complete)
-        || (settings.scan_relics_and_ornaments
-            && result.coverage.relics != hsr_scanner::model::CoverageLevel::Complete);
     Ok(TaskStatus::Exported {
         message: v4_export_message(counts, &path),
         path: path.display().to_string(),

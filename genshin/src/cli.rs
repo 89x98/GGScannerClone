@@ -26,7 +26,9 @@ use crate::scanner::common::ocr_pool::{
     OcrBackends, OcrPoolConfig, SharedOcrPools, DEFAULT_ARTIFACT_OCR, DEFAULT_CHARACTER_OCR,
     DEFAULT_WEAPON_OCR,
 };
-use crate::scanner::common::scan_runner::{run_scan_phases, ScanFailurePolicy, ScanRunOptions};
+use crate::scanner::common::scan_runner::{
+    run_scan_phases, ScanFailurePolicy, ScanPhaseResult, ScanRunOptions,
+};
 use crate::scanner::weapon::GoodWeaponScannerConfig;
 
 /// Config file path relative to the executable directory.
@@ -1561,7 +1563,7 @@ pub struct ScanCoreConfig {
     pub achievement_max_count: usize,
     /// If true, keep the artifact tab's 5-star acquired-time filter enabled.
     pub artifact_keep_five_star_filter: bool,
-    /// If true, export partial results when the user cancels mid-scan.
+    /// Legacy caller option retained for compatibility; user scans now always save partial results.
     pub save_on_cancel: bool,
     /// Dump one-tick achievement list scrolls, then exit.
     pub debug_ach_scroll: bool,
@@ -1697,7 +1699,6 @@ pub fn run_scan_core_observed(
     let pools = Arc::new(SharedOcrPools::new(pool_config, &config.ocr.backends())?);
     log_info!("OCR模型加载完成", "OCR models loaded");
 
-    let save_on_cancel = config.save_on_cancel;
     let scan_result = run_scan_phases(
         &mut ctrl,
         mappings,
@@ -1709,22 +1710,61 @@ pub fn run_scan_core_observed(
         phase_fn,
         token.clone(),
         ScanRunOptions {
-            save_on_cancel,
+            save_on_cancel: true,
             accept_cancelled_success: true,
             failure_policy: ScanFailurePolicy::ContinueOnError,
         },
     )?;
 
+    let mut partial = token.is_cancelled()
+        || matches!(
+            scan_result.characters,
+            ScanPhaseResult::Incomplete | ScanPhaseResult::Failed(_)
+        )
+        || matches!(
+            scan_result.weapons,
+            ScanPhaseResult::Incomplete | ScanPhaseResult::Failed(_)
+        )
+        || matches!(
+            scan_result.artifacts,
+            ScanPhaseResult::Incomplete | ScanPhaseResult::Failed(_)
+        )
+        || matches!(
+            scan_result.achievements,
+            ScanPhaseResult::Incomplete | ScanPhaseResult::Failed(_)
+        );
     let characters = scan_result.characters.into_complete();
     let weapons = scan_result.weapons.into_complete();
     let artifacts = scan_result.artifacts.into_complete();
     let achievements = scan_result.achievements.into_complete();
 
+    // A configured cap only makes the export partial when it was actually reached.
+    partial |= characters
+        .as_ref()
+        .is_some_and(|items| config.char_max_count > 0 && items.len() >= config.char_max_count)
+        || weapons.as_ref().is_some_and(|items| {
+            config.weapon_max_count > 0 && items.len() >= config.weapon_max_count
+        })
+        || artifacts.as_ref().is_some_and(|items| {
+            config.artifact_max_count > 0 && items.len() >= config.artifact_max_count
+        })
+        || achievements.as_ref().is_some_and(|items| {
+            config.achievement_max_count > 0 && items.len() >= config.achievement_max_count
+        });
+
     if token.is_cancelled() {
         log_info!("扫描被用户中断", "Scan stopped by user");
-        if !save_on_cancel {
+    }
+
+    if characters.as_ref().is_none_or(Vec::is_empty)
+        && weapons.as_ref().is_none_or(Vec::is_empty)
+        && artifacts.as_ref().is_none_or(Vec::is_empty)
+        && achievements.as_ref().is_none_or(Vec::is_empty)
+    {
+        if token.is_cancelled() {
             return Err(crate::scanner::common::progress::ScanCancelled.into());
         }
+        anyhow::bail!("未识别出数据，未导出 / No data recognized; nothing exported");
     }
 
     // Wait for any pending debug image writes to finish
@@ -1735,31 +1775,13 @@ pub fn run_scan_core_observed(
     let export = GoodExport::new(characters, weapons, artifacts).with_achievements(achievements);
     let json = serde_json::to_string_pretty(&export)?;
 
-    let timestamp = chrono_timestamp();
-    let output_dir = PathBuf::from(&config.output_dir);
-    std::fs::create_dir_all(&output_dir)?;
-    if user_config.only_keep_latest_export {
-        let removed = crate::fs_utils::remove_previous_exports(
-            &output_dir,
-            crate::fs_utils::SCANNER_EXPORT_PREFIX,
-        )?;
-        if removed > 0 {
-            log_info!(
-                "仅保留最新导出：已删除 {} 个旧导出",
-                "Only keep latest dump: removed {} old export(s)",
-                removed
-            );
-        }
-    }
-    let filename = format!(
-        "{}{}{}",
-        crate::fs_utils::SCANNER_EXPORT_PREFIX,
-        timestamp,
-        crate::fs_utils::EXPORT_JSON_SUFFIX
-    );
-    let path = output_dir.join(&filename);
-
-    std::fs::write(&path, &json)?;
+    let path = crate::fs_utils::write_scan_export(
+        &PathBuf::from(&config.output_dir),
+        &json,
+        &chrono_timestamp(),
+        partial,
+        user_config.only_keep_latest_export,
+    )?;
     let path_str = path.display().to_string();
     log_info!("已导出: {}", "Exported to {}", path_str);
 

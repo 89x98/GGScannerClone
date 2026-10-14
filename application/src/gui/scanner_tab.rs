@@ -141,12 +141,7 @@ pub fn show_status(
     });
     ui.add_space(12.0);
     ui.add_enabled_ui(!running && !game_busy, |ui| {
-        widgets::scan_export_options(
-            ui,
-            l,
-            &mut state.only_keep_latest_export,
-            &mut state.save_on_cancel,
-        );
+        widgets::scan_export_options(ui, l, &mut state.only_keep_latest_export);
     });
     ui.add_space(4.0);
     widgets::export_action(ui, l, status.as_ref());

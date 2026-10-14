@@ -47,12 +47,21 @@ fn export_stamp(kind: ExportKind) -> HsrResult<String> {
     ))
 }
 
-pub fn write_scan_file(output_dir: &Path, export: &Value, only_latest: bool) -> HsrResult<PathBuf> {
+pub fn write_scan_file(
+    output_dir: &Path,
+    export: &Value,
+    only_latest: bool,
+    partial: bool,
+) -> HsrResult<PathBuf> {
     write_export_file(
         output_dir,
-        &export_stamp(ExportKind::Scan)?,
+        &format!(
+            "{}{}",
+            if partial { "partial_" } else { "" },
+            export_stamp(ExportKind::Scan)?
+        ),
         export,
-        only_latest,
+        only_latest && !partial,
         ExportKind::Scan,
     )
 }
@@ -144,6 +153,7 @@ fn export_timestamp(name: &str, kind: ExportKind) -> Option<&str> {
         ],
     };
     let stamp = prefixes.iter().find_map(|p| body.strip_prefix(p))?;
+    let stamp = stamp.strip_prefix("partial_").unwrap_or(stamp);
     let bytes = stamp.as_bytes();
     if bytes.len() != 19 && bytes.len() != 29 {
         return None;

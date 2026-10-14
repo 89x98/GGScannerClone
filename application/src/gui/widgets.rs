@@ -154,15 +154,10 @@ pub fn scan_export_options(
     ui: &mut egui::Ui,
     lang: Lang,
     only_latest: &mut bool,
-    save_on_cancel: &mut bool,
 ) {
     ui.checkbox(
         only_latest,
         lang.t("仅保留最新导出", "Keep latest export only"),
-    );
-    ui.checkbox(
-        save_on_cancel,
-        lang.t("停止时保存已扫描结果", "Save results on stop"),
     );
 }
 

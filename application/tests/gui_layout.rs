@@ -66,10 +66,10 @@ fn both_games_expose_and_toggle_the_same_scan_export_preferences() {
             };
             draw(vec![]);
             let initial = draw(vec![]);
-            for caption in [
-                lang.t("仅保留最新导出", "Keep latest export only"),
-                lang.t("停止时保存已扫描结果", "Save results on stop"),
-            ] {
+            assert!(!painted_text(&initial.shapes)
+                .iter()
+                .any(|(text, _)| text == lang.t("停止时保存已扫描结果", "Save results on stop")));
+            for caption in [lang.t("仅保留最新导出", "Keep latest export only")] {
                 let point = painted_text(&initial.shapes)
                     .into_iter()
                     .find(|(text, _)| text == caption)
@@ -93,10 +93,10 @@ fn both_games_expose_and_toggle_the_same_scan_export_preferences() {
             }
             if star_rail {
                 assert!(!settings.scan_only_keep_latest_export);
-                assert!(settings.scan_save_on_cancel);
+                assert!(!settings.scan_save_on_cancel);
             } else {
                 assert!(!genshin.only_keep_latest_export);
-                assert!(genshin.save_on_cancel);
+                assert!(!genshin.save_on_cancel);
             }
         }
     }
