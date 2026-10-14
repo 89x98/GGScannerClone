@@ -86,25 +86,6 @@ fn roll_table_lookup(key: &str, rarity: i32, display_value: f64) -> Option<u8> {
     }
 }
 
-/// Coarse guard for OCR fallback, independent of the full roll assignment.
-/// Lower rarities use the five-star ceiling conservatively until they have
-/// their own lookup tables. Never infer a decimal-point correction here.
-pub fn is_plausible_substat(candidate: &OcrCandidate, rarity: i32) -> bool {
-    if !candidate.value.is_finite() || candidate.value <= 0.0 {
-        return false;
-    }
-    let table_rarity = if rarity == 4 { 4 } else { 5 };
-    let Some(table) = roll_table(&candidate.key, table_rarity) else {
-        return false;
-    };
-    let ceiling = table
-        .iter()
-        .rev()
-        .find(|(_, mask)| !candidate.inactive || mask & 1 != 0)
-        .map(|(value, _)| *value as f64 / 10.0);
-    ceiling.is_some_and(|max| candidate.value <= max)
-}
-
 /// Find all valid roll counts for a substat using the pre-computed roll table.
 fn valid_roll_counts(key: &str, rarity: i32, display_value: f64, max_per_stat: i32) -> Vec<i32> {
     let mask = match roll_table_lookup(key, rarity, display_value) {
