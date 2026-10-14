@@ -1,4 +1,6 @@
-use genshin_scanner::scanner::common::{annotator, coord_scaler::CoordScaler};
+use genshin_scanner::scanner::common::{
+    annotator, capture_frame::CaptureFrame, coord_scaler::CoordScaler, pixel_utils,
+};
 use image::{Rgb, RgbImage};
 
 // A separate integration-test process keeps the global dump setting isolated
@@ -49,6 +51,63 @@ fn observation_boundaries_capture_retries_errors_and_standalone_checks_once() {
     let standalone = root.join("hsr_observation_standalone_lock/0000");
     assert!(standalone.join("standalone_lock.png").exists());
     assert!(!standalone.join("full.png").exists());
+    annotator::observe_detection("standalone_lock", &image, || true);
+    annotator::flush();
+    assert!(root
+        .join("hsr_observation_standalone_lock/0001/standalone_lock.png")
+        .exists());
+
+    // The manager checks rarity on the control thread before dispatching OCR.
+    // Hundreds of pixel reads must produce one semantic crop, not hundreds
+    // of folders/threads or searches through a previous dump library.
+    let scaler = CoordScaler::new(1920, 1080);
+    let mut panel = RgbImage::from_pixel(1920, 1080, Rgb([0, 0, 0]));
+    for y in 370..=374 {
+        for x in 1340..=1500 {
+            panel.put_pixel(x, y, Rgb([200, 180, 50]));
+        }
+    }
+    let frame = CaptureFrame::full(panel);
+    for _ in 0..3 {
+        assert_eq!(
+            pixel_utils::detect_artifact_rarity_evidence(&frame, &scaler),
+            Some(5)
+        );
+    }
+    annotator::flush();
+    assert!(!root.join("hsr_observation_frame_pixel").exists());
+    let rarity_root = root.join("hsr_observation_rarity_stars");
+    assert_eq!(std::fs::read_dir(&rarity_root).unwrap().count(), 3);
+    let crop = image::open(rarity_root.join("0000/rarity_stars.png"))
+        .unwrap()
+        .to_rgb8();
+    assert_eq!(crop.dimensions(), (161, 5));
+    assert!(crop.pixels().all(|pixel| pixel.0 == [200, 180, 50]));
+    // Reusing an item index writes to the existing path rather than creating
+    // a suffixed folder, and initialization resets standalone indices.
+    annotator::begin_item_for("hsr", "observation_test", 0, &scaler);
+    annotator::observe_detection("replacement", &image, || true);
+    annotator::finalize_success("{}");
+    annotator::flush();
+    assert_eq!(
+        std::fs::read_dir(root.join("hsr_observation_test"))
+            .unwrap()
+            .count(),
+        1
+    );
+    let replacement: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(item.join("ocr_fields.json")).unwrap())
+            .unwrap();
+    assert_eq!(replacement["detections"][0]["field"], "replacement");
+    annotator::init_for("hsr", true);
+    annotator::observe_detection("standalone_lock", &image, || false);
+    annotator::flush();
+    assert_eq!(
+        std::fs::read_dir(root.join("hsr_observation_standalone_lock"))
+            .unwrap()
+            .count(),
+        1
+    );
     annotator::init(false);
     let disabled: Result<String, &str> =
         annotator::observe_ocr("disabled", &image, || Ok("text".into()));

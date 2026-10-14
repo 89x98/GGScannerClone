@@ -22,15 +22,17 @@ no timestamp or game parent folders; new scans reuse the same category/index pat
 Linked category directories are rejected before cleanup. Save a copy outside
 these folders before scanning again if a session should join a training archive.
 
-Item folders are reserved with atomic `create_dir`. Repeating an index within
-the same scan reserves `0000_2`, `0000_3`, etc., preserving current retries.
+Item folders reuse deterministic category/index paths. Repeating an index
+overwrites its files; existing folders and filenames are not searched for suffixes.
+Standalone observations use per-category indices allocated in memory and reset
+at initialization, preserving inputs without filesystem collision searches.
 Manager artifact reads use `gi_manager_artifacts`, separate from `gi_artifacts`.
 Achievement and failure captures also use game-prefixed categories. Code-owned
 category identifiers must be lowercase ASCII, digits, or underscores, so path
 sanitization cannot merge distinct category owners. Legacy per-field writes
-reserve fresh filenames.
+overwrite their requested filenames.
 The filter-test helper accepts an explicit external output prefix; its caller
-owns that destination, and its PNG writes reserve filenames too.
+owns that destination, and its PNG writes overwrite the requested filenames too.
 
 Within each item, context images, annotations, and field crops share one
 case-insensitive filename reservation scheme. Repeated screen labels and repeated

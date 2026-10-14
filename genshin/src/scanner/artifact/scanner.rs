@@ -390,6 +390,12 @@ impl GoodArtifactScanner {
     /// Checks 3 positions in the solid right-side region of the banner to avoid
     /// false positives from decorative text patterns or transient overlays.
     fn detect_elixir_crafted(frame: &CaptureFrame, scaler: &CoordScaler) -> bool {
+        annotator::record_region(
+            "elixir_banner",
+            &frame.image,
+            (1500.0 - frame.origin.0, 413.0 - frame.origin.1, 41.0, 21.0),
+            scaler,
+        );
         let positions: [(f64, f64); 3] = [(1510.0, 423.0), (1520.0, 423.0), (1530.0, 423.0)];
         let mut purple_count = 0;
         for &(bx, by) in &positions {

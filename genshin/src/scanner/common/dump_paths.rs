@@ -1,4 +1,4 @@
-//! Flat game-prefixed dump categories and exclusive captures within a scan.
+//! Flat game-prefixed dump categories with reusable overwrite paths.
 use std::path::{Path, PathBuf};
 
 pub fn component(name: &str) -> String {
@@ -69,54 +69,15 @@ pub fn start_run(base: &str, game: &str) {
     }
 }
 
-pub fn save_image_unique(dir: &Path, name: &str, image: &image::RgbImage) -> std::io::Result<()> {
+pub fn save_image(dir: &Path, name: &str, image: &image::RgbImage) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let stem = Path::new(name)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("image");
-    let mut used = std::collections::HashSet::new();
-    loop {
-        let name = unique_name(&mut used, stem, "png");
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(dir.join(name))
-        {
-            Ok(file) => {
-                return image
-                    .write_to(
-                        &mut std::io::BufWriter::new(file),
-                        image::ImageOutputFormat::Png,
-                    )
-                    .map_err(std::io::Error::other)
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-/// Reserve a fresh directory atomically, including across concurrent processes.
-pub fn reserve_dir(parent: &Path, name: &str) -> PathBuf {
-    std::fs::create_dir_all(parent).expect("cannot create debug image parent directory");
-    let name = component(name);
-    for attempt in 1.. {
-        let dir = parent.join(if attempt == 1 {
-            name.clone()
-        } else {
-            format!("{name}_{attempt}")
-        });
-        match std::fs::create_dir(&dir) {
-            Ok(()) => return dir,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => panic!(
-                "cannot reserve debug image directory {}: {error}",
-                dir.display()
-            ),
-        }
-    }
-    unreachable!()
+    image
+        .save(dir.join(format!("{}.png", component(stem))))
+        .map_err(std::io::Error::other)
 }
 
 pub fn category_dir(base: &str, game: &str, category: &str) -> PathBuf {
@@ -132,7 +93,9 @@ pub fn category_dir(base: &str, game: &str, category: &str) -> PathBuf {
 }
 
 pub fn item_dir(base: &str, game: &str, category: &str, index: usize) -> PathBuf {
-    reserve_dir(&category_dir(base, game, category), &format!("{index:04}"))
+    let dir = category_dir(base, game, category).join(format!("{index:04}"));
+    std::fs::create_dir_all(&dir).expect("cannot create debug image item directory");
+    dir
 }
 
 /// Reserve a filename without overwriting another capture or metadata file.
@@ -185,7 +148,7 @@ mod tests {
         });
         assert_eq!(
             paths.iter().collect::<std::collections::HashSet<_>>().len(),
-            16
+            2
         );
         for path in &paths {
             std::fs::write(path.join("sentinel"), "keep").unwrap();
@@ -221,20 +184,17 @@ mod tests {
     }
 
     #[test]
-    fn legacy_image_writes_reserve_case_insensitive_filenames() {
+    fn image_writes_overwrite_the_requested_path() {
         let base = std::env::temp_dir().join(format!("scanner_legacy_test_{}", std::process::id()));
         let first = image::RgbImage::from_pixel(3, 2, image::Rgb([1, 2, 3]));
         let second = image::RgbImage::from_pixel(3, 2, image::Rgb([4, 5, 6]));
-        save_image_unique(&base, "Field.png", &first).unwrap();
-        save_image_unique(&base, "field.png", &second).unwrap();
+        save_image(&base, "field.png", &first).unwrap();
+        save_image(&base, "field.png", &second).unwrap();
         assert_eq!(
-            image::open(base.join("Field.png")).unwrap().to_rgb8(),
-            first
-        );
-        assert_eq!(
-            image::open(base.join("field_2.png")).unwrap().to_rgb8(),
+            image::open(base.join("field.png")).unwrap().to_rgb8(),
             second
         );
+        assert!(!base.join("field_2.png").exists());
         assert_eq!(component("../CON"), "_CON");
         std::fs::remove_dir_all(base).unwrap();
     }

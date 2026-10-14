@@ -316,6 +316,17 @@ pub fn detect_weapon_rarity(image: &RgbImage, scaler: &CoordScaler) -> i32 {
 pub fn detect_artifact_rarity_evidence(frame: &CaptureFrame, scaler: &CoordScaler) -> Option<i32> {
     use super::constants::STAR_Y;
 
+    super::annotator::record_region(
+        "rarity_stars",
+        &frame.image,
+        (
+            1340.0 - frame.origin.0,
+            STAR_Y - 2.0 - frame.origin.1,
+            161.0,
+            5.0,
+        ),
+        scaler,
+    );
     let y_offsets: [f64; 3] = [-2.0, 0.0, 2.0];
     let mut rightmost_star_x: f64 = 0.0;
     let mut star_pixel_count = 0;

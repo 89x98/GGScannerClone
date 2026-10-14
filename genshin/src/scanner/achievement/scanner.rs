@@ -1130,7 +1130,7 @@ fn dump_slug(name: &str) -> String {
 fn save_dump(name: &str, image: &RgbImage) {
     let dir = dump_dir();
     let path = dir.join(name);
-    if let Err(error) = crate::scanner::common::dump_paths::save_image_unique(&dir, name, image) {
+    if let Err(error) = crate::scanner::common::dump_paths::save_image(&dir, name, image) {
         log_debug!(
             "[achievement] 无法保存调试图 {}: {:#}",
             "[achievement] could not save dump {}: {:#}",

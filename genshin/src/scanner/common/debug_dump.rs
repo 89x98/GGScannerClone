@@ -1442,7 +1442,7 @@ impl DumpCtx {
     }
 
     pub fn dump_full(&self, image: &RgbImage) {
-        let _ = dump_paths::save_image_unique(&self.dir, "full.png", image);
+        let _ = dump_paths::save_image(&self.dir, "full.png", image);
     }
 
     pub fn dump_region(
@@ -1485,7 +1485,7 @@ impl DumpCtx {
             return;
         }
         let sub = image.view(x, y, w, h).to_image();
-        let _ = dump_paths::save_image_unique(&self.dir, &format!("{}.png", field_name), &sub);
+        let _ = dump_paths::save_image(&self.dir, &format!("{}.png", field_name), &sub);
     }
 }
 
@@ -1505,7 +1505,7 @@ fn save_region(
         return;
     }
     let sub = image.view(x, y, w, h).to_image();
-    let _ = dump_paths::save_image_unique(dir, &format!("{}.png", name), &sub);
+    let _ = dump_paths::save_image(dir, &format!("{}.png", name), &sub);
 }
 
 #[cfg(test)]

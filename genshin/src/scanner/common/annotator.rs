@@ -37,8 +37,9 @@
 //! processing different items concurrently never interfere with each other.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use image::RgbImage;
 
@@ -56,6 +57,7 @@ static PENDING_WRITES: Mutex<Vec<std::thread::JoinHandle<()>>> = Mutex::new(Vec:
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static HSR: AtomicBool = AtomicBool::new(false);
+static OBSERVATION_INDICES: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
 
 thread_local! {
     static CONTEXT: RefCell<Option<AnnotationContext>> = RefCell::new(None);
@@ -134,6 +136,11 @@ pub fn init(enabled: bool) {
 pub fn init_for(game: &str, enabled: bool) {
     assert!(matches!(game, "genshin" | "hsr"));
     flush();
+    OBSERVATION_INDICES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .clear();
     if enabled {
         super::dump_paths::start_run("debug_images", game);
     }
@@ -185,11 +192,22 @@ pub fn record_input(field: &str, image: &RgbImage, text: &str, ocr: bool) {
             } else {
                 "genshin"
             };
+            let category = format!("observation_{field}");
+            let index = {
+                let mut indices = OBSERVATION_INDICES
+                    .get_or_init(Default::default)
+                    .lock()
+                    .unwrap();
+                let next = indices.entry(category.clone()).or_default();
+                let index = *next;
+                *next += 1;
+                index
+            };
             let mut collector = DumpCollector::new_for(
                 "debug_images",
                 game,
-                &format!("observation_{field}"),
-                0,
+                &category,
+                index,
                 &CoordScaler::new(image.width(), image.height()),
             );
             collector.record_input(0, field, image, text, ocr);

@@ -816,7 +816,7 @@ pub fn find_set_in_filter_panel_debug(
         annotate_filter_screenshot(&mut img, &hits, &ctrl.scaler, set_key);
         let path = format!("{}_{}.png", prefix, idx);
         let output = std::path::Path::new(&path);
-        crate::scanner::common::dump_paths::save_image_unique(
+        crate::scanner::common::dump_paths::save_image(
             output.parent().unwrap_or_else(|| std::path::Path::new(".")),
             output
                 .file_name()
