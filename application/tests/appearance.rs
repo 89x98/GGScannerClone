@@ -7,6 +7,22 @@ use good_tools_app::{
 };
 
 #[test]
+fn icon_family_has_a_replacement_glyph_without_losing_icons() {
+    let ctx = egui::Context::default();
+    theme::setup(&ctx);
+    ctx.run_headless(Default::default(), |ui| {
+        let font = egui::FontId::new(18.0, egui::FontFamily::Name("icons".into()));
+        ui.fonts_mut(|fonts| {
+            assert!(fonts.has_glyph(&font, '?'));
+            assert!(fonts.has_glyphs(
+                &font,
+                good_tools_app::gui::icons::glyph(good_tools_app::gui::icons::Icon::Scan,)
+            ));
+        });
+    });
+}
+
+#[test]
 fn old_configs_gain_system_theme_without_changing_saved_task_settings() {
     let root = std::env::temp_dir().join(format!("ggscanner-appearance-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();

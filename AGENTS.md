@@ -2,7 +2,7 @@
 
 ## Build Rules
 
-- **NEVER kill GGScanner.exe, GGScannerOCR.exe, GOODScanner.exe, GOODCapture.exe, or any user process to unblock a build.** If `cargo build` fails with "access denied" because the exe is locked, tell the user and wait. If they confirm the process can be stopped, wait for it to exit on its own or let the user close it.
+- When a running scanner executable locks a build output, the user authorizes stopping that scanner process before rebuilding and reopening it.
 
 ## Public Releases And Player-Facing Changes
 
@@ -45,6 +45,14 @@
 ## Prioritization
 
 - **When instructions are clear, implement them directly.** Do not block one clear item because another item needs discussion. Make all clear changes first, then discuss the unclear ones.
+
+## Logging And UI Status
+
+- Rust logs must use `yas::log_debug!`, `log_info!`, `log_warn!`, or `log_error!` with two literal templates in the order `(Chinese, English)`. The macro selects one language; never put `中文 / English` in either template or in a dynamic value.
+- Keep errors language-neutral until they reach a user-facing boundary. If a legacy bilingual `anyhow` error must be logged, call `yas::lang::localize(&error.to_string())` before passing it as a log argument. Do not log `anyhow` chains containing bilingual text directly.
+- Use logs for diagnostics and failures, never to update visible task progress. Scanner progress goes through `ProgressFn` and category lifecycle through `ScanPhaseFn` (`genshin/src/scanner/common/progress.rs`). GUI task status uses `TaskProgress`/`Step`/`StepState` (`application/src/gui/task_progress.rs`), with worker updates in `application/src/gui/worker.rs`.
+- For a current phase message or user-facing failure, use `UiText` and `TaskStatus` (`application/src/gui/state.rs`) so the GUI selects one language at display time; keep technical details separate for copying.
+- UI copy uses the existing language pair at the presentation boundary (`Lang::t(zh, en)` in the GUI); do not build bilingual strings with a slash. Progress callbacks carry counts, item IDs, and phase keys, not translated prose when a stable key is available.
 
 ## No Piecemeal Refactoring
 

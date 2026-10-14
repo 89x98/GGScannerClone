@@ -47,10 +47,17 @@ pub fn add_to_fonts(fonts: &mut egui::FontDefinitions) {
         "phosphor".into(),
         egui::FontData::from_static(&bundled::regular::FONT).into(),
     );
-    fonts.families.insert(
-        egui::FontFamily::Name("icons".into()),
-        vec!["phosphor".into()],
+    // egui resolves a replacement character for every family on startup.
+    // The icon subset has none, so reuse the bundled text fonts as fallback.
+    let mut icon_fonts = vec!["phosphor".into()];
+    icon_fonts.extend(
+        fonts.families[&egui::FontFamily::Proportional]
+            .iter()
+            .cloned(),
     );
+    fonts
+        .families
+        .insert(egui::FontFamily::Name("icons".into()), icon_fonts);
 }
 
 pub fn paint(ui: &egui::Ui, rect: Rect, icon: Icon, color: Color32) {
