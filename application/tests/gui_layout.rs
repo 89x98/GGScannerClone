@@ -311,13 +311,49 @@ fn draw_split(
 }
 
 #[test]
+fn workspace_cards_use_the_same_inset_at_outer_edges_and_divider() {
+    for size in [egui::vec2(600.0, 400.0), egui::vec2(1000.0, 700.0)] {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let outer = egui::Rect::from_min_size(egui::pos2(20.0, 20.0), size);
+        let mut settings = egui::Rect::NOTHING;
+        let mut status = egui::Rect::NOTHING;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                layout::region(ui, layout::workspace_bounds(outer), "workspace", |ui| {
+                    let bounds = ui.max_rect();
+                    assert_eq!(bounds, outer.shrink(layout::PANE_GAP));
+                    layout::workspace(ui, &mut 0.5, |ui, pane| match pane {
+                        layout::Pane::Settings => settings = ui.max_rect(),
+                        // The status frame has 14px of padding inside its border.
+                        layout::Pane::Status => status = ui.max_rect().expand(14.0),
+                    });
+                });
+            });
+        });
+        let divider = outer.center().x;
+        for gap in [
+            settings.left() - outer.left(),
+            divider - settings.right(),
+            status.left() - divider,
+            outer.right() - status.right(),
+        ] {
+            assert!(
+                (gap - layout::PANE_GAP).abs() < 0.1,
+                "unequal pane gap: {gap}"
+            );
+        }
+    }
+}
+
+#[test]
 fn splitter_drag_changes_ratio_and_resize_keeps_the_requested_ratio() {
     let ctx = egui::Context::default();
     theme::setup(&ctx);
     let mut fraction = 0.10;
     let panes = draw_split(&ctx, &mut fraction, [1040.0, 760.0], vec![]);
     let minimum = good_tools_app::gui::shell::SIDEBAR_MIN_WIDTH;
-    assert_eq!(panes[0].right(), minimum - 3.0);
+    assert_eq!(panes[0].right(), minimum);
     let point = egui::pos2(minimum, 200.0);
     draw_split(
         &ctx,
@@ -354,14 +390,14 @@ fn splitter_drag_changes_ratio_and_resize_keeps_the_requested_ratio() {
     let requested = fraction;
     let panes = draw_split(&ctx, &mut fraction, [760.0, 500.0], vec![]);
     assert_eq!(fraction, requested);
-    assert!((panes[0].right() + 3.0 - 760.0 * requested).abs() < 0.1);
+    assert!((panes[0].right() - 760.0 * requested).abs() < 0.1);
     fraction = 0.10;
     let small = draw_split(&ctx, &mut fraction, [760.0, 500.0], vec![]);
     assert_eq!(
         fraction, 0.10,
         "minimum width must not overwrite the saved ratio"
     );
-    assert_eq!(small[0].right(), minimum - 3.0);
+    assert_eq!(small[0].right(), minimum);
 }
 
 #[test]
@@ -560,7 +596,7 @@ fn manager_port_is_above_the_start_action_and_absent_from_settings() {
                 assert!(!texts
                     .iter()
                     .any(|(text, _)| text == "Character info" || text == "Server"));
-                let port = texts.iter().find(|(text, _)| text == "Server port");
+                let port = texts.iter().find(|(text, _)| text == "Local server port");
                 if status {
                     let action = texts
                         .iter()

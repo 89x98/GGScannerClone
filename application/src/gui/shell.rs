@@ -192,7 +192,8 @@ pub fn sidebar(ui: &mut egui::Ui, lang: &mut Lang, navigation: &mut GameNavigati
     );
     let tabs = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), footer.top() - 12.0));
     super::layout::region(ui, tabs, "tool-tabs", |ui| {
-        let width = tabs.width() - ui.spacing().scroll.allocated_width() - 4.0;
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::floating();
+        let width = tabs.width() - 4.0;
         egui::ScrollArea::vertical()
             .id_salt("navigation-scroll")
             .auto_shrink([false, false])
@@ -206,7 +207,6 @@ pub fn sidebar(ui: &mut egui::Ui, lang: &mut Lang, navigation: &mut GameNavigati
                         egui::Stroke::new(1.0, theme::ACCENT);
                     ui.visuals_mut().widgets.active.bg_stroke =
                         egui::Stroke::new(1.0, theme::ACCENT);
-                    ui.add_space(18.0);
                     let mut tab = navigation.active_tab();
                     let original = tab;
                     for (value, zh, en) in [

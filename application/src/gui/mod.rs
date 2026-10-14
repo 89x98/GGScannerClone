@@ -392,9 +392,9 @@ impl eframe::App for GuiApp {
                     true,
                     shell::SIDEBAR_MIN_WIDTH,
                 );
-                layout::region(
+                layout::content_region(
                     ui,
-                    sidebar.shrink2(egui::vec2(12.0, 0.0)),
+                    sidebar.shrink(layout::PANE_GAP - 4.0),
                     "sidebar",
                     |ui| {
                         shell::sidebar(
@@ -419,7 +419,7 @@ impl eframe::App for GuiApp {
                     ToolTab::Manager => &self.state.manager_log_lines,
                     _ => &self.state.scanner_log_lines,
                 };
-                layout::region(ui, logs.shrink2(egui::vec2(16.0, 5.0)), "logs", |ui| {
+                layout::region(ui, logs.shrink(layout::PANE_GAP - 2.0), "logs", |ui| {
                     log_panel::show_with(ui, l, log_buf)
                 });
                 layout::region(ui, layout::workspace_bounds(workspace), "workspace", |ui| {
