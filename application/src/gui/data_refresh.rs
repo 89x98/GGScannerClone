@@ -155,7 +155,7 @@ impl DataRefresh {
         };
         ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = 32.0;
-            ui.spacing_mut().item_spacing.x = 24.0;
+            ui.spacing_mut().item_spacing.x = 16.0;
             if ui.available_width() < 700.0 {
                 ui.heading(title);
                 let additional = Source::additional_for_page(game, tab, capture_achievements);
@@ -209,7 +209,7 @@ impl DataRefresh {
                         + 2.0 * ui.spacing().button_padding.y,
                 );
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
+                ui.spacing_mut().item_spacing.x = 8.0;
                 let busy = cache.refresh.is_running();
                 let label = if busy {
                     lang.t("刷新中…", "Refreshing…")
@@ -217,16 +217,20 @@ impl DataRefresh {
                     source.refresh_label(lang)
                 };
                 if ui
-                    .add_enabled(
-                        !busy && enabled,
-                        egui::Button::new((
-                            egui::RichText::new(icons::glyph(Icon::Refresh))
-                                .family(egui::FontFamily::Name("icons".into()))
-                                .size(14.0),
-                            egui::RichText::new(label).size(14.0),
-                        ))
-                        .min_size(egui::vec2(0.0, 30.0)),
-                    )
+                    .add_enabled_ui(!busy && enabled, |ui| {
+                        ui.spacing_mut().interact_size.y = 24.0;
+                        ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+                        ui.add(
+                            egui::Button::new((
+                                egui::RichText::new(icons::glyph(Icon::Refresh))
+                                    .family(egui::FontFamily::Name("icons".into()))
+                                    .size(12.0),
+                                egui::RichText::new(label).size(12.0),
+                            ))
+                            .min_size(egui::vec2(0.0, 24.0)),
+                        )
+                    })
+                    .inner
                     .clicked()
                 {
                     let hint = UiText::new(
@@ -257,7 +261,7 @@ impl DataRefresh {
                     };
                     ui.label(
                         egui::RichText::new(updated)
-                            .size(14.0)
+                            .size(12.0)
                             .color(theme::palette(ui.visuals().dark_mode).muted),
                     )
                     .on_hover_text(lang.t(
