@@ -261,7 +261,7 @@ pub fn sidebar(ui: &mut egui::Ui, lang: &mut Lang, navigation: &mut GameNavigati
             if theme::text_button(
                 ui,
                 lang.t("关于", "About"),
-                egui::vec2(ui.available_width(), 30.0),
+                egui::vec2(ui.available_width(), 42.0),
                 navigation.active_tab() == ToolTab::Credits,
             )
             .clicked()

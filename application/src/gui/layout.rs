@@ -169,6 +169,7 @@ pub fn workspace(
                     .inner_margin(14.0)
                     .show(ui, |ui| {
                         ui.set_width((content_width - 28.0).max(1.0));
+                        ui.set_max_height((rect.height() - 28.0).max(1.0));
                         ui.spacing_mut().item_spacing.y = 4.0;
                         ui.spacing_mut().interact_size.y = 22.0;
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);

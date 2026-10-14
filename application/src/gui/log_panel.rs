@@ -23,13 +23,13 @@ pub fn show_with(ui: &mut egui::Ui, l: Lang, log_lines: &Arc<LogStore>) {
     ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
     ui.spacing_mut().interact_size.y = 20.0;
     ui.horizontal(|ui| {
-        ui.strong(l.t("日志", "Log"));
+        ui.colored_label(super::theme::MUTED, l.t("日志", "Log"));
         if count > 0 {
             ui.colored_label(super::theme::MUTED, format!("({})", count));
-            if ui.small_button(l.t("复制", "Copy")).clicked() {
+            if super::theme::text_button(ui, l.t("复制", "Copy"), egui::vec2(44.0, 26.0), false).clicked() {
                 ui.ctx().copy_text(full_text.clone());
             }
-            if ui.small_button(l.t("清除", "Clear")).clicked() {
+            if super::theme::text_button(ui, l.t("清除", "Clear"), egui::vec2(44.0, 26.0), false).clicked() {
                 log_lines.clear();
             }
         }
@@ -52,7 +52,7 @@ pub fn show_with(ui: &mut egui::Ui, l: Lang, log_lines: &Arc<LogStore>) {
                     let color = match entry.level {
                         log::Level::Error => ui.visuals().error_fg_color,
                         log::Level::Warn => ui.visuals().warn_fg_color,
-                        _ => ui.visuals().text_color(),
+                        _ => super::theme::MUTED,
                     };
                     job.append(
                         &format!(

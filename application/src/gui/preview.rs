@@ -143,7 +143,7 @@ pub fn run(
                     *status.lock().unwrap() =
                         TaskStatus::Running(UiText::new("正在导出数据", "Saving export"))
                 },
-                "ready" | "login" | "update" => {},
+                "ready" | "login" | "update" | "done" => {},
                 _ => panic!("unsupported preview scenario"),
             }
             #[cfg(feature = "capture")]

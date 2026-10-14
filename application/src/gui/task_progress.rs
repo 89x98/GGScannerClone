@@ -66,7 +66,7 @@ pub fn row(ui: &mut egui::Ui, lang: Lang, step: &Step) {
 
 fn row_with_meter(ui: &mut egui::Ui, lang: Lang, step: &Step, reserve_meter: bool) {
     let color = match step.state {
-        StepState::Complete => theme::ACCENT,
+        StepState::Complete => theme::SUCCESS,
         StepState::Running => ui.visuals().text_color(),
         StepState::Interrupted => ui.visuals().warn_fg_color,
         StepState::Pending => theme::MUTED,
@@ -80,7 +80,7 @@ fn row_with_meter(ui: &mut egui::Ui, lang: Lang, step: &Step, reserve_meter: boo
         String::new()
     };
     // Allocate the entire row once: counts and meters never introduce a second line.
-    let width = ui.available_width().max(180.0);
+    let width = ui.available_width().min(370.0).max(180.0);
     let compact = width < 290.0;
     let bar_width = if reserve_meter {
         (width * 0.27).clamp(44.0, 96.0)

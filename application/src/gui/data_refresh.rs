@@ -154,13 +154,37 @@ impl DataRefresh {
         };
         ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = 32.0;
-            ui.horizontal_wrapped(|ui| {
+            if ui.available_width() < 620.0 {
                 ui.heading(title);
-                ui.add_space(10.0);
-                self.cache_row(ui, lang, source, enabled);
-                if let Some(source) = Source::additional_for_page(game, tab, capture_achievements) {
-                    self.cache_row(ui, lang, source, enabled);
+                let additional = Source::additional_for_page(game, tab, capture_achievements);
+                let combined = ui.available_width() >= 450.0;
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if combined {
+                            if let Some(source) = additional {
+                                self.cache_row(ui, lang, source, enabled);
+                            }
+                        }
+                        self.cache_row(ui, lang, source, enabled);
+                    });
+                });
+                if let Some(source) = additional.filter(|_| !combined) {
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            self.cache_row(ui, lang, source, enabled);
+                        });
+                    });
                 }
+                return;
+            }
+            ui.horizontal(|ui| {
+                ui.heading(title);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(source) = Source::additional_for_page(game, tab, capture_achievements) {
+                        self.cache_row(ui, lang, source, enabled);
+                    }
+                    self.cache_row(ui, lang, source, enabled);
+                });
             });
         });
     }
@@ -182,18 +206,13 @@ impl DataRefresh {
                 );
             ui.horizontal(|ui| {
                 let busy = cache.refresh.is_running();
-                if ui
-                    .add_enabled(
-                        !busy && enabled,
-                        egui::Button::new(
-                            egui::RichText::new(if busy {
-                                lang.t("刷新中…", "Refreshing…")
-                            } else {
-                                source.refresh_label(lang)
-                            })
-                            .size(12.0),
-                        ),
-                    )
+                let label = if busy {
+                    lang.t("刷新中…", "Refreshing…")
+                } else {
+                    source.refresh_label(lang)
+                };
+                let width = ui.fonts(|fonts| fonts.layout_no_wrap(label.into(), egui::FontId::proportional(14.0), theme::MUTED).size().x) + 18.0;
+                if ui.add_enabled_ui(!busy && enabled, |ui| theme::text_button(ui, label, egui::vec2(width, 30.0), false)).inner
                     .clicked()
                 {
                     let hint = UiText::new(

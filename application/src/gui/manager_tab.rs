@@ -13,8 +13,6 @@ pub fn show_settings(ui: &mut egui::Ui, state: &mut AppState, is_server_running:
         ui.add_enabled_ui(!is_server_running, |ui| {
         widgets::character_names_section(ui, state, true);
         ui.separator();
-            ui.checkbox(&mut state.filter_involved_sets, l.t("仅筛选涉及的套装", "Filter target sets only"))
-                .on_hover_text(l.t("加解锁时只扫描涉及的套装，速度更快；不会更新完整背包。", "Scan only the requested artifact sets for faster lock changes. The full inventory will not be updated."));
             ui.checkbox(&mut state.hdr_mode, l.t("游戏使用 HDR", "Game uses HDR"));
         });
     });

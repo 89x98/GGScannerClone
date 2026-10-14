@@ -640,6 +640,7 @@ fn long_export_paths_do_not_change_pane_width_when_resized() {
                                 "export-result",
                                 |ui| {
                                     theme::task_status(ui, lang, Some(&status), "Ready");
+                                    good_tools_app::gui::widgets::export_action(ui, lang, Some(&status));
                                     assert!(ui.min_rect().width() <= width);
                                 },
                             );
@@ -649,9 +650,10 @@ fn long_export_paths_do_not_change_pane_width_when_resized() {
                     assert!(texts
                         .iter()
                         .any(|(text, _)| text == lang.t("打开文件夹", "Open folder")));
-                    assert!(!texts
+                    assert!(texts
                         .iter()
-                        .any(|(text, _)| text.contains("scan.json") || text == "Copy path"));
+                        .any(|(text, _)| text == "scan.json"));
+                    assert!(!texts.iter().any(|(text, _)| text == &path));
                 }
             }
         }
@@ -777,7 +779,7 @@ fn sidebar_language_button_names_the_target_language_and_toggles_it() {
 }
 
 #[test]
-fn quiet_buttons_have_a_visible_hover_border_and_hand_cursor() {
+fn quiet_buttons_have_a_visible_hover_fill_and_hand_cursor() {
     let ctx = egui::Context::default();
     theme::setup(&ctx);
     let draw = |events| {
@@ -804,7 +806,7 @@ fn quiet_buttons_have_a_visible_hover_border_and_hand_cursor() {
         hover.platform_output.cursor_icon,
         egui::CursorIcon::PointingHand
     );
-    assert!(hover.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(rect) if rect.stroke.color == theme::ACCENT && rect.stroke.width > 0.0)));
+    assert!(hover.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(rect) if rect.fill == theme::HOVER && rect.stroke.width == 0.0)));
 }
 
 #[test]
@@ -842,6 +844,7 @@ fn refresh_heading_borders_fit_the_pane_when_hovered_and_pressed() {
                                 "heading",
                                 |ui| {
                                     refresh.heading(ui, lang, game, tab, true, false);
+                                    assert!(ui.min_rect().height() < 140.0, "heading consumed workspace height");
                                 },
                             );
                         });
@@ -868,7 +871,7 @@ fn refresh_heading_borders_fit_the_pane_when_hovered_and_pressed() {
                 let mut borders = 0;
                 for clipped in frame.shapes {
                     if let egui::Shape::Rect(rect) = clipped.shape {
-                        if rect.stroke.width > 0.0 {
+                        if rect.stroke.width > 0.0 || rect.fill == theme::HOVER || rect.fill == theme::PRESSED {
                             borders += 1;
                             assert!(
                                 clipped
@@ -1019,7 +1022,7 @@ fn ordinary_controls_keep_their_borders_inside_pane_edges_in_every_state() {
             let mut borders = 0;
             for clipped in frame.shapes {
                 if let egui::Shape::Rect(rect) = clipped.shape {
-                    if rect.stroke.width > 0.0 {
+                    if rect.stroke.width > 0.0 || rect.fill == theme::HOVER || rect.fill == theme::PRESSED {
                         borders += 1;
                         assert!(
                             clipped

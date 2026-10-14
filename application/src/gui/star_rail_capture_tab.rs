@@ -154,11 +154,27 @@ pub struct StarRailCaptureState {
 impl StarRailCaptureState {
     #[cfg(feature = "dev-tools")]
     pub(super) fn preview_feedback(&mut self, scenario: &str) {
+        if scenario == "done" {
+            let mut shared = self.shared.lock().unwrap();
+            shared.has_key_exchange = true;
+            shared.has_characters = true;
+            shared.has_light_cones = true;
+            shared.has_relics = true;
+            shared.has_achievements = true;
+            shared.character_count = 58;
+            shared.light_cone_count = 198;
+            shared.relic_count = 1126;
+            shared.achievement_count = 600;
+        }
         self.phase = match scenario {
             "error" => CapturePhase::Failed(super::preview::preview_error()),
             "stopped" => CapturePhase::Stopped,
             "exporting" => CapturePhase::Exporting,
             "login" => CapturePhase::Waiting,
+            "done" => CapturePhase::Done {
+                summary: UiText::new("抓包已完成", "Capture completed"),
+                path: "C:\\Users\\Player\\Exports\\capture.json".into(),
+            },
             _ => return,
         };
     }
@@ -381,7 +397,7 @@ pub fn show_status(
     };
     widgets::status_content(ui, "hsr-capture-status", 1, |ui| {
         super::theme::task_status(ui, lang, feedback.as_ref(), text);
-        if stage != Stage::Ready && capture_targets(settings).any() {
+        if stage != Stage::Ready && stage != Stage::Done && capture_targets(settings).any() {
             capture_status::show_connection(ui, lang, stage, shared.has_key_exchange);
         }
         for (selected, key, zh, en, complete, count) in [
@@ -440,6 +456,7 @@ pub fn show_status(
         );
     });
     ui.add_space(4.0);
+    widgets::export_action(ui, lang, feedback.as_ref());
     match &state.phase {
         CapturePhase::Initializing | CapturePhase::Waiting => {
             if super::theme::primary_action(ui, true, lang.t("停止抓包", "Stop capture")).clicked()
@@ -468,7 +485,11 @@ pub fn show_status(
             if super::theme::primary_action(
                 ui,
                 !game_busy && !state.is_busy() && capture_targets(settings).any(),
-                lang.t("开始抓包", "Start capture"),
+                if matches!(state.phase, CapturePhase::Done { .. }) {
+                    lang.t("再次抓包", "Capture again")
+                } else {
+                    lang.t("开始抓包", "Start capture")
+                },
             )
             .clicked()
             {
@@ -716,6 +737,15 @@ fn update_phase(state: &mut StarRailCaptureState) {
                 Err(error) => state.phase = CapturePhase::Failed(error),
             }
         }
+        return;
+    }
+
+    // Completion remains in shared state until the next explicit Start. Only
+    // an active capture may consume it, otherwise every frame re-exports it.
+    if !matches!(
+        state.phase,
+        CapturePhase::Initializing | CapturePhase::Waiting
+    ) {
         return;
     }
 

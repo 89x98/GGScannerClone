@@ -1057,7 +1057,9 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
     let user_config = state.user_config.clone();
     let port = state.server_port;
     let enabled = state.server_enabled.clone();
-    let filter_involved_sets = state.filter_involved_sets;
+    // GUI management always filters target sets. The legacy CLI preference
+    // remains available to command-line callers, but is not a GUI setting.
+    let filter_involved_sets = true;
     // Management changes flags only; inventory refresh is a separate scan.
     let stop_on_all_matched = true;
     let dump_images = state.dump_images;

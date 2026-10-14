@@ -6,6 +6,10 @@ pub const BACKGROUND: Color32 = Color32::from_rgb(19, 23, 28);
 pub const SURFACE: Color32 = Color32::from_rgb(28, 33, 40);
 pub const BORDER: Color32 = Color32::from_rgb(51, 61, 73);
 pub const ACCENT: Color32 = Color32::from_rgb(124, 220, 192);
+pub const SUCCESS: Color32 = Color32::from_rgb(158, 204, 155);
+pub const CONTROL_BORDER: Color32 = Color32::from_rgb(103, 119, 137);
+pub const HOVER: Color32 = Color32::from_rgb(42, 51, 61);
+pub const PRESSED: Color32 = Color32::from_rgb(52, 65, 78);
 pub const MUTED: Color32 = Color32::from_rgb(165, 177, 192);
 pub const SELECTED: Color32 = Color32::from_rgb(35, 55, 51);
 pub const ERROR: Color32 = Color32::from_rgb(244, 132, 137);
@@ -44,11 +48,11 @@ pub fn setup(ctx: &egui::Context) {
     ] {
         widget.bg_fill = SURFACE;
         widget.weak_bg_fill = SURFACE;
-        widget.bg_stroke = Stroke::new(1.0, BORDER);
+        widget.bg_stroke = Stroke::new(1.0, CONTROL_BORDER);
         widget.rounding = egui::Rounding::same(4.0);
     }
-    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(42, 51, 61);
-    style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(42, 51, 61);
+    style.visuals.widgets.hovered.bg_fill = HOVER;
+    style.visuals.widgets.hovered.weak_bg_fill = HOVER;
     style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
     style.visuals.widgets.hovered.rounding = egui::Rounding::same(4.0);
     style.visuals.widgets.active.rounding = egui::Rounding::same(4.0);
@@ -74,14 +78,14 @@ pub fn setup(ctx: &egui::Context) {
 
 pub fn primary_action(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Response {
     ui.scope(|ui| {
-        ui.visuals_mut().widgets.inactive.weak_bg_fill = ACCENT;
-        ui.visuals_mut().widgets.noninteractive.weak_bg_fill = ACCENT;
+        ui.visuals_mut().widgets.inactive.weak_bg_fill = if enabled { ACCENT } else { SELECTED };
+        ui.visuals_mut().widgets.noninteractive.weak_bg_fill = SELECTED;
         ui.visuals_mut().widgets.hovered.weak_bg_fill = Color32::from_rgb(155, 234, 211);
         ui.visuals_mut().widgets.active.weak_bg_fill = Color32::from_rgb(108, 203, 177);
         ui.add_enabled_ui(enabled, |ui| {
             ui.add_sized(
                 [ui.available_width(), 36.0],
-                egui::Button::new(RichText::new(text).color(Color32::from_rgb(16, 41, 31)))
+                egui::Button::new(RichText::new(text).color(if enabled { Color32::from_rgb(16, 41, 31) } else { MUTED }))
                     .stroke(Stroke::NONE)
                     .rounding(5.0),
             )
@@ -89,6 +93,10 @@ pub fn primary_action(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Res
         .inner
     })
     .inner
+}
+
+pub fn secondary_action(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.add_sized([ui.available_width(), 30.0], egui::Button::new(text))
 }
 
 /// A quiet native button with a visible hover fill, border, and brighter text.
@@ -101,9 +109,12 @@ pub fn text_button(
     ui.scope(|ui| {
         let visuals = ui.visuals_mut();
         visuals.override_text_color = None;
-        visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+        visuals.widgets.inactive.weak_bg_fill = if selected { SELECTED } else { Color32::TRANSPARENT };
         visuals.widgets.inactive.bg_stroke = Stroke::NONE;
         visuals.widgets.inactive.fg_stroke.color = if selected { ACCENT } else { MUTED };
+        visuals.widgets.hovered.bg_stroke = Stroke::NONE;
+        visuals.widgets.active.bg_stroke = Stroke::NONE;
+        visuals.widgets.active.weak_bg_fill = PRESSED;
         visuals.widgets.hovered.fg_stroke.color = ACCENT;
         visuals.widgets.active.fg_stroke.color = ACCENT;
         ui.add_sized(size, egui::Button::new(text))
@@ -126,7 +137,7 @@ pub fn task_status(ui: &mut egui::Ui, lang: Lang, status: Option<&TaskStatus>, i
             ) {
                 ui.visuals().warn_fg_color
             } else {
-                ACCENT
+                SUCCESS
             };
             ui.add(
                 egui::Label::new(
@@ -148,11 +159,11 @@ pub fn task_status(ui: &mut egui::Ui, lang: Lang, status: Option<&TaskStatus>, i
                 egui::Label::new(RichText::new(title).size(16.0).strong().color(if *partial {
                     ui.visuals().warn_fg_color
                 } else {
-                    ACCENT
+                    SUCCESS
                 }))
                 .wrap(),
             );
-            super::widgets::export_file(ui, lang, path);
+            super::widgets::export_location(ui, path);
         },
         Some(TaskStatus::Failed(error)) => {
             ui.label(

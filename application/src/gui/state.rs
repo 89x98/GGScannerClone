@@ -676,8 +676,6 @@ pub struct AppState {
     /// Controls whether POST /manage requests are executed or rejected (503).
     /// Shared with the server thread via Arc.
     pub server_enabled: Arc<AtomicBool>,
-    /// If true, narrow lock/unlock management to the artifact sets involved in the request.
-    pub filter_involved_sets: bool,
     pub server_status: Arc<Mutex<TaskStatus>>,
     pub server_job: Arc<Mutex<genshin_scanner::manager::models::JobState>>,
     // --- Per-tab log buffers ---
@@ -714,7 +712,6 @@ impl AppState {
             artifact_max_count: user_config.artifact_max_count,
             achievement_max_count: user_config.achievement_max_count,
             server_port: user_config.server_port,
-            filter_involved_sets: user_config.filter_involved_sets,
             user_config,
             update_state: Arc::new(Mutex::new(UpdateState::Checking)),
             output_dir: genshin_scanner::cli::exe_dir().display().to_string(),
@@ -764,7 +761,6 @@ impl AppState {
         self.user_config.artifact_max_count = self.artifact_max_count;
         self.user_config.achievement_max_count = self.achievement_max_count;
         self.user_config.server_port = self.server_port;
-        self.user_config.filter_involved_sets = self.filter_involved_sets;
     }
 
     /// Check if user_config changed, and if so, schedule a debounced save.

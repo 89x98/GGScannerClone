@@ -72,6 +72,7 @@ pub fn show_status(
         );
     });
     ui.add_space(4.0);
+    widgets::export_action(ui, lang, status.as_ref());
     ui.scope(|ui| {
         if is_running {
             let stopping = state
@@ -102,6 +103,8 @@ pub fn show_status(
                 !game_busy && has_target && !settings.missing_trailblazer(),
                 if matches!(status, Some(super::state::TaskStatus::Failed(_))) {
                     lang.t("重试", "Retry")
+                } else if matches!(status, Some(super::state::TaskStatus::Exported { .. })) {
+                    lang.t("再次扫描", "Scan again")
                 } else {
                     lang.t("开始扫描", "Start scan")
                 },
@@ -145,8 +148,8 @@ pub fn show_settings(
                 });
             });
             if settings.scan_characters {
-                ui.separator();
-                trailblazer_row(ui, lang, settings, true);
+                ui.add_space(4.0);
+                ui.indent("scan-character-options", |ui| trailblazer_row(ui, lang, settings, true));
             }
             ui.separator();
             if ui
@@ -223,7 +226,7 @@ pub(super) fn trailblazer_row(
                 ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::WARNING;
             }
             egui::ComboBox::from_id_salt("star_rail_trailblazer_gender")
-                .width(ui.available_width() - ui.spacing().button_padding.x * 2.0)
+                .width(140.0_f32.min(ui.available_width() - ui.spacing().button_padding.x * 2.0))
                 .selected_text(match settings.trailblazer_gender {
                     Some(gender) => trailblazer_gender_label(lang, gender),
                     None => lang.t("请选择", "Choose"),

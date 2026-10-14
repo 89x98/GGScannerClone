@@ -229,12 +229,12 @@ fn entry(ui: &mut egui::Ui, _l: Lang, name: &str, author: &str, url: &str, descr
         .fill(super::theme::SURFACE)
         .stroke(egui::Stroke::new(1.0, super::theme::BORDER))
         .rounding(8.0)
-        .inner_margin(12.0)
+        .inner_margin(egui::vec2(12.0, 8.0))
         .outer_margin(2.0)
         .show(ui, |ui| {
             ui.set_width((width - 28.0).max(1.0));
             ui.horizontal_wrapped(|ui| {
-                ui.hyperlink_to(egui::RichText::new(name).strong().size(14.0), url);
+                ui.hyperlink_to(egui::RichText::new(name).strong().size(14.0).color(super::theme::ACCENT), url);
                 ui.label(
                     egui::RichText::new(author)
                         .size(12.0)

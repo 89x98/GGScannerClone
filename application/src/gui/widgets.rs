@@ -25,12 +25,12 @@ fn section_title(ui: &egui::Ui, title: &str) -> egui::RichText {
 }
 
 pub fn fold(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    ui.scope(|ui| {
+    form(ui, |ui| {
         ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
         ui.spacing_mut().item_spacing.y = 4.0;
         ui.spacing_mut().interact_size.y = 26.0;
         egui::CollapsingHeader::new(section_title(ui, title)).show_unindented(ui, |ui| {
-            ui.add_space(3.0);
+            ui.add_space(5.0);
             body(ui);
         });
     });
@@ -40,6 +40,7 @@ pub fn form(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
     let width = ui.available_width();
     egui::Frame::none()
         .fill(super::theme::SURFACE)
+        .stroke(egui::Stroke::new(1.0, super::theme::BORDER))
         .rounding(8.0)
         .inner_margin(egui::vec2(12.0, 10.0))
         .show(ui, |ui| {
@@ -207,7 +208,7 @@ pub fn error_card(ui: &mut egui::Ui, l: Lang, error: &UiError) {
     let technical_details = error.technical_details(l);
     let copy_text = error.copy_text(l);
 
-    ui.group(|ui| {
+    ui.scope(|ui| {
         ui.set_width(ui.available_width());
         ui.colored_label(
             ui.visuals().error_fg_color,
@@ -216,7 +217,7 @@ pub fn error_card(ui: &mut egui::Ui, l: Lang, error: &UiError) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui
-                .small_button(l.t("复制完整错误", "Copy full error"))
+                .add(egui::Button::new(l.t("复制完整错误", "Copy full error")).min_size(egui::vec2(0.0, 26.0)))
                 .clicked()
             {
                 ui.ctx().copy_text(copy_text.clone());
@@ -235,7 +236,7 @@ pub fn error_card(ui: &mut egui::Ui, l: Lang, error: &UiError) {
 
 pub fn export_file(ui: &mut egui::Ui, l: Lang, path: &str) {
     let error_id = ui.id().with(("reveal-export-error", path));
-    if ui.button(l.t("打开文件夹", "Open folder")).clicked() {
+    if super::theme::secondary_action(ui, l.t("打开文件夹", "Open folder")).clicked() {
         match super::file_location::reveal_file(path) {
             Ok(()) => ui.ctx().data_mut(|data| data.remove::<UiError>(error_id)),
             Err(error) => {
@@ -257,6 +258,20 @@ pub fn export_file(ui: &mut egui::Ui, l: Lang, path: &str) {
     let error = ui.ctx().data(|data| data.get_temp::<UiError>(error_id));
     if let Some(error) = error {
         error_card(ui, l, &error);
+    }
+}
+
+/// Keep the saved location selectable in the result, and its action in the footer.
+pub fn export_location(ui: &mut egui::Ui, path: &str) {
+    let filename = path.rsplit(['/', '\\']).find(|part| !part.is_empty()).unwrap_or(path);
+    ui.add(egui::Label::new(egui::RichText::new(filename).size(12.0).color(super::theme::MUTED)).truncate())
+        .on_hover_text(path);
+}
+
+pub fn export_action(ui: &mut egui::Ui, lang: Lang, status: Option<&super::state::TaskStatus>) {
+    if let Some(super::state::TaskStatus::Exported { path, .. }) = status {
+        export_file(ui, lang, path);
+        ui.add_space(4.0);
     }
 }
 

@@ -22,8 +22,8 @@ pub fn show_settings(ui: &mut egui::Ui, state: &mut AppState, is_scanning: bool)
                 });
             });
             if state.scan_characters || state.names_need_attention {
-                ui.separator();
-                widgets::character_names_section(ui, state, true);
+                ui.add_space(4.0);
+                ui.indent("scan-character-options", |ui| widgets::character_names_section(ui, state, true));
             }
             ui.separator();
             ui.checkbox(&mut state.hdr_mode, l.t("游戏使用 HDR", "Game uses HDR"));
@@ -151,6 +151,7 @@ pub fn show_status(
         );
     });
     ui.add_space(4.0);
+    widgets::export_action(ui, l, status.as_ref());
     if running {
         let stopping = handle.as_ref().is_some_and(TaskHandle::is_stopping);
         if super::theme::primary_action(
@@ -178,6 +179,8 @@ pub fn show_status(
                 || state.scan_achievements),
         if matches!(status, Some(TaskStatus::Failed(_))) {
             l.t("重试", "Retry")
+        } else if matches!(status, Some(TaskStatus::Exported { .. })) {
+            l.t("再次扫描", "Scan again")
         } else {
             l.t("开始扫描", "Start scan")
         },

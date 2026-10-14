@@ -137,11 +137,26 @@ pub struct CaptureTabState {
 impl CaptureTabState {
     #[cfg(feature = "dev-tools")]
     pub(super) fn preview_feedback(&mut self, scenario: &str) {
+        if scenario == "done" {
+            let mut shared = self.capture_state.lock().unwrap();
+            shared.has_key_exchange = true;
+            shared.has_characters = true;
+            shared.has_items = true;
+            shared.has_achievements = true;
+            shared.character_count = 86;
+            shared.weapon_count = 247;
+            shared.artifact_count = 1342;
+            shared.achievement_count = 900;
+        }
         self.phase = match scenario {
             "error" => Phase::Failed(super::preview::preview_error()),
             "stopped" => Phase::Stopped,
             "exporting" => Phase::Exporting,
             "login" => Phase::Waiting,
+            "done" => Phase::Done {
+                summary: UiText::new("抓包已完成", "Capture completed"),
+                path: "C:\\Users\\Player\\Exports\\capture.json".into(),
+            },
             _ => return,
         };
     }
@@ -471,6 +486,8 @@ fn start_button(ui: &mut egui::Ui, l: Lang, tab: &mut CaptureTabState, game_busy
                 || tab.include_achievements),
         if matches!(tab.phase, Phase::Failed(_)) {
             l.t("重试", "Retry")
+        } else if matches!(tab.phase, Phase::Done { .. }) {
+            l.t("再次抓包", "Capture again")
         } else {
             l.t("开始抓包", "Start capture")
         },
@@ -537,7 +554,7 @@ pub fn show_status(
     };
     widgets::status_content(ui, "genshin-capture-status", 1, |ui| {
         super::theme::task_status(ui, l, feedback.as_ref(), text);
-        if stage != Stage::Ready
+        if stage != Stage::Ready && stage != Stage::Done
             && (tab.include_characters
                 || tab.include_weapons
                 || tab.include_artifacts
@@ -604,6 +621,7 @@ pub fn show_status(
         );
     });
     ui.add_space(4.0);
+    widgets::export_action(ui, l, feedback.as_ref());
     match &tab.phase {
         Phase::Initializing | Phase::Waiting => {
             if super::theme::primary_action(ui, true, l.t("停止抓包", "Stop capture")).clicked()

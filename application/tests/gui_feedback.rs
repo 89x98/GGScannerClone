@@ -80,7 +80,10 @@ fn export_folder_action_is_visible_only_after_a_successful_write() {
             path: path.into(),
             partial,
         };
-        let texts = render(|ui| theme::task_status(ui, Lang::En, Some(&status), "Ready"));
+        let texts = render(|ui| {
+            theme::task_status(ui, Lang::En, Some(&status), "Ready");
+            good_tools_app::gui::widgets::export_action(ui, Lang::En, Some(&status));
+        });
         let title = if partial {
             "Partial results saved"
         } else {
@@ -92,9 +95,10 @@ fn export_folder_action_is_visible_only_after_a_successful_write() {
             if partial {
                 theme::WARNING
             } else {
-                theme::ACCENT
+                theme::SUCCESS
             }
         );
+        assert!(texts.iter().any(|(text, _, _)| text == "scan.json"));
         assert!(!texts.iter().any(|(text, _, _)| text == path));
         assert!(texts.iter().any(|(text, _, _)| text == "Open folder"));
     }
@@ -119,6 +123,46 @@ fn missing_scan_targets_explain_why_start_is_disabled() {
         .iter()
         .any(|(text, _, _)| text == "Select scan targets"));
     assert!(!texts.iter().any(|(text, _, _)| text == "Ready to scan"));
+}
+
+#[test]
+fn exported_scans_place_folder_before_scan_again_in_both_games() {
+    for hsr in [false, true] {
+        let status = TaskStatus::Exported {
+            message: UiText::new("完成", "Done"),
+            path: "C:/exports/scan.json".into(),
+            partial: false,
+        };
+        let mut genshin = AppState::new();
+        genshin.lang = Lang::En;
+        genshin.user_config.traveler_name = "Player".into();
+        *genshin.scan_status.lock().unwrap() = status.clone();
+        let mut settings = good_tools_app::config::StarRailSettings::default();
+        settings.scan_characters = false;
+        let mut state = StarRailState::new(String::new());
+        *state.scan_status.lock().unwrap() = status;
+        let mut handle = None;
+        let texts = render(|ui| {
+            if hsr {
+                star_rail_scanner_tab::show_status(ui, Lang::En, &mut settings, &mut state, false, false);
+            } else {
+                scanner_tab::show_status(ui, &mut genshin, &mut handle, false, false);
+            }
+        });
+        let y = |caption: &str| texts.iter().find(|(text, _, _)| text == caption).unwrap().1;
+        assert!(y("scan.json") < y("Open folder"));
+        assert!(y("Open folder") < y("Scan again"));
+        assert!(!texts.iter().any(|(text, _, _)| text == "Start scan"));
+    }
+}
+
+#[test]
+fn export_result_shows_only_filename_for_windows_and_slash_paths() {
+    for path in ["C:\\Users\\Player\\Exports\\scan.json", "D:/exports/scan.json"] {
+        let texts = render(|ui| good_tools_app::gui::widgets::export_location(ui, path));
+        assert!(texts.iter().any(|(text, _, _)| text == "scan.json"));
+        assert!(!texts.iter().any(|(text, _, _)| text == path));
+    }
 }
 
 #[test]
