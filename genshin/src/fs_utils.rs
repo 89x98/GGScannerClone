@@ -31,11 +31,46 @@ pub fn write_scan_export(
     partial: bool,
     only_latest: bool,
 ) -> Result<std::path::PathBuf> {
+    write_export(
+        output_dir,
+        json,
+        timestamp,
+        partial,
+        only_latest,
+        SCANNER_EXPORT_PREFIX,
+    )
+}
+
+/// Persist capture first, so a failed write never deletes the previous result.
+pub fn write_capture_export(
+    output_dir: &Path,
+    json: &str,
+    timestamp: &str,
+    only_latest: bool,
+) -> Result<std::path::PathBuf> {
+    write_export(
+        output_dir,
+        json,
+        timestamp,
+        false,
+        only_latest,
+        CAPTURE_EXPORT_PREFIX,
+    )
+}
+
+fn write_export(
+    output_dir: &Path,
+    json: &str,
+    timestamp: &str,
+    partial: bool,
+    only_latest: bool,
+    prefix: &str,
+) -> Result<std::path::PathBuf> {
     use std::io::Write;
     std::fs::create_dir_all(output_dir)?;
     let path = output_dir.join(format!(
         "{}{}{}{}",
-        SCANNER_EXPORT_PREFIX,
+        prefix,
         if partial { "partial_" } else { "" },
         timestamp,
         EXPORT_JSON_SUFFIX
@@ -54,13 +89,12 @@ pub fn write_scan_export(
     }
     drop(file);
     if only_latest && !partial {
-        remove_previous_exports_except(output_dir, SCANNER_EXPORT_PREFIX, Some(&path))
-            .with_context(|| {
-                format!(
-                    "New scan saved at {}; could not clean older exports",
-                    path.display()
-                )
-            })?;
+        remove_previous_exports_except(output_dir, prefix, Some(&path)).with_context(|| {
+            format!(
+                "New scan saved at {}; could not clean older exports",
+                path.display()
+            )
+        })?;
     }
     Ok(path)
 }
@@ -142,6 +176,22 @@ fn parse_two_digits(bytes: &[u8]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{is_generated_export_filename, CAPTURE_EXPORT_PREFIX, SCANNER_EXPORT_PREFIX};
+
+    #[test]
+    fn capture_save_failure_preserves_previous_export() {
+        let dir = std::env::temp_dir().join(format!("capture-retention-{}", std::process::id()));
+        let old =
+            super::write_capture_export(&dir, "previous", "2026-10-13_13-45-09", true).unwrap();
+        assert!(
+            super::write_capture_export(&dir, "replacement", "2026-10-13_13-45-09", true).is_err()
+        );
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), "previous");
+        let new = super::write_capture_export(&dir, "new", "2026-10-14_13-45-09", true).unwrap();
+        assert!(!old.exists());
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "new");
+        std::fs::remove_file(new).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
 
     #[test]
     fn matches_generated_scanner_exports_only() {

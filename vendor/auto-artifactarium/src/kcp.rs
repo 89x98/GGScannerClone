@@ -32,9 +32,9 @@ impl KcpSniffer {
     }
 
     #[instrument(skip_all, fields(conv_id = self.conv_id, len = segments.len()))]
-    pub fn receive_segments(&mut self, segments: &[u8]) -> Vec<Vec<u8>> {
+    pub fn receive_segments(&mut self, segments: &[u8]) -> Result<Vec<Vec<u8>>, &'static str> {
         let Some(conv_id) = validate_kcp_segment(segments) else {
-            return Vec::new();
+            return Err("incomplete KCP segment header");
         };
 
         trace!("message data: {}", bytes_as_hex(segments));
@@ -44,16 +44,16 @@ impl KcpSniffer {
                 expected = self.conv_id,
                 "packet did not belong to conversation"
             );
-            return Vec::new();
+            return Err("KCP segment belongs to a different conversation");
         }
 
         // game uses special format which adds 4 bytes at index 4,
         // reprocess to discard bytes 4..8 of every segment
-        let segments = reformat_kcp_segments(segments);
+        let segments = reformat_kcp_segments(segments).ok_or("invalid KCP segment length")?;
 
         match self.kcp.input(&segments) {
             Ok(size) => trace!(size, "input successful"),
-            Err(e) => warn!("could not input to kcp: {e}"),
+            Err(_) => return Err("KCP input rejected"),
         }
 
         let mut recv = Vec::new();
@@ -69,6 +69,7 @@ impl KcpSniffer {
                 },
                 Err(e) => {
                     warn!(%e, "could not receive kcp bytes");
+                    return Err("KCP message could not be reassembled");
                 },
             }
         }
@@ -77,7 +78,7 @@ impl KcpSniffer {
             warn!(%e, "could not update kcp state");
         }
 
-        recv
+        Ok(recv)
     }
 
     #[inline]
@@ -109,7 +110,7 @@ fn validate_kcp_segment(payload: &[u8]) -> Option<u32> {
 }
 
 // reformat to skip bytes 4..8
-fn reformat_kcp_segments(data: &[u8]) -> Vec<u8> {
+fn reformat_kcp_segments(data: &[u8]) -> Option<Vec<u8>> {
     let span = span!(Level::TRACE, "split");
     let _enter = span.enter();
 
@@ -119,22 +120,42 @@ fn reformat_kcp_segments(data: &[u8]) -> Vec<u8> {
 
     let mut i = 0;
     while i < data.len() {
+        if data.len() - i < 32 {
+            return None;
+        }
         let conv_id = &data[i..i + 4];
 
         let _ = &data[i + 4..i + 8]; // skip
 
         let remaining_header = &data[i + 8..i + 28];
         let content_len = u32::from_le_bytes(data[i + 24..i + 28].try_into().unwrap()) as usize;
-        let content = &data[i + 28 + 4..i + 28 + 4 + content_len];
+        let end = (i + 32).checked_add(content_len)?;
+        let content = data.get(i + 32..end)?;
 
         for b in conv_id.iter().chain(remaining_header).chain(content) {
             reformatted_bytes.push(*b);
         }
 
-        i += 28 + 4 + content_len;
+        i = end;
     }
 
     trace!(" after split: {}", bytes_as_hex(&reformatted_bytes));
 
-    reformatted_bytes
+    Some(reformatted_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn truncated_or_oversized_segments_are_rejected_without_panicking() {
+        for length in 1..32 {
+            assert!(reformat_kcp_segments(&vec![0; length]).is_none());
+        }
+        let mut bytes = vec![0; 32];
+        bytes[24..28].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(reformat_kcp_segments(&bytes).is_none());
+        bytes[24..28].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(reformat_kcp_segments(&bytes).unwrap().len(), 24);
+    }
 }

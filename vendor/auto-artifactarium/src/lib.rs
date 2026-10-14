@@ -151,7 +151,13 @@ impl GameCommand {
         let header_len = u16::from_be_bytes(bytes[4..6].try_into().unwrap());
         let data_len = u32::from_be_bytes(bytes[6..10].try_into().unwrap());
 
-        let data = bytes[10..10 + data_len as usize + header_len as usize].to_vec();
+        let end = 10usize
+            .checked_add(header_len as usize)?
+            .checked_add(data_len as usize)?;
+        if end != bytes.len() - Self::TAIL_LEN {
+            return None;
+        }
+        let data = bytes[10..end].to_vec();
         Some(GameCommand {
             command_id,
             header_len,
@@ -196,6 +202,8 @@ pub enum Key {
 
 #[derive(Default)]
 pub struct GameSniffer {
+    last_error: Option<String>,
+    rejected_commands: usize,
     sent_kcp: Option<KcpSniffer>,
     recv_kcp: Option<KcpSniffer>,
     client_seed: Option<u64>,
@@ -207,6 +215,13 @@ pub struct GameSniffer {
 }
 
 impl GameSniffer {
+    /// Diagnostic metadata only; never includes keys, seeds or packet contents.
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+    pub fn rejected_commands(&self) -> usize {
+        self.rejected_commands
+    }
     pub fn new() -> Self {
         let pem_data_4 = include_str!("../keys/private_key_4.pem");
         let pem_data_5 = include_str!("../keys/private_key_5.pem");
@@ -224,7 +239,10 @@ impl GameSniffer {
     }
 
     pub fn set_initial_keys(mut self, initial_keys: HashMap<u16, Vec<u8>>) -> Self {
-        self.initial_keys = initial_keys;
+        self.initial_keys = initial_keys
+            .into_iter()
+            .filter(|(_, key)| key.len() == 4096)
+            .collect();
         self
     }
 
@@ -236,7 +254,13 @@ impl GameSniffer {
 
     #[instrument(skip_all, fields(len = bytes.len()))]
     pub fn receive_packet(&mut self, bytes: Vec<u8>) -> Option<GamePacket> {
-        let packet = parse_connection_packet(&PORTS, bytes)?;
+        let packet = match parse_connection_packet(&PORTS, bytes) {
+            Some(packet) => packet,
+            None => {
+                self.last_error = Some("frame is not a supported game UDP packet".into());
+                return None;
+            },
+        };
         match packet {
             ConnectionPacket::HandshakeRequested => {
                 info!("handshake requested, resetting state");
@@ -248,6 +272,9 @@ impl GameSniffer {
                 Some(GamePacket::Connection(packet))
             },
             ConnectionPacket::HandshakeEstablished | ConnectionPacket::Disconnected => {
+                if matches!(packet, ConnectionPacket::Disconnected) {
+                    self.last_error = Some("game connection closed; capture a new login".into());
+                }
                 Some(GamePacket::Connection(packet))
             },
 
@@ -274,13 +301,22 @@ impl GameSniffer {
         };
 
         if kcp.is_none() {
-            let new_kcp = KcpSniffer::try_new(kcp_seg)?;
+            let Some(new_kcp) = KcpSniffer::try_new(kcp_seg) else {
+                self.last_error = Some("incomplete KCP segment header".into());
+                return None;
+            };
             *kcp = Some(new_kcp);
         }
 
         if let Some(kcp) = kcp {
-            let commands = kcp
-                .receive_segments(kcp_seg)
+            let data = match kcp.receive_segments(kcp_seg) {
+                Ok(data) => data,
+                Err(error) => {
+                    self.last_error = Some(error.into());
+                    return None;
+                },
+            };
+            let commands = data
                 .into_iter()
                 .filter_map(|data| self.receive_command(data))
                 .collect();
@@ -293,6 +329,10 @@ impl GameSniffer {
 
     #[instrument(skip_all, fields(len = data.len()))]
     fn receive_command(&mut self, mut data: Vec<u8>) -> Option<GameCommand> {
+        if data.len() < 12 {
+            self.reject_command("incomplete game command".into());
+            return None;
+        }
         let key_r = match &self.key {
             None => {
                 let key = lookup_initial_key(&self.initial_keys, &data);
@@ -302,6 +342,10 @@ impl GameSniffer {
                         self.key.as_ref().unwrap()
                     },
                     None => {
+                        let version = u16::from_be_bytes([data[0], data[1]]) ^ 0x4567;
+                        self.reject_command(format!(
+                            "dispatch key not available or invalid; version={version}"
+                        ));
                         error!("No dispatch key found");
                         return None;
                     },
@@ -333,8 +377,9 @@ impl GameSniffer {
 
                         // If that fails, try with a client seed generated from the packet's
                         // `sent_time`
-                        if let Some((client_seed, key)) =
-                            bruteforce(self.sent_time.unwrap(), seed, data.clone())
+                        if let Some((client_seed, key)) = self
+                            .sent_time
+                            .and_then(|sent_time| bruteforce(sent_time, seed, data.clone()))
                         {
                             self.client_seed = Some(client_seed);
                             self.key = Some(Key::Session(key));
@@ -346,6 +391,7 @@ impl GameSniffer {
                     match discovered_key {
                         Some(key) => key,
                         None => {
+                            self.reject_command("session decryption failed; login handshake may be missing or protocol unsupported".into());
                             error!("Couldn't bruteforce from deduced keys");
                             return None;
                         },
@@ -362,6 +408,7 @@ impl GameSniffer {
                 } else {
                     warn!("Invalidated session key");
                     self.key = None;
+                    self.reject_command("session key invalidated; capture a new login".into());
                     error!("Session key dead, relaunch game");
                     return None;
                 }
@@ -374,7 +421,13 @@ impl GameSniffer {
 
         decrypt_command(key, &mut data);
 
-        let command = GameCommand::try_new(data)?;
+        let command = match GameCommand::try_new(data) {
+            Some(command) => command,
+            None => {
+                self.reject_command("decrypted command has an invalid header or length".into());
+                return None;
+            },
+        };
 
         let span = info_span!("command", ?command);
         let _enter = span.enter();
@@ -395,13 +448,20 @@ impl GameSniffer {
             {
                 self.possible_seeds = possible_seeds;
                 info!(?self.possible_seeds, "setting new possible session seeds");
-                let header_command = command.parse_proto::<PacketHead>().unwrap();
-                self.sent_time = Some(header_command.sent_ms);
+                self.sent_time = command
+                    .parse_proto::<PacketHead>()
+                    .ok()
+                    .map(|head| head.sent_ms);
                 info!(?self.sent_time, "setting new send time");
             }
         }
 
         Some(command)
+    }
+
+    fn reject_command(&mut self, error: String) {
+        self.rejected_commands += 1;
+        self.last_error = Some(error);
     }
 }
 
@@ -412,6 +472,19 @@ pub fn matches_achievement_packet(game_command: &GameCommand) -> Option<Vec<Achi
 #[cfg(test)]
 mod capture_state_tests {
     use super::*;
+
+    #[test]
+    fn malformed_command_lengths_and_missing_keys_are_diagnostic() {
+        let mut sniffer = GameSniffer::new();
+        assert!(sniffer.receive_command(vec![0; 2]).is_none());
+        assert_eq!(sniffer.rejected_commands(), 1);
+        assert_eq!(sniffer.last_error(), Some("incomplete game command"));
+        assert!(sniffer.receive_command(vec![0; 12]).is_none());
+        assert!(sniffer.last_error().unwrap().contains("version=17767"));
+        let mut bytes = dispatch_command(&[8, 42]);
+        bytes[6..10].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(GameCommand::try_new(bytes).is_none());
+    }
     use protobuf::CodedOutputStream;
     use rsa::{Pkcs1v15Encrypt, RsaPublicKey, rand_core::OsRng};
 

@@ -9,6 +9,9 @@ pub fn parse_connection_packet(port_filter: &[u16], bytes: Vec<u8>) -> Option<Co
     let direction = validate_ports(port_filter, udp)?;
 
     if payload.len() <= 20 {
+        if payload.len() < 4 {
+            return None;
+        }
         let code = u32::from_be_bytes(payload[..4].try_into().unwrap());
         match code {
             0xFF => {

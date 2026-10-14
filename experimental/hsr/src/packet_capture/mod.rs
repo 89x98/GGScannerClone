@@ -247,6 +247,8 @@ pub enum HsrCaptureCommand {
 /// Privacy-safe state shared with the UI.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HsrCaptureState {
+    pub listener_ready: bool,
+    pub elapsed_secs: u64,
     pub capturing: bool,
     /// True only after all selected categories arrive.
     pub complete: bool,
@@ -273,6 +275,9 @@ pub struct HsrCaptureState {
 }
 
 impl HsrCaptureState {
+    pub fn diagnostics(&self) -> String {
+        format!("listenerReady={}; elapsed={}s; packets={}; decryptedCommands={}; keyExchange={}; characters={}; lightCones={}; relics={}; achievements={}; missingDispatchKey={:?}; lastTransportError={}", self.listener_ready, self.elapsed_secs, self.packet_count, self.command_count, self.has_key_exchange, self.character_count, self.light_cone_count, self.relic_count, self.achievement_count, self.missing_dispatch_key, self.last_transport_error.as_deref().unwrap_or("none"))
+    }
     /// Single HSR-Scanner v4 JSON, including optional achievement and Trailblazer extensions.
     pub fn build_scanner_export(
         &self,
@@ -449,6 +454,7 @@ impl HsrCaptureMonitor {
         self.capture_task = Some(tokio::spawn(capture_task(
             cancel_token.clone(),
             self.packet_tx.clone(),
+            self.state.clone(),
         )));
         self.capture_cancel_token = Some(cancel_token);
     }
@@ -475,6 +481,8 @@ impl HsrCaptureMonitor {
                     self.stop_capture();
                 }
                 if let Ok(mut state) = self.state.lock() {
+                    snapshot.listener_ready = state.listener_ready;
+                    snapshot.elapsed_secs = state.elapsed_secs;
                     *state = snapshot;
                 }
             },
@@ -488,20 +496,42 @@ impl HsrCaptureMonitor {
     }
 
     fn check_timeout(&mut self) {
+        if let Some(start) = self.started {
+            let mut state = self.state.lock().expect("capture state poisoned");
+            state.elapsed_secs = start.elapsed().as_secs();
+            if state.elapsed_secs % 15 == 0 {
+                yas::log_info!(
+                    "星铁抓包诊断：{}",
+                    "HSR capture diagnostics: {}",
+                    state.diagnostics()
+                );
+            }
+        }
         if self
             .started
             .is_some_and(|start| start.elapsed().as_secs() >= CAPTURE_TIMEOUT_SECS)
         {
-            let state = self.decoder.state();
+            let shared = self.state.lock().expect("capture state poisoned").clone();
+            let mut snapshot = self.decoder.state().clone();
+            snapshot.listener_ready = shared.listener_ready;
+            snapshot.elapsed_secs = shared.elapsed_secs;
+            let state = &snapshot;
             let detail = format!("capture timed out after {CAPTURE_TIMEOUT_SECS} seconds; packets={}; decryptedCommands={}; keyExchangeCaptured={}; characters={}; lightCones={}; relics={}; achievements={}; missingDispatchKey={:?}; lastTransportError={}",
                 state.packet_count, state.command_count, state.has_key_exchange, state.character_count, state.light_cone_count,
                 state.relic_count, state.achievement_count, state.missing_dispatch_key, state.last_transport_error.as_deref().unwrap_or("none"));
-            let hint = if state.packet_count == 0 {
+            let hint = if !state.listener_ready {
+                LocalizedText::new(
+                    "Windows 监听器未能完成启动，请复制完整错误。",
+                    "The Windows listener did not finish starting. Copy the full error.",
+                )
+            } else if state.packet_count == 0 {
                 LocalizedText::new("未收到星穹铁道流量。请确认游戏正在本机运行，重新抓包后再登录。",
                     "No Star Rail traffic was received. Check that the game is running on this PC, then start capture before logging in.")
             } else if state.missing_dispatch_key.is_some() && !state.has_key_exchange {
                 LocalizedText::new("当前游戏使用的登录密钥尚未收录，无法解密数据。请更新 GGScanner；若最新版仍失败，请复制完整错误。",
                     "The current game's login key is missing, so its data cannot be decrypted. Update GGScanner; if the latest build still fails, copy the full error.")
+            } else if state.command_count == 0 {
+                LocalizedText::new("已收到流量，但未成功解码游戏消息。请重新登录并更新抓包器；若仍失败，请复制完整错误。", "Traffic arrived but no game messages decoded. Capture a new login and update the scanner; if this persists, copy the full error.")
             } else if !state.has_key_exchange {
                 LocalizedText::new("已收到网络流量，但未捕获登录握手。请在启动游戏前开始抓包，再重新登录；若仍失败，请更新 GGScanner。",
                     "Traffic was received, but the login handshake was not captured. Start capture before launching the game, then log in again. If it still fails, update GGScanner.")
@@ -540,6 +570,7 @@ impl HsrCaptureMonitor {
     }
 
     fn fail(&mut self, error: HsrError) {
+        yas::log_error!("星铁抓包失败：{}", "HSR capture failed: {}", error);
         self.stop_capture();
         if let Ok(mut state) = self.state.lock() {
             state.complete = false;
@@ -568,8 +599,14 @@ async fn wait_for_capture_task(
 async fn capture_task(
     cancel_token: CancellationToken,
     packet_tx: mpsc::UnboundedSender<Vec<u8>>,
+    state: Arc<Mutex<HsrCaptureState>>,
 ) -> HsrResult<()> {
     let mut source = NativePacketSource::new()?;
+    state.lock().expect("capture state poisoned").listener_ready = true;
+    yas::log_info!(
+        "星铁监听已启动：UDP 23301、23302",
+        "HSR listener started: UDP 23301, 23302"
+    );
     pump_packets(&mut source, &cancel_token, &packet_tx).await
 }
 

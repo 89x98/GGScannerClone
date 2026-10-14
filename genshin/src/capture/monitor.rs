@@ -58,6 +58,13 @@ pub enum CaptureCommand {
 /// State shared between the monitor and UI.
 #[derive(Clone, Debug)]
 pub struct CaptureState {
+    pub listener_ready: bool,
+    pub elapsed_secs: u64,
+    pub packet_count: usize,
+    pub command_count: usize,
+    pub rejected_commands: usize,
+    pub unmatched_commands: usize,
+    pub last_transport_error: Option<String>,
     pub capturing: bool,
     /// All requested packet categories have been received; capture auto-stopped.
     pub complete: bool,
@@ -76,6 +83,13 @@ pub struct CaptureState {
 impl Default for CaptureState {
     fn default() -> Self {
         Self {
+            listener_ready: false,
+            elapsed_secs: 0,
+            packet_count: 0,
+            command_count: 0,
+            rejected_commands: 0,
+            unmatched_commands: 0,
+            last_transport_error: None,
             capturing: false,
             complete: false,
             has_key_exchange: false,
@@ -87,6 +101,37 @@ impl Default for CaptureState {
             artifact_count: 0,
             achievement_count: 0,
             error: None,
+        }
+    }
+}
+
+impl CaptureState {
+    fn selected_complete(&self, targets: &CaptureExportSettings) -> bool {
+        self.capturing
+            && (!targets.include_characters || self.has_characters)
+            && (!targets.include_weapons || self.has_items || self.weapon_count > 0)
+            && (!targets.include_artifacts || self.has_items || self.artifact_count > 0)
+            && (!targets.include_achievements || self.has_achievements)
+    }
+
+    pub fn diagnostics(&self) -> String {
+        format!("listenerReady={}; elapsed={}s; packets={}; decryptedCommands={}; rejectedCommands={}; unmatchedCommands={}; keyExchange={}; characters={}; weapons={}; artifacts={}; achievements={}; lastTransportError={}", self.listener_ready, self.elapsed_secs, self.packet_count, self.command_count, self.rejected_commands, self.unmatched_commands, self.has_key_exchange, self.character_count, self.weapon_count, self.artifact_count, self.achievement_count, self.last_transport_error.as_deref().unwrap_or("none"))
+    }
+
+    pub fn timeout_hint(&self) -> (&'static str, &'static str) {
+        if !self.listener_ready {
+            (
+                "Windows 监听器未能完成启动，请复制完整错误。",
+                "The Windows listener did not finish starting. Copy the full error.",
+            )
+        } else if self.packet_count == 0 {
+            ("监听已启动，但未收到游戏流量。请确认游戏在本机运行，并在启动游戏前开始抓包。", "The listener started but received no game traffic. Run the game on this PC and start capture before launching it.")
+        } else if self.command_count == 0 {
+            ("已收到流量，但未成功解码游戏消息。请重新登录并更新抓包器，复制完整错误以检查协议或密钥兼容性。", "Traffic arrived but no game messages decoded. Capture a new login and update the scanner. Copy the full error to check protocol or key compatibility.")
+        } else if !self.has_key_exchange {
+            ("已解码部分消息，但未捕获登录握手。请关闭游戏，在开始抓包后重新登录。", "Some messages decoded but the login handshake was not captured. Close the game and log in after starting capture.")
+        } else {
+            ("已解码游戏消息，但尚未收到全部所选数据。需要成就时请打开成就界面；若仍失败，请复制完整错误。", "Game messages decoded but selected data is incomplete. Open Achievements if selected; if this persists, copy the full error.")
         }
     }
 }
@@ -103,7 +148,7 @@ pub struct CaptureMonitor {
     dump_packets: bool,
     dump_dir: std::path::PathBuf,
     dump_counter: u32,
-    require_achievements: bool,
+    targets: CaptureExportSettings,
 }
 
 impl CaptureMonitor {
@@ -114,9 +159,16 @@ impl CaptureMonitor {
             yas::utils::ensure_admin()?;
         }
 
-        let data_cache = crate::game_data::load()?.capture;
+        log_info!(
+            "正在加载抓包所需的游戏数据",
+            "Loading game data for capture"
+        );
+        let data_cache = crate::game_data::load()
+            .context("capture game data could not be loaded")?
+            .capture;
         let player_data = PlayerData::new(data_cache);
-        let keys = load_keys()?;
+        log_info!("正在加载登录密钥", "Loading dispatch keys");
+        let keys = load_keys().context("capture dispatch keys could not be loaded")?;
         let sniffer = GameSniffer::new().set_initial_keys(keys);
         let (packet_tx, packet_rx) = mpsc::unbounded_channel();
 
@@ -146,7 +198,7 @@ impl CaptureMonitor {
             dump_packets,
             dump_dir,
             dump_counter: 0,
-            require_achievements: false,
+            targets: CaptureExportSettings::default(),
         })
     }
 
@@ -161,7 +213,8 @@ impl CaptureMonitor {
         if cmd_rx.is_closed() || cmd_rx.try_recv().is_ok() {
             return Ok(None);
         }
-        self.start_capture(settings.include_achievements);
+        self.targets = settings.clone();
+        self.start_capture();
         self.run_capture(cmd_rx, &settings).await
     }
 
@@ -170,6 +223,8 @@ impl CaptureMonitor {
         mut cmd_rx: mpsc::UnboundedReceiver<CaptureCommand>,
         settings: &CaptureExportSettings,
     ) -> Result<Option<GoodExport>> {
+        let started = tokio::time::Instant::now();
+        let mut timer = tokio::time::interval(std::time::Duration::from_secs(1));
         loop {
             if self
                 .state
@@ -179,6 +234,17 @@ impl CaptureMonitor {
                 break;
             }
             tokio::select! {
+                _ = timer.tick() => {
+                    let mut state = self.state.lock().expect("capture state poisoned");
+                    state.elapsed_secs = started.elapsed().as_secs();
+                    if state.elapsed_secs % 15 == 0 {
+                        log_info!("抓包诊断：{}", "Capture diagnostics: {}", state.diagnostics());
+                    }
+                    if state.elapsed_secs >= 300 {
+                        state.error = Some(format!("{}; {}", state.timeout_hint().1, state.diagnostics()));
+                        log_warn!("抓包等待超时：{}", "Capture timed out: {}", yas::lang::localize(state.error.as_deref().unwrap()));
+                    }
+                }
                 Some(packet) = self.packet_rx.recv() => {
                     self.handle_packet(packet);
                 }
@@ -197,6 +263,7 @@ impl CaptureMonitor {
             self.handle_capture_task_result(task.await);
         }
         let state = self.state.lock().expect("capture state poisoned").clone();
+        log_info!("抓包结束：{}", "Capture ended: {}", state.diagnostics());
         if let Some(error) = state.error {
             return Err(anyhow!(error));
         }
@@ -206,9 +273,8 @@ impl CaptureMonitor {
         Ok(None)
     }
 
-    fn start_capture(&mut self, include_achievements: bool) {
+    fn start_capture(&mut self) {
         self.player_data.begin_capture();
-        self.require_achievements = include_achievements;
         let cancel_token = CancellationToken::new();
         if let Ok(mut state) = self.state.lock() {
             *state = CaptureState {
@@ -219,6 +285,7 @@ impl CaptureMonitor {
         self.capture_task = Some(tokio::spawn(capture_task(
             cancel_token.clone(),
             self.packet_tx.clone(),
+            self.state.clone(),
         )));
         self.capture_cancel_token = Some(cancel_token);
     }
@@ -245,6 +312,9 @@ impl CaptureMonitor {
     fn handle_packet(&mut self, packet: Vec<u8>) {
         let decoded = self.sniffer.receive_packet(packet);
         if let Ok(mut state) = self.state.lock() {
+            state.packet_count += 1;
+            state.rejected_commands = self.sniffer.rejected_commands();
+            state.last_transport_error = self.sniffer.last_error().map(str::to_owned);
             let captured = self.sniffer.key_exchange_captured();
             if captured && !state.has_key_exchange {
                 log_info!("已捕获登录握手", "Login handshake captured");
@@ -259,6 +329,10 @@ impl CaptureMonitor {
         // regardless of command_id.  This survives command ID rotation across
         // game versions.
         for command in commands {
+            self.state
+                .lock()
+                .expect("capture state poisoned")
+                .command_count += 1;
             // Dump raw decrypted commands when enabled
             if self.dump_packets {
                 let path = self.dump_dir.join(format!(
@@ -316,18 +390,27 @@ impl CaptureMonitor {
                     state.has_characters = true;
                     state.character_count = self.player_data.character_count();
                 }
+            } else {
+                let mut state = self.state.lock().expect("capture state poisoned");
+                state.unmatched_commands += 1;
+                if state.unmatched_commands <= 5 {
+                    log_debug!(
+                        "未识别的数据包：cmd={}，长度={}",
+                        "Unmatched command: cmd={}, length={}",
+                        command.command_id,
+                        command.proto_data.len()
+                    );
+                }
             }
         }
 
         // Auto-stop once the normal GOOD data and every requested extension
         // have arrived. Achievement capture is optional for backwards-compatible
         // workflows, but defaults on in GGScanner.
-        let should_stop = self.state.lock().map_or(false, |s| {
-            s.has_characters
-                && s.has_items
-                && (!self.require_achievements || s.has_achievements)
-                && s.capturing
-        });
+        let should_stop = self
+            .state
+            .lock()
+            .is_ok_and(|state| state.selected_complete(&self.targets));
         if should_stop {
             log_info!(
                 "已收集到所有数据，自动停止抓包",
@@ -381,7 +464,11 @@ fn update_state_from_capture_task(
 ) {
     let error = capture_task_failure(result, expected_stop);
     if let Some(error) = &error {
-        log_error!("抓包任务失败: {}", "Capture task failed: {}", error);
+        log_error!(
+            "抓包任务失败: {}",
+            "Capture task failed: {}",
+            yas::lang::localize(error)
+        );
     }
     if let Ok(mut state) = state.lock() {
         state.capturing = false;
@@ -704,11 +791,16 @@ fn try_match_avatars(proto_data: &[u8]) -> Option<Vec<AvatarInfo>> {
 async fn capture_task(
     cancel_token: CancellationToken,
     packet_tx: mpsc::UnboundedSender<Vec<u8>>,
+    state: Arc<Mutex<CaptureState>>,
 ) -> Result<()> {
     let mut capture = PacketCapture::new().map_err(|error| {
         capture_error_with_context(error, "创建抓包失败 / Error creating packet capture")
     })?;
-    log_info!("开始抓包", "Starting packet capture");
+    state.lock().expect("capture state poisoned").listener_ready = true;
+    log_info!(
+        "监听已启动：UDP 22101、22102",
+        "Listener started: UDP 22101, 22102"
+    );
     loop {
         let packet = tokio::select!(
             packet = capture.next_packet() => packet,
@@ -722,7 +814,7 @@ async fn capture_task(
             },
         };
         if let Err(e) = packet_tx.send(packet) {
-            log_error!("发送数据包出错: {}", "Error sending captured packet: {}", e);
+            return Err(anyhow!("capture packet receiver closed: {e}"));
         }
     }
     log_info!("抓包已停止", "Packet capture stopped");
@@ -782,7 +874,15 @@ fn load_keys() -> Result<HashMap<u16, Vec<u8>>> {
     let embedded: HashMap<u16, String> =
         serde_json::from_slice(include_bytes!("../../keys/gi.json"))?;
     for (version, b64) in &embedded {
-        all_keys.insert(*version, BASE64_STANDARD.decode(b64)?);
+        let key = BASE64_STANDARD
+            .decode(b64)
+            .context("embedded dispatch key is not valid base64")?;
+        anyhow::ensure!(
+            key.len() == 4096,
+            "invalid embedded dispatch key length; version={version}; length={}",
+            key.len()
+        );
+        all_keys.insert(*version, key);
     }
 
     // 2. External key file next to the exe (overrides embedded for same version)
@@ -793,12 +893,13 @@ fn load_keys() -> Result<HashMap<u16, Vec<u8>>> {
                 let mut added = 0usize;
                 for (version, b64) in &external {
                     match BASE64_STANDARD.decode(b64) {
-                        Ok(decoded) => {
+                        Ok(decoded) if decoded.len() == 4096 => {
                             if !all_keys.contains_key(version) {
                                 added += 1;
                             }
                             all_keys.insert(*version, decoded);
                         },
+                        Ok(decoded) => log_warn!("忽略长度错误的外部密钥：版本 {}，长度 {}", "Ignoring invalid external key: version {}, length {}", version, decoded.len()),
                         Err(error) => log_warn!(
                             "外部密钥文件中的版本 {} 无法解码；该版本将使用内置密钥（如有）。完整错误详情: {:#}",
                             "Version {} in the external key file could not be decoded; the embedded key will be used for that version when available. Full error details: {:#}",
@@ -828,12 +929,75 @@ fn load_keys() -> Result<HashMap<u16, Vec<u8>>> {
         ),
     }
 
+    anyhow::ensure!(!all_keys.is_empty(), "no dispatch keys available");
+    log_info!(
+        "已加载 {} 个登录密钥",
+        "Loaded {} dispatch keys",
+        all_keys.len()
+    );
     Ok(all_keys)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_distinguish_listener_traffic_decryption_and_missing_data() {
+        let mut state = CaptureState::default();
+        assert!(state.timeout_hint().1.contains("listener"));
+        state.listener_ready = true;
+        assert!(state.timeout_hint().1.contains("no game traffic"));
+        state.packet_count = 8;
+        assert!(state.timeout_hint().1.contains("no game messages decoded"));
+        state.command_count = 3;
+        assert!(state.timeout_hint().1.contains("login handshake"));
+        state.has_key_exchange = true;
+        assert!(state
+            .timeout_hint()
+            .1
+            .contains("selected data is incomplete"));
+        assert!(state
+            .diagnostics()
+            .contains("packets=8; decryptedCommands=3"));
+    }
+
+    #[test]
+    fn unrelated_frames_are_counted_without_claiming_decryption() {
+        let mut monitor = test_monitor(CaptureState::default());
+        monitor.handle_packet(vec![0; 14]);
+        let state = monitor.state.lock().unwrap();
+        assert_eq!(state.packet_count, 1);
+        assert_eq!(state.command_count, 0);
+        assert!(state.last_transport_error.is_some());
+    }
+
+    #[test]
+    fn selected_targets_determine_completion() {
+        let state = CaptureState {
+            capturing: true,
+            has_achievements: true,
+            ..CaptureState::default()
+        };
+        let mut targets = CaptureExportSettings {
+            include_characters: false,
+            include_weapons: false,
+            include_artifacts: false,
+            ..CaptureExportSettings::default()
+        };
+        assert!(state.selected_complete(&targets));
+        targets.include_artifacts = true;
+        assert!(!state.selected_complete(&targets));
+        let weapons_only = CaptureState {
+            capturing: true,
+            weapon_count: 5,
+            ..CaptureState::default()
+        };
+        targets.include_artifacts = false;
+        targets.include_achievements = false;
+        targets.include_weapons = true;
+        assert!(weapons_only.selected_complete(&targets));
+    }
 
     const ITEMS_BIN: &[u8] = include_bytes!("testdata/items.bin");
     const AVATARS_BIN: &[u8] = include_bytes!("testdata/avatars.bin");
@@ -853,7 +1017,7 @@ mod tests {
             dump_packets: false,
             dump_dir: std::path::PathBuf::new(),
             dump_counter: 0,
-            require_achievements: false,
+            targets: CaptureExportSettings::default(),
         }
     }
 
