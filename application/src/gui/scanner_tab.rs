@@ -21,10 +21,8 @@ pub fn show_settings(ui: &mut egui::Ui, state: &mut AppState, is_scanning: bool)
                     ui.checkbox(&mut state.scan_achievements, l.t("成就", "Achievements"));
                 });
             });
-            if state.scan_characters || state.names_need_attention {
-                ui.add_space(4.0);
-                widgets::character_names_section(ui, state, true);
-            }
+            ui.add_space(4.0);
+            widgets::character_names_section(ui, state, true, state.scan_characters);
             ui.separator();
             ui.checkbox(&mut state.hdr_mode, l.t("游戏使用 HDR", "Game uses HDR"));
         });

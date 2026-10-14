@@ -293,6 +293,7 @@ pub fn delay_group(
     l: Lang,
     fields: &mut [(&str, &mut u64, u64, &str)],
 ) {
+    ui.add_space(6.0);
     ui.label(section_title(ui, &format!("{category} (ms)")));
     let any_below = fields
         .iter()
@@ -329,7 +330,7 @@ pub fn delay_group(
                                         egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
                                             ui.add(egui::Label::new(rich).truncate())
-                                                .on_hover_text(format!("{label}\n{tooltip}"));
+                                                .on_hover_text(*tooltip);
                                         },
                                     );
                                 },
@@ -366,12 +367,12 @@ pub fn server_port(ui: &mut egui::Ui, lang: Lang, port: &mut u16, enabled: bool)
 
 /// Character names section — shared between scanner and manager tabs.
 /// Shows the 4 renameable character name fields with required-field validation.
-pub fn character_names_section(ui: &mut egui::Ui, state: &mut AppState, enabled: bool) {
+pub fn character_names_section(ui: &mut egui::Ui, state: &mut AppState, enabled: bool, required: bool) {
     let l = state.lang;
 
     ui.add_enabled_ui(enabled, |ui| {
-        field_row(ui, l.t("游戏内昵称*", "In-game nickname*"), |ui| {
-            if state.user_config.traveler_name.trim().is_empty() {
+        field_row(ui, if required { l.t("游戏内昵称*", "In-game nickname*") } else { l.t("游戏内昵称", "In-game nickname") }, |ui| {
+            if required && state.user_config.traveler_name.trim().is_empty() {
                 ui.visuals_mut().widgets.inactive.bg_stroke.color = super::theme::palette(ui.visuals().dark_mode).warning;
             }
             ui.add(

@@ -126,6 +126,28 @@ fn missing_scan_targets_explain_why_start_is_disabled() {
 }
 
 #[test]
+fn genshin_name_settings_remain_visible_and_preserved_without_character_scanning() {
+    let mut state=AppState::new();
+    state.lang=Lang::En;
+    state.user_config.traveler_name="Player".into();
+    state.user_config.wanderer_name="Wanderer nickname".into();
+    state.user_config.manekin_name="Manekin nickname".into();
+    state.user_config.manekina_name="Manekina nickname".into();
+    for selected in [true,false] {
+        state.scan_characters=selected;
+        let before=(state.user_config.traveler_name.clone(),state.user_config.wanderer_name.clone(),state.user_config.manekin_name.clone(),state.user_config.manekina_name.clone());
+        let texts=render(|ui| {
+            ui.ctx().memory_mut(|m|m.set_everything_is_visible(true));
+            scanner_tab::show_settings(ui,&mut state,false);
+        });
+        for label in [if selected {"In-game nickname*"}else{"In-game nickname"},"Other renamed characters","Wanderer","Manekin","Manekina"] {
+            assert!(texts.iter().any(|(text,_,_)|text==label),"missing {label}");
+        }
+        assert_eq!((state.user_config.traveler_name.clone(),state.user_config.wanderer_name.clone(),state.user_config.manekin_name.clone(),state.user_config.manekina_name.clone()),before);
+    }
+}
+
+#[test]
 fn exported_scans_place_folder_before_scan_again_in_both_games() {
     for hsr in [false, true] {
         let status = TaskStatus::Exported {

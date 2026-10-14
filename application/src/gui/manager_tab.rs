@@ -11,7 +11,7 @@ pub fn show_settings(ui: &mut egui::Ui, state: &mut AppState, is_server_running:
 
     widgets::form(ui, |ui| {
         ui.add_enabled_ui(!is_server_running, |ui| {
-        widgets::character_names_section(ui, state, true);
+        widgets::character_names_section(ui, state, true, true);
         ui.separator();
             ui.checkbox(&mut state.hdr_mode, l.t("游戏使用 HDR", "Game uses HDR"));
         });
