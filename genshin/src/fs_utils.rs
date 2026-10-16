@@ -23,7 +23,7 @@ pub(crate) fn remove_file_if_exists(path: impl AsRef<Path>) -> Result<()> {
     }
 }
 
-/// Save a scan before applying retention. Partial scans always preserve history.
+/// Save before retention. Partial scans replace partial history, preserving complete exports.
 pub fn write_scan_export(
     output_dir: &Path,
     json: &str,
@@ -88,13 +88,20 @@ fn write_export(
         return Err(error).with_context(|| format!("Failed to save scan {}; incomplete-file cleanup={cleanup:?}; older exports retained", path.display()));
     }
     drop(file);
-    if only_latest && !partial {
-        remove_previous_exports_except(output_dir, prefix, Some(&path)).with_context(|| {
-            format!(
-                "New scan saved at {}; could not clean older exports",
-                path.display()
-            )
-        })?;
+    if only_latest {
+        let cleanup_prefix = if partial {
+            format!("{prefix}partial_")
+        } else {
+            prefix.to_owned()
+        };
+        remove_previous_exports_except(output_dir, &cleanup_prefix, Some(&path)).with_context(
+            || {
+                format!(
+                    "New scan saved at {}; could not clean older exports",
+                    path.display()
+                )
+            },
+        )?;
     }
     Ok(path)
 }
@@ -250,19 +257,50 @@ mod tests {
             super::write_scan_export(&dir, "complete", "2026-10-11_13-45-09", false, true).unwrap();
         let partial =
             super::write_scan_export(&dir, "partial", "2026-10-12_13-45-09", true, true).unwrap();
+        let replacement =
+            super::write_scan_export(&dir, "new partial", "2026-10-12_14-45-09", true, true)
+                .unwrap();
+        assert!(!partial.exists());
         assert_eq!(std::fs::read_to_string(&full).unwrap(), "complete");
         assert!(
             super::write_scan_export(&dir, "replacement", "2026-10-11_13-45-09", false, true)
                 .is_err()
         );
         assert_eq!(std::fs::read_to_string(&full).unwrap(), "complete");
-        assert_eq!(std::fs::read_to_string(&partial).unwrap(), "partial");
+        assert!(super::write_scan_export(
+            &dir,
+            "failed partial",
+            "2026-10-12_14-45-09",
+            true,
+            true
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read_to_string(&replacement).unwrap(),
+            "new partial"
+        );
         let latest =
             super::write_scan_export(&dir, "latest", "2026-10-13_13-45-09", false, true).unwrap();
         assert!(!full.exists());
         assert!(!partial.exists());
+        assert!(!replacement.exists());
         assert!(latest.exists());
         std::fs::remove_file(latest).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn partial_scans_keep_history_when_latest_only_is_disabled() {
+        let dir =
+            std::env::temp_dir().join(format!("goodscanner-keep-partials-{}", std::process::id()));
+        let first =
+            super::write_scan_export(&dir, "first", "2026-10-11_13-45-09", true, false).unwrap();
+        let second =
+            super::write_scan_export(&dir, "second", "2026-10-12_13-45-09", true, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "second");
+        std::fs::remove_file(first).unwrap();
+        std::fs::remove_file(second).unwrap();
         std::fs::remove_dir(dir).unwrap();
     }
 

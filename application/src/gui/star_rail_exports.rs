@@ -61,7 +61,7 @@ pub fn write_scan_file(
             export_stamp(ExportKind::Scan)?
         ),
         export,
-        only_latest && !partial,
+        only_latest,
         ExportKind::Scan,
     )
 }
@@ -125,6 +125,8 @@ fn write_export_file(
 }
 
 fn remove_older_exports(dir: &Path, current: &str, kind: ExportKind) -> std::io::Result<()> {
+    let partial_only = current.starts_with("partial_");
+    let current = current.strip_prefix("partial_").unwrap_or(current);
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         // Never follow symlinks or recurse; only generated HSR export filenames.
@@ -132,6 +134,13 @@ fn remove_older_exports(dir: &Path, current: &str, kind: ExportKind) -> std::io:
             continue;
         }
         let name = entry.file_name();
+        if partial_only
+            && !name
+                .to_str()
+                .is_some_and(|name| name.starts_with(&format!("{}partial_", kind.prefix())))
+        {
+            continue;
+        }
         let Some(stamp) = name.to_str().and_then(|name| export_timestamp(name, kind)) else {
             continue;
         };

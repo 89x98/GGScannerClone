@@ -141,7 +141,7 @@ fn latest_scan_cleanup_preserves_capture_other_games_manual_and_future_files() {
 }
 
 #[test]
-fn partial_scans_keep_complete_exports_even_in_latest_only_mode() {
+fn partial_scans_replace_previous_partial_and_keep_complete_exports_in_latest_only_mode() {
     let dir = temp_dir();
     let settings = StarRailSettings {
         output_dir: dir.display().to_string(),
@@ -162,13 +162,39 @@ fn partial_scans_keep_complete_exports_even_in_latest_only_mode() {
         paths.push(path);
     }
     assert_ne!(paths[0], paths[1]);
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 3);
+    assert!(!std::path::Path::new(&paths[0]).exists());
+    assert!(std::path::Path::new(&paths[1]).is_file());
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
     assert_eq!(fs::read(&old).unwrap(), b"complete export");
     let (complete, refs) = result(false, true);
     finish_scan_export(&settings, &complete, &refs, false, None).unwrap();
     assert!(!old.exists());
-    assert!(paths.iter().all(|path| !std::path::Path::new(path).exists()));
+    assert!(paths
+        .iter()
+        .all(|path| !std::path::Path::new(path).exists()));
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    remove_temp_dir(&dir);
+}
+
+#[test]
+fn partial_scans_keep_history_when_latest_only_is_disabled() {
+    let dir = temp_dir();
+    let settings = StarRailSettings {
+        output_dir: dir.display().to_string(),
+        scan_only_keep_latest_export: false,
+        ..Default::default()
+    };
+    let (scanned, refs) = result(false, false);
+    for _ in 0..2 {
+        let TaskStatus::Exported { path, partial, .. } =
+            finish_scan_export(&settings, &scanned, &refs, false, None).unwrap()
+        else {
+            panic!("partial scan should save")
+        };
+        assert!(partial);
+        assert!(std::path::Path::new(&path).is_file());
+    }
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
     remove_temp_dir(&dir);
 }
 
