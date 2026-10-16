@@ -11,8 +11,8 @@ pub fn show_settings(ui: &mut egui::Ui, state: &mut AppState, is_server_running:
 
     widgets::form(ui, |ui| {
         ui.add_enabled_ui(!is_server_running, |ui| {
-        widgets::character_names_section(ui, state, true, true);
-        ui.separator();
+            widgets::character_names_section(ui, state, true, true);
+            ui.separator();
             ui.checkbox(&mut state.hdr_mode, l.t("游戏使用 HDR", "Game uses HDR"));
         });
     });
@@ -122,10 +122,12 @@ pub fn show_status(
         .clicked()
     {
         if let Err(e) = super::privilege::ensure_admin_for_action() {
-            *state.server_status.lock().unwrap() = TaskStatus::Failed(UiError::from_anyhow(
+            let error = UiError::from_anyhow(
                 UiText::new("请以管理员身份启动程序", "Restart the app as administrator"),
                 &e,
-            ));
+            );
+            error.log_diagnostics();
+            *state.server_status.lock().unwrap() = TaskStatus::Failed(error);
         } else {
             state.server_enabled.store(true, Ordering::Relaxed);
             state.persist_config_now();

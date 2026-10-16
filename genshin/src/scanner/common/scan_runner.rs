@@ -278,7 +278,6 @@ pub fn run_scan_phases(
             if let Some(f) = phase_fn {
                 f("characters", ScanPhaseEvent::Started);
             }
-            log_info!("扫描角色...", "Scanning characters...");
             let cfg = GoodScannerApplication::make_char_config(&scanner_config, user_config);
             let scan_result = match GoodCharacterScanner::new(cfg, mappings.clone()) {
                 Ok(scanner) => scanner.scan(ctrl, 0, &pools, Some(&chars_progress)),
@@ -310,7 +309,6 @@ pub fn run_scan_phases(
         if let Some(f) = phase_fn {
             f("weapons", ScanPhaseEvent::Started);
         }
-        log_info!("扫描武器...", "Scanning weapons...");
         let cfg = GoodScannerApplication::make_weapon_config(&scanner_config, user_config);
         let scan_result = match GoodWeaponScanner::new(cfg, mappings.clone()) {
             Ok(scanner) => scanner.scan(ctrl, false, 0, &pools, Some(&weapons_progress)),
@@ -334,7 +332,6 @@ pub fn run_scan_phases(
         if let Some(f) = phase_fn {
             f("artifacts", ScanPhaseEvent::Started);
         }
-        log_info!("扫描圣遗物...", "Scanning artifacts...");
         let cfg = GoodScannerApplication::make_artifact_config(&scanner_config, user_config);
         let skip_open = matches!(weapons, ScanPhaseResult::Complete(_));
         let scan_result = match GoodArtifactScanner::new(cfg, mappings.clone()) {
@@ -364,7 +361,6 @@ pub fn run_scan_phases(
         if let Some(f) = phase_fn {
             f("achievements", ScanPhaseEvent::Started);
         }
-        log_info!("扫描成就...", "Scanning achievements...");
         let cfg = GoodScannerApplication::make_achievement_config(&scanner_config, user_config);
         let scan_result = GoodAchievementScanner::new(cfg, achievement_catalog.unwrap())
             .and_then(|scanner| scanner.scan(ctrl, &pools, Some(&achievements_progress)));
@@ -426,17 +422,17 @@ fn phase_result<T>(
                 Ok(ScanPhaseResult::Incomplete)
             }
         },
-        Err(e) => {
-            log_warn!(
-                "[scan] {}阶段失败: {}",
-                "[scan] {} phase failed: {}",
-                phase_name,
-                yas::lang::localize(&format!("{:#}", e))
-            );
-            match options.failure_policy {
-                ScanFailurePolicy::StopOnError => Err(e),
-                ScanFailurePolicy::ContinueOnError => Ok(ScanPhaseResult::Failed(e)),
-            }
+        Err(e) => match options.failure_policy {
+            ScanFailurePolicy::StopOnError => Err(e),
+            ScanFailurePolicy::ContinueOnError => {
+                log_warn!(
+                    "[scan] {}阶段失败: {}",
+                    "[scan] {} phase failed: {}",
+                    phase_name,
+                    yas::lang::localize(&format!("{:#}", e))
+                );
+                Ok(ScanPhaseResult::Failed(e))
+            },
         },
     }
 }

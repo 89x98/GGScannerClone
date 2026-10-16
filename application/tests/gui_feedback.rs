@@ -370,17 +370,20 @@ fn compact_logs_preserve_warning_and_error_emphasis() {
 #[test]
 fn failed_capture_write_displays_the_cause_and_never_shows_an_export_path() {
     use good_tools_app::gui::capture_tab::{self, CaptureTabState};
-    let missing = std::env::temp_dir()
-        .join(format!(
-            "ggscanner-feedback-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        ))
-        .join("missing-output");
-    let mut capture = CaptureTabState::new(missing.display().to_string());
+    let root = std::env::temp_dir().join(format!(
+        "ggscanner-feedback-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    // Missing folders are created automatically. A file occupying the output
+    // directory reliably exercises a real write failure on every platform.
+    let blocked = root.join("blocked-output");
+    std::fs::write(&blocked, "not a directory").unwrap();
+    let mut capture = CaptureTabState::new(blocked.display().to_string());
     capture.only_keep_latest_dump = false;
     let export = genshin_scanner::scanner::common::models::GoodExport::new(
         Some(vec![]),
@@ -399,9 +402,11 @@ fn failed_capture_write_displays_the_cause_and_never_shows_an_export_path() {
     let texts = render(|ui| capture_tab::show_status(ui, Lang::En, &mut capture, false, false));
     assert!(texts
         .iter()
-        .any(|(text, _, _)| text.contains("export file could not be written")));
+        .any(|(text, _, _)| text.contains("export could not be saved")));
     assert!(texts.iter().any(|(text, _, _)| text == "Retry"));
     assert!(!texts
         .iter()
         .any(|(text, _, _)| text == "Open folder" || text == "Export saved"));
+    std::fs::remove_file(blocked).unwrap();
+    std::fs::remove_dir(root).unwrap();
 }

@@ -49,7 +49,7 @@ impl GoodAchievementScanner {
     /// categories. Returns sorted unique completed achievement IDs.
     ///
     /// List motion: capture → split rows → OCR → park the cursor on the
-    /// scrollbar (cards enlarge if hovered) → 8 delayed wheel detents.
+    /// scrollbar (cards enlarge if hovered) → 40 delayed wheel detents.
     /// Stop after several frames with no new rows. Category motion clicks the
     /// next left-list row; after the 8th visible row the game auto-scrolls.
     pub fn scan(
@@ -58,7 +58,6 @@ impl GoodAchievementScanner {
         _pools: &SharedOcrPools,
         progress_fn: Option<&ProgressFn<'_>>,
     ) -> Result<Vec<u32>> {
-        log_info!("[achievement] 开始扫描成就", "[achievement] starting scan");
         let rec_backend = self.config.ocr_backend.clone();
         log_info!(
             "[achievement] OCR后端: {}",
@@ -563,7 +562,7 @@ impl GoodAchievementScanner {
                 idle_frames = 0;
             }
 
-            log_info!(
+            log_debug!(
                 "[achievement] 帧 {}/{} capture={}ms ocr={}ms rows={} new={} unmatched={} idle={} done={}",
                 "[achievement] frame {}/{} capture={}ms ocr={}ms rows={} new={} unmatched={} idle={} done={}",
                 frame_idx,
@@ -722,7 +721,7 @@ impl GoodAchievementScanner {
     }
 
     /// Same tick path as the backpack scanner: `mouse_scroll(1)` is one detent.
-    /// Sleep after every notch so Windows cannot coalesce 8 ticks into a jump.
+    /// Sleep after every notch so Windows cannot coalesce the burst into a jump.
     fn scroll_list(&self, ctrl: &mut GenshinGameController, ticks: i32, groove: (f64, f64)) {
         self.park_cursor_on_scrollbar(ctrl, groove);
         for _ in 0..ticks {
@@ -809,7 +808,7 @@ impl GoodAchievementScanner {
                 moved = true;
             }
             progress_log(&format!("cal_micro i={frame_idx} shift={shift:?}"));
-            log_info!(
+            log_debug!(
                 "[achievement] 1/8-notch {} shift={:?}",
                 "[achievement] 1/8-notch {} shift={:?}",
                 frame_idx,

@@ -102,8 +102,12 @@ struct Truth {
 fn main() {
     let mut args = std::env::args().skip(1);
     let dumps = PathBuf::from(args.next().unwrap_or_else(|| "debug_images".into()));
-    let capture_path = args.next().expect("usage: ocr_field_eval <debug_images> <capture.json>");
-    let expected_uid: Option<u64> = std::env::var("HSR_EVAL_UID").ok().and_then(|v| v.parse().ok());
+    let capture_path = args
+        .next()
+        .expect("usage: ocr_field_eval <debug_images> <capture.json>");
+    let expected_uid: Option<u64> = std::env::var("HSR_EVAL_UID")
+        .ok()
+        .and_then(|v| v.parse().ok());
 
     #[cfg(target_os = "windows")]
     if !genshin_scanner::cli::check_onnxruntime() {
@@ -121,12 +125,12 @@ fn main() {
         characters: capture["characters"].as_array().unwrap().clone(),
     };
 
-    let trailblazer = std::env::var("HSR_SCAN_TRAILBLAZER_NAME").ok().map(|nickname| {
-        hsr_scanner::TrailblazerIdentity {
+    let trailblazer = std::env::var("HSR_SCAN_TRAILBLAZER_NAME")
+        .ok()
+        .map(|nickname| hsr_scanner::TrailblazerIdentity {
             nickname,
             gender: hsr_scanner::TrailblazerGender::Stelle,
-        }
-    });
+        });
 
     let mut tallies: BTreeMap<(String, usize), Tally> = BTreeMap::new();
     let mut record = |label: String, model: usize, frame: &str, ok: bool| {
@@ -143,7 +147,7 @@ fn main() {
         (Some(Group::Uid), "uid"),
         (Some(Group::CharacterName), "character name"),
         (Some(Group::CharacterLevel), "character level"),
-        (Some(Group::CharacterSkill), "trace levels"),
+        (Some(Group::CharacterSkill), "skill levels"),
         (Some(Group::GearName), "relic name"),
         (Some(Group::GearLevel), "relic level"),
         (Some(Group::GearMainName), "relic main stat name"),
@@ -152,7 +156,10 @@ fn main() {
         (Some(Group::GearSubValue), "relic substat values"),
         (Some(Group::LightConeName), "light cone name"),
         (Some(Group::LightConeLevel), "light cone level"),
-        (Some(Group::LightConeSuperimposition), "light cone superimposition"),
+        (
+            Some(Group::LightConeSuperimposition),
+            "light cone superimposition",
+        ),
     ];
 
     let character_frames = frames(&dumps.join("characters"));
@@ -213,12 +220,18 @@ fn main() {
             }
             if applies(&[Group::CharacterSkill]) {
                 for (name, frame) in &trace_frames {
-                    let Some((path, id)) = identities.get(name) else { continue };
+                    let Some((path, id)) = identities.get(name) else {
+                        continue;
+                    };
                     let Some(expected) = truth.characters.iter().find(|entry| entry["id"] == *id)
                     else {
                         continue;
                     };
-                    let details = parser.parse_character_traces(frame, path);
+                    let eidolon = expected["eidolon"]
+                        .as_u64()
+                        .expect("capture character eidolon")
+                        as u8;
+                    let details = parser.parse_character_traces(frame, path, eidolon);
                     let ok = details.as_ref().is_ok_and(|details| {
                         serde_json::to_value(&details.skills).unwrap() == expected["skills"]
                             && details
@@ -227,17 +240,7 @@ fn main() {
                                 .map(|memo| serde_json::to_value(memo).unwrap())
                                 == expected.get("memosprite").cloned()
                     });
-                    record(format!("{label} [traces]"), candidate, name, ok);
-                    // Unlock nodes are pixel-classified, so one model suffices.
-                    if candidate == BASELINE && group.is_none() {
-                        let unlocks_ok = details.as_ref().is_ok_and(|details| {
-                            details.traces.iter().all(|(key, unlocked)| {
-                                expected["traces"].get(key).and_then(Value::as_bool)
-                                    == Some(*unlocked)
-                            })
-                        });
-                        record("trace unlocks".to_string(), candidate, name, unlocks_ok);
-                    }
+                    record(format!("{label} [skills]"), candidate, name, ok);
                 }
             }
             if applies(&[
@@ -331,7 +334,13 @@ fn single_export(
         light_cones,
         gear,
     };
-    build_scanner_export(&snapshot, references, &CaptureExportDetails::default(), None).unwrap()
+    build_scanner_export(
+        &snapshot,
+        references,
+        &CaptureExportDetails::default(),
+        None,
+    )
+    .unwrap()
 }
 
 /// HSR truncates displayed stats: percentages to 0.1, flat values to integers.
@@ -350,15 +359,19 @@ fn relic_in_capture(gear: &ObservedGear, references: &ReferenceCache, truth: &[V
             .all(|key| candidate[key] == relic[key])
             && candidate["substats"].as_array().unwrap().len() == substats.len()
             && substats.iter().all(|sub| {
-                candidate["substats"].as_array().unwrap().iter().any(|expected| {
-                    expected["key"] == sub["key"]
-                        && (displayed(
-                            expected["key"].as_str().unwrap(),
-                            expected["value"].as_f64().unwrap(),
-                        ) - sub["value"].as_f64().unwrap())
-                        .abs()
-                            < 0.05
-                })
+                candidate["substats"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|expected| {
+                        expected["key"] == sub["key"]
+                            && (displayed(
+                                expected["key"].as_str().unwrap(),
+                                expected["value"].as_f64().unwrap(),
+                            ) - sub["value"].as_f64().unwrap())
+                            .abs()
+                                < 0.05
+                    })
             })
     })
 }

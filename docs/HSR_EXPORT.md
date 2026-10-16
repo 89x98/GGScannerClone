@@ -26,7 +26,7 @@ compatibility with existing exports.
 | `version` | `4` |
 | `metadata.uid` | Screenshot scans: the account UID (integer) read from the bottom-left on-screen watermark, accepted once two panels read the same value, else `null`. Packet capture: always `null`. Importers discard this field; it is never read back. |
 | `metadata.trailblazer` | `"Stelle"` or `"Caelus"`, else `null` |
-| `characters[]` | `id` (string), `name`, `path`, `level`, `ascension`, `eidolon`. Packet captures also include `ability_version`. Screenshot OCR fills `skills`, `traces`, and optional `memosprite` from the traces screen when readable; `ability_version` is omitted because it is not on-screen text. |
+| `characters[]` | `id` (string), `name`, `path`, `level`, `ascension`, `eidolon`. Packet captures also include `ability_version` and single-unlock `traces` flags. Screenshot OCR fills upgradeable `skills` (Basic, Skill, Ultimate, Talent, plus `elation` on Elation characters) and optional `memosprite` levels. Screenshot scans do not read or export one-time trace-node flags; `traces.special` is such a flag, separate from the upgradeable `skills.elation` level. `ability_version` is omitted because it is not on-screen text. |
 | `light_cones[]` | `id` (string), `name`, `level`, `ascension`, `superimposition`, `location`, `lock`, `_uid` |
 | `relics[]` | all six slots; `set_id`, `name`, `slot`, `rarity`, `level`, `mainstat`, `substats[{key,value}]`, `location`, `lock`, `discard`, `_uid` |
 

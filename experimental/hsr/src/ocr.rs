@@ -703,6 +703,7 @@ impl<R: OcrReader> PanelParser<R> {
         &mut self,
         frame: &RgbImage,
         path: &str,
+        eidolon: u8,
     ) -> HsrResult<CharacterDetails> {
         let layout = layout::traces_for_path(path)
             .ok_or_else(|| ocr_semantic(format!("no traces layout for path={path}")))?;
@@ -714,26 +715,31 @@ impl<R: OcrReader> PanelParser<R> {
             let field = OcrField::CharacterSkill(key);
             let text = self.reader.read(field, &crop)?;
             annotator::record_ocr(&field.dump_name(), rect, &text);
-            let level = parse_trace_level(&text, key)?;
+            let parsed = parse_trace_level(&text, key, eidolon)?;
+            let level = parsed.level;
+            annotator::set_final(&field.dump_name(), &level.to_string());
+            if parsed.repaired_max {
+                yas::log_info!(
+                    "技能等级 OCR 分隔符已唯一校正：{}，{:?} → {}/{}（基础等级 {}）。",
+                    "Uniquely repaired skill OCR separator: {}, {:?} -> {}/{} (base level {}).",
+                    key,
+                    text,
+                    parsed.shown,
+                    parsed.shown_max,
+                    level
+                );
+            }
             if let Some(memo_key) = key.strip_prefix("memosprite_") {
                 memosprite.insert(memo_key.to_string(), u32::from(level));
             } else {
                 skills.insert(key.to_string(), u32::from(level));
             }
         }
-        let mut traces = BTreeMap::new();
-        for &(key, x, y) in layout.unlocks {
-            let unlocked = if key.starts_with("ability_") {
-                ability_node_unlocked(frame, x, y)
-            } else {
-                stat_node_unlocked(frame, x, y)
-            };
-            traces.insert(key.to_string(), unlocked);
-        }
         Ok(CharacterDetails {
             ability_version: None,
             skills,
-            traces,
+            // One-time unlock nodes are outside the screenshot scan contract.
+            traces: BTreeMap::new(),
             memosprite: (!memosprite.is_empty()).then_some(memosprite),
         })
     }
@@ -770,13 +776,29 @@ fn parse_uid(text: &str) -> Option<u64> {
 /// Exports carry the base level, so the bonus `shown_max - base_max` is
 /// removed. OCR often reads the slash as `1` (`6/6` → `616`); a slashless
 /// reading is accepted only when exactly one `1` split yields a legal pair.
-fn parse_trace_level(text: &str, key: &str) -> HsrResult<u8> {
+/// An extra denominator `1` is removed only when the observed eidolon rank
+/// permits one maximum. Ambiguous E3/E5 skill-bonus assignments are not guessed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedTraceLevel {
+    level: u8,
+    shown: u8,
+    shown_max: u8,
+    repaired_max: bool,
+}
+
+fn parse_trace_level(text: &str, key: &str, eidolon: u8) -> HsrResult<ParsedTraceLevel> {
     let base_max: u8 = match key {
         "basic" | "memosprite_skill" | "memosprite_talent" => 6,
         _ => 10,
     };
+    let bonus = if base_max == 6 { 1 } else { 2 };
+    let legal_maxima: &[u8] = match eidolon {
+        0..=2 => &[base_max],
+        5..=6 if key != "elation" => &[base_max + bonus],
+        _ => &[base_max, base_max + bonus],
+    };
     let legal = |shown: u8, shown_max: u8| {
-        (base_max..=base_max + 2).contains(&shown_max)
+        legal_maxima.contains(&shown_max)
             && shown >= 1 + (shown_max - base_max)
             && shown <= shown_max
     };
@@ -784,13 +806,33 @@ fn parse_trace_level(text: &str, key: &str) -> HsrResult<u8> {
         .chars()
         .filter(|c| c.is_ascii_digit() || *c == '/')
         .collect();
-    let pairs: Vec<(u8, u8)> = match compact.split_once('/') {
-        Some((shown, shown_max)) => shown
-            .parse()
-            .ok()
-            .zip(shown_max.parse().ok())
-            .into_iter()
-            .collect(),
+    let mut repaired_max = false;
+    let pairs: std::collections::BTreeSet<(u8, u8)> = match compact.split_once('/') {
+        Some((shown_text, max_text)) => {
+            let original = shown_text.parse().ok().zip(max_text.parse().ok());
+            if original.is_some_and(|(shown, maximum)| legal(shown, maximum)) {
+                original.into_iter().collect()
+            } else {
+                // Do not change the numerator or guess a maximum. Remove one
+                // OCR-inserted '1' from the denominator, accepting only a unique
+                // legal pair for this skill and observed eidolon rank.
+                if legal_maxima.len() != 1 {
+                    return Err(ocr_semantic(format!(
+                        "ambiguous skill maximum for {key} at eidolon={eidolon}; got {text:?}"
+                    )));
+                }
+                repaired_max = true;
+                max_text
+                    .char_indices()
+                    .filter(|&(_, c)| c == '1')
+                    .filter_map(|(index, _)| {
+                        let maximum = format!("{}{}", &max_text[..index], &max_text[index + 1..]);
+                        Some((shown_text.parse().ok()?, maximum.parse().ok()?))
+                    })
+                    .filter(|&(shown, maximum)| legal(shown, maximum))
+                    .collect()
+            }
+        },
         None => compact
             .char_indices()
             .filter(|&(index, c)| c == '1' && index > 0 && index + 1 < compact.len())
@@ -803,78 +845,20 @@ fn parse_trace_level(text: &str, key: &str) -> HsrResult<u8> {
             .filter(|&(shown, shown_max)| legal(shown, shown_max))
             .collect(),
     };
-    match pairs.as_slice() {
-        [(shown, shown_max)] if legal(*shown, *shown_max) => Ok(shown - (shown_max - base_max)),
-        _ => Err(ocr_semantic(format!(
-            "trace level for {key} is not a legal level/max pair; got {text:?}"
-        ))),
-    }
-}
-
-/// Unlocked stat nodes are white disks around a dark icon; some icons (the
-/// Hunt shield and heart) cover the whole center, so brightness at the center
-/// is unreliable. Within 20px, 623 live unlocked nodes were ≥35% white pixels
-/// and 157 locked (gray) ones ≤16%.
-fn stat_node_unlocked(image: &RgbImage, x: f64, y: f64) -> bool {
-    annotator::record_node("trace_stat_node", image, x, y, 21.0 / 1080.0);
-    const RADIUS: f64 = 20.0 / 1080.0;
-    const MIN_WHITE_FRACTION: f64 = 0.25;
-    let height = f64::from(image.height());
-    let (cx, cy) = (x * f64::from(image.width()), y * height);
-    let reach = (RADIUS * height).round() as i32;
-    let (mut white, mut count) = (0_u32, 0_u32);
-    for dy in -reach..=reach {
-        for dx in -reach..=reach {
-            if dx * dx + dy * dy > reach * reach {
-                continue;
-            }
-            if let Some(pixel) = pixel_at(image, cx + f64::from(dx), cy + f64::from(dy)) {
-                white += u32::from(pixel.iter().all(|&channel| channel > 200));
-                count += 1;
-            }
+    if pairs.len() == 1 {
+        let (shown, shown_max) = *pairs.first().unwrap();
+        if legal(shown, shown_max) {
+            return Ok(ParsedTraceLevel {
+                level: shown - (shown_max - base_max),
+                shown,
+                shown_max,
+                repaired_max,
+            });
         }
     }
-    count > 0 && f64::from(white) / f64::from(count) >= MIN_WHITE_FRACTION
-}
-
-/// Ability nodes are large icons whose center brightness depends on the art.
-/// Unlocked ones carry a white ring at r≈18px: across 78 live Characters the
-/// best white fraction was ≥0.35 when unlocked and ≤0.19 when locked.
-fn ability_node_unlocked(image: &RgbImage, x: f64, y: f64) -> bool {
-    annotator::record_node("trace_ability_node", image, x, y, 23.0 / 1080.0);
-    const RADIUS: f64 = 18.0 / 1080.0;
-    const MIN_WHITE_FRACTION: f64 = 0.3;
-    const SAMPLES: usize = 72;
-    const SHIFT: i32 = 3;
-    let height = f64::from(image.height());
-    let (cx, cy) = (x * f64::from(image.width()), y * height);
-    let radius = RADIUS * height;
-    let mut best = 0.0_f64;
-    for dy in -SHIFT..=SHIFT {
-        for dx in -SHIFT..=SHIFT {
-            let white = (0..SAMPLES)
-                .filter(|&k| {
-                    let angle = std::f64::consts::TAU * k as f64 / SAMPLES as f64;
-                    pixel_at(
-                        image,
-                        cx + f64::from(dx) + radius * angle.cos(),
-                        cy + f64::from(dy) + radius * angle.sin(),
-                    )
-                    .is_some_and(|pixel| pixel.iter().all(|&channel| channel > 190))
-                })
-                .count();
-            best = best.max(white as f64 / SAMPLES as f64);
-        }
-    }
-    best >= MIN_WHITE_FRACTION
-}
-
-fn pixel_at(image: &RgbImage, x: f64, y: f64) -> Option<[u8; 3]> {
-    let (x, y) = (x.round(), y.round());
-    if x < 0.0 || y < 0.0 || x >= f64::from(image.width()) || y >= f64::from(image.height()) {
-        return None;
-    }
-    Some(image.get_pixel(x as u32, y as u32).0)
+    Err(ocr_semantic(format!(
+        "trace level for {key} is not a legal level/max pair; got {text:?}"
+    )))
 }
 
 /// Relic levels are `+0` through `+15`. A leading plus is often read as `4`,
@@ -1129,7 +1113,7 @@ fn parse_equipped(
             .replace("已装备", "")
             .replace("已裝備", "");
         let location = references
-            .resolve_character_name(&stripped)
+            .resolve_character_name_exact(&stripped)
             .map(|reference| reference.key.clone());
         return (Some(true), location);
     }
@@ -1142,6 +1126,50 @@ fn parse_equipped(
     } else {
         (None, None)
     }
+}
+
+/// Inventory Path badges have decorative borders absent from Character
+/// headers. Match their neutral bright glyphs, independently of the portrait
+/// and the gold/black item background. Unknown/new badges fail closed.
+/// The sanitized atlas contains Hunt, Harmony, Preservation, Remembrance,
+/// and Elation: the currently observable multi-Path equipment badges.
+pub fn detect_equipped_path(strip: &RgbImage) -> Option<&'static str> {
+    annotator::record_detection("equipped_path_strip", strip);
+    let atlas = image::load_from_memory(include_bytes!("assets/equipped_path_badges.png"))
+        .ok()?
+        .to_rgb8();
+    let strip = image::imageops::resize(strip, 308, 60, image::imageops::FilterType::Nearest);
+    let paths = ["Rogue", "Shaman", "Knight", "Memory", "Elation"];
+    let mut scores = Vec::new();
+    for (index, path) in paths.into_iter().enumerate() {
+        let mut best = 0.0_f64;
+        // Label length/localization can shift the centered avatar and badge.
+        // Search only the left side, never the Equipped text on the right.
+        for y in 10..=26 {
+            for x in 12..=126 {
+                let mut intersection = 0_usize;
+                let mut union = 0_usize;
+                for dy in 0..34 {
+                    for dx in 0..34 {
+                        let expected = atlas.get_pixel(index as u32 * 34 + dx, dy)[0] > 180;
+                        let actual = strip
+                            .get_pixel(x + dx, y + dy)
+                            .0
+                            .iter()
+                            .all(|value| *value > 180);
+                        intersection += usize::from(expected && actual);
+                        union += usize::from(expected || actual);
+                    }
+                }
+                if union > 0 {
+                    best = best.max(intersection as f64 / union as f64);
+                }
+            }
+        }
+        scores.push((path, best));
+    }
+    scores.sort_by(|left, right| right.1.total_cmp(&left.1));
+    (scores[0].1 >= 0.78 && scores[0].1 - scores[1].1 >= 0.15).then_some(scores[0].0)
 }
 
 /// Closed versus open padlock.
@@ -1351,6 +1379,31 @@ mod tests {
     };
 
     #[test]
+    fn single_unlock_nodes_are_omitted_from_screen_details() {
+        // Sanitized live node pixels only: no character, account, or UID text.
+        let frame = image::load_from_memory(include_bytes!(
+            "../tests/fixtures/abundance_partial_trace_nodes.png"
+        ))
+        .unwrap()
+        .to_rgb8();
+        let mut reader = ScriptedOcrReader::default();
+        for key in ["basic", "skill", "ult", "talent"] {
+            reader = reader.with(
+                OcrField::CharacterSkill(key),
+                [if key == "basic" { "1/6" } else { "1/10" }],
+            );
+        }
+        let details = PanelParser::new(reader)
+            .parse_character_traces(&frame, "Priest", 0)
+            .unwrap();
+        assert!(details.traces.is_empty());
+        assert!(serde_json::to_value(details)
+            .unwrap()
+            .get("traces")
+            .is_none());
+    }
+
+    #[test]
     fn uid_reads_the_single_long_digit_run() {
         assert_eq!(parse_uid("UID:600732506"), Some(600_732_506));
         assert_eq!(parse_uid("U1D 600732506"), Some(600_732_506));
@@ -1361,17 +1414,66 @@ mod tests {
 
     #[test]
     fn trace_level_removes_the_eidolon_bonus_and_recovers_a_misread_slash() {
-        assert_eq!(parse_trace_level("6/6", "basic").unwrap(), 6);
-        assert_eq!(parse_trace_level("5/7", "basic").unwrap(), 4);
-        assert_eq!(parse_trace_level("9/12", "skill").unwrap(), 7);
-        assert_eq!(parse_trace_level("10/10", "ult").unwrap(), 10);
-        assert_eq!(parse_trace_level("12/12", "talent").unwrap(), 10);
-        assert_eq!(parse_trace_level("616", "basic").unwrap(), 6);
-        assert_eq!(parse_trace_level("417", "basic").unwrap(), 3);
-        assert_eq!(parse_trace_level("10110", "skill").unwrap(), 10);
-        assert!(parse_trace_level("7/6", "basic").is_err());
-        assert!(parse_trace_level("1/12", "skill").is_err());
-        assert!(parse_trace_level("66", "basic").is_err());
+        assert_eq!(parse_trace_level("6/6", "basic", 0).unwrap().level, 6);
+        assert_eq!(parse_trace_level("5/7", "basic", 6).unwrap().level, 4);
+        assert_eq!(parse_trace_level("9/12", "skill", 6).unwrap().level, 7);
+        assert_eq!(parse_trace_level("10/10", "ult", 0).unwrap().level, 10);
+        assert_eq!(parse_trace_level("12/12", "talent", 6).unwrap().level, 10);
+        assert_eq!(parse_trace_level("616", "basic", 0).unwrap().level, 6);
+        assert_eq!(parse_trace_level("417", "basic", 6).unwrap().level, 3);
+        assert_eq!(parse_trace_level("10110", "skill", 0).unwrap().level, 10);
+        assert!(parse_trace_level("7/6", "basic", 0).is_err());
+        assert!(parse_trace_level("1/12", "skill", 6).is_err());
+        assert!(parse_trace_level("66", "basic", 0).is_err());
+    }
+
+    #[test]
+    fn inserted_one_is_repaired_only_for_a_unique_eidolon_maximum() {
+        for (raw, key, rank, expected, maximum) in [
+            ("5/17", "basic", 6, 4, 7),
+            ("3/17", "basic", 6, 2, 7),
+            ("10/110", "elation", 2, 10, 10),
+            ("10/112", "skill", 6, 8, 12),
+        ] {
+            let parsed = parse_trace_level(raw, key, rank).unwrap();
+            assert_eq!(
+                (parsed.level, parsed.shown_max, parsed.repaired_max),
+                (expected, maximum, true)
+            );
+        }
+        for (raw, key, rank) in [
+            ("5/17", "basic", 0),
+            ("5/17", "basic", 3),
+            ("5/18", "basic", 6),
+            ("10/1110", "skill", 0),
+            ("1/12", "skill", 6),
+        ] {
+            assert!(
+                parse_trace_level(raw, key, rank).is_err(),
+                "{raw}/{key}/E{rank}"
+            );
+        }
+    }
+
+    #[test]
+    fn elation_skill_is_read_without_single_unlock_nodes() {
+        let mut reader = ScriptedOcrReader::default();
+        for key in ["basic", "skill", "ult", "talent", "elation"] {
+            reader = reader.with(
+                OcrField::CharacterSkill(key),
+                [if key == "basic" { "4/6" } else { "10/10" }],
+            );
+        }
+        let details = PanelParser::new(reader)
+            .parse_character_traces(
+                &RgbImage::from_pixel(1920, 1080, Rgb([0, 0, 0])),
+                "Elation",
+                2,
+            )
+            .unwrap();
+        assert_eq!(details.skills.len(), 5);
+        assert_eq!(details.skills["elation"], 10);
+        assert!(details.traces.is_empty());
     }
 
     #[test]
@@ -1664,7 +1766,7 @@ mod tests {
     }
 
     #[test]
-    fn character_traces_read_visible_levels_and_unlock_pixels() {
+    fn character_traces_read_only_upgradeable_skill_levels() {
         let frame = RgbImage::from_pixel(1920, 1080, Rgb([255, 255, 255]));
         let mut parser = PanelParser::new(
             ScriptedOcrReader::default()
@@ -1673,12 +1775,11 @@ mod tests {
                 .with(OcrField::CharacterSkill("ult"), ["8/10"])
                 .with(OcrField::CharacterSkill("talent"), ["8/10"]),
         );
-        let details = parser.parse_character_traces(&frame, "Knight").unwrap();
+        let details = parser.parse_character_traces(&frame, "Knight", 0).unwrap();
         assert_eq!(details.skills["basic"], 1);
         assert_eq!(details.skills["skill"], 5);
         assert!(details.ability_version.is_none());
-        assert_eq!(details.traces.len(), 13);
-        assert!(details.traces.values().all(|unlocked| *unlocked));
+        assert!(details.traces.is_empty());
         assert!(details.memosprite.is_none());
     }
 
@@ -2051,11 +2152,59 @@ mod tests {
     }
 
     #[test]
+    fn equipped_path_badges_require_a_close_unique_glyph() {
+        let atlas = image::load_from_memory(include_bytes!("assets/equipped_path_badges.png"))
+            .unwrap()
+            .to_rgb8();
+        for (index, path) in ["Rogue", "Shaman", "Knight", "Memory", "Elation"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut strip = RgbImage::from_pixel(308, 60, Rgb([120, 95, 50]));
+            image::imageops::replace(
+                &mut strip,
+                &image::imageops::crop_imm(&atlas, index as u32 * 34, 0, 34, 34).to_image(),
+                55,
+                20,
+            );
+            assert_eq!(detect_equipped_path(&strip), Some(path));
+            let doubled =
+                image::imageops::resize(&strip, 616, 120, image::imageops::FilterType::Nearest);
+            assert_eq!(detect_equipped_path(&doubled), Some(path));
+        }
+        assert_eq!(
+            detect_equipped_path(&RgbImage::from_pixel(308, 60, Rgb([80, 80, 80]))),
+            None
+        );
+        assert_eq!(
+            detect_equipped_path(&RgbImage::from_pixel(308, 60, Rgb([255, 255, 255]))),
+            None
+        );
+    }
+
+    #[test]
     fn equipped_parser_is_localized_and_blank_evidence_fails_closed() {
         let refs = references();
         let blank = RgbImage::from_pixel(180, 60, Rgb([24, 28, 35]));
         assert_eq!(parse_equipped("", &blank, &refs), (None, None));
         assert_eq!(parse_equipped("Equip", &blank, &refs), (None, None));
+        let live_refs = crate::load_embedded_gilore_reference().unwrap();
+        assert_eq!(
+            parse_equipped("经装备中", &blank, &live_refs),
+            (Some(true), None)
+        );
+        assert_eq!(
+            parse_equipped("刃装备中", &blank, &live_refs),
+            (Some(true), Some("1205".into()))
+        );
+        assert_eq!(
+            parse_equipped("Equipped Blade", &blank, &live_refs),
+            (Some(true), Some("1205".into()))
+        );
+        assert_eq!(
+            parse_equipped("三月七装备中", &blank, &live_refs),
+            (Some(true), None)
+        );
 
         let mut visible = blank.clone();
         paint_text_evidence(&mut visible, NormRect::new(0.0, 0.0, 1.0, 1.0));

@@ -1091,7 +1091,10 @@ fn sidebar_footer_buttons_fit_their_clip_in_both_languages() {
         };
         draw(vec![]);
         let initial = draw(vec![]);
-        for label in [initial_lang.t("English", "中文"), initial_lang.t("关于", "About")] {
+        for label in [
+            initial_lang.t("English", "中文"),
+            initial_lang.t("关于", "About"),
+        ] {
             let point = painted_text(&initial.shapes)
                 .into_iter()
                 .find(|(text, _)| text == label)

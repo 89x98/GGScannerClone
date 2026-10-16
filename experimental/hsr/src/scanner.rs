@@ -18,7 +18,8 @@ use crate::{
     },
     model::{
         CoverageLevel, EvidenceKind, InventoryCoverage, ObservationEvidence, ObservationSnapshot,
-        ObservedCharacter, ObservedLightCone, TrailblazerIdentity, OBSERVATION_SCHEMA_VERSION,
+        ObservedCharacter, ObservedGear, ObservedLightCone, TrailblazerIdentity,
+        OBSERVATION_SCHEMA_VERSION,
     },
     observation::ValidatedObservationSnapshot,
     ocr::{
@@ -30,14 +31,14 @@ use crate::{
     scan_timing::ScanTimings,
     scanner_export::{path_name, trailblazer_gender, CaptureExportDetails},
     vision::{
-        discover_inventory_grid, frame_fingerprint, frames_similar, glyphs_match, selected_card,
-        GridGeometry, NormRect, Point, SelectedCard,
+        classify_inventory_reposition, discover_inventory_grid, frame_fingerprint, frames_similar,
+        glyphs_match, selected_card, GridGeometry, NormRect, Point, ScrollEvidence, SelectedCard,
     },
 };
 
 #[cfg(test)]
 use crate::vision::{
-    classify_inventory_scroll, inventory_scrollbar_bottom_confidence, selected_cell, ScrollEvidence,
+    classify_inventory_scroll, inventory_scrollbar_bottom_confidence, selected_cell,
 };
 
 /// Name plate only. The portrait bar and the 3D preview sit inside the old
@@ -54,6 +55,8 @@ const SELECTION_ROW_SHIFT: f64 = 0.08;
 /// Lowercase fragments of the top-left menu title (「背包」 / 「角色详情」).
 const INVENTORY_TITLE: &[&str] = &["背包", "inventory"];
 const CHARACTER_TITLE: &[&str] = &["角色", "character"];
+/// The relic Equipped link opens the loadout page rather than Details.
+const RELIC_OWNER_TITLE: &[&str] = &["遗器着装", "relic"];
 
 /// Shared by live traversal and the shipped executable's drag diagnostic.
 pub fn drag_character_page<D: HsrDevice>(
@@ -67,16 +70,13 @@ pub fn drag_character_page<D: HsrDevice>(
     device.capture_client()
 }
 
-fn character_bar_unchanged(before: &RgbImage, after: &RgbImage) -> HsrResult<bool> {
-    // Compare faces, excluding the animated starfield and selection rings.
-    for slot in 0..layout::CHARACTER_PAGE_SIZE {
-        let center = layout::character_portrait(slot);
-        let face = NormRect::new(center.x - 0.004, center.y - 0.0075, 0.008, 0.015);
-        if !frames_similar(&face.crop(before)?, &face.crop(after)?) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+fn first_character_portrait_unchanged(before: &RgbImage, after: &RgbImage) -> HsrResult<bool> {
+    // Compare only the first visible face immediately across this drag. A
+    // different anchor is progress even if it appeared on an earlier page.
+    // Exclude the animated starfield and selection rings as before.
+    let center = layout::character_portrait(0);
+    let face = NormRect::new(center.x - 0.004, center.y - 0.0075, 0.008, 0.015);
+    Ok(frames_similar(&face.crop(before)?, &face.crop(after)?))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +215,18 @@ struct CharacterPages {
     last: RgbImage,
 }
 
+enum EquippedItem {
+    LightCone(ObservedLightCone),
+    Gear(ObservedGear),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InventoryNavigation {
+    ReopenAndClose,
+    ReopenAndKeep,
+    SwitchTabAndClose,
+}
+
 pub struct HsrScanner<D, R> {
     device: D,
     parser: PanelParser<R>,
@@ -224,6 +236,8 @@ pub struct HsrScanner<D, R> {
     uid_candidate: Option<u64>,
     uid_error_logged: bool,
     observer: Option<crate::scan_progress::ScanObserver>,
+    equipped_owners: Vec<(RgbImage, u32)>,
+    inventory_frame_after_owner: Option<RgbImage>,
 }
 
 impl HsrScanner<WindowsHsrDevice, PaddleOcrReader> {
@@ -259,6 +273,8 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
             uid_candidate: None,
             uid_error_logged: false,
             observer: None,
+            equipped_owners: Vec::new(),
+            inventory_frame_after_owner: None,
         }
     }
 
@@ -304,7 +320,7 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
 
     fn scan_manager_inventory_inner(&mut self) -> HsrResult<Vec<ManagedGearObservation>> {
         self.device.focus_and_verify()?;
-        let scan = self.scan_gear()?;
+        let scan = self.scan_gear(false)?;
         if scan.coverage != CoverageLevel::Complete {
             return Err(HsrError::new(
                 "HSR-MANAGER-INVENTORY-INCOMPLETE",
@@ -364,7 +380,7 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                 crate::scan_progress::ScanCategory::LightCones,
                 crate::scan_progress::ScanEvent::Started,
             );
-            let scan = self.scan_light_cones()?;
+            let scan = self.scan_light_cones(self.config.targets.gear)?;
             self.report(
                 crate::scan_progress::ScanCategory::LightCones,
                 crate::scan_progress::ScanEvent::Finished {
@@ -382,7 +398,9 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                 crate::scan_progress::ScanCategory::Gear,
                 crate::scan_progress::ScanEvent::Started,
             );
-            let scan = self.scan_gear()?;
+            // A successful cone scan kept the backpack open for this direct
+            // tab switch. A cancelled scan never enters this branch.
+            let scan = self.scan_gear(self.config.targets.light_cones)?;
             self.report(
                 crate::scan_progress::ScanCategory::Gear,
                 crate::scan_progress::ScanEvent::Finished {
@@ -464,14 +482,36 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
         }
     }
 
-    fn scan_light_cones(&mut self) -> HsrResult<InventoryScan<ObservedLightCone>> {
+    fn scan_light_cones(
+        &mut self,
+        keep_inventory_open: bool,
+    ) -> HsrResult<InventoryScan<ObservedLightCone>> {
         yas::log_info!("正在扫描光锥。", "Scanning Light Cones.");
-        let scan =
-            self.scan_inventory(InventoryKind::LightCone, |parser, frame, panel, refs, _| {
-                parser
-                    .parse_light_cone(frame, panel, refs)
-                    .map(|parsed| parsed.observation)
-            })?;
+        let navigation = if keep_inventory_open {
+            InventoryNavigation::ReopenAndKeep
+        } else {
+            InventoryNavigation::ReopenAndClose
+        };
+        let scan = self.scan_inventory(
+            InventoryKind::LightCone,
+            navigation,
+            |scanner, frame, panel, _| {
+                let mut parsed =
+                    scanner
+                        .parser
+                        .parse_light_cone(frame, panel, &scanner.references)?;
+                if parsed.equipped == Some(true)
+                    && parsed.observation.equipped_character_id.is_none()
+                {
+                    parsed.observation.equipped_character_id = scanner.read_equipped_owner(
+                        frame,
+                        panel,
+                        EquippedItem::LightCone(parsed.observation.clone()),
+                    )?;
+                }
+                Ok(parsed.observation)
+            },
+        )?;
         yas::log_info!(
             "光锥扫描结束：{} 件；覆盖率={:?}。",
             "Light Cone scan finished: {} items; coverage={:?}.",
@@ -481,15 +521,34 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
         Ok(scan)
     }
 
-    fn scan_gear(&mut self) -> HsrResult<InventoryScan<ScannedGearItem>> {
+    fn scan_gear(&mut self, from_inventory: bool) -> HsrResult<InventoryScan<ScannedGearItem>> {
         yas::log_info!(
             "正在扫描遗器（包括隧洞遗器与位面饰品）。",
             "Scanning gear (Cavern Relics and Planar Ornaments)."
         );
+        let navigation = if from_inventory {
+            InventoryNavigation::SwitchTabAndClose
+        } else {
+            InventoryNavigation::ReopenAndClose
+        };
         let scan = self.scan_inventory(
             InventoryKind::Gear,
-            |parser, frame, panel, refs, ordinal| {
-                let parsed = parser.parse_gear(frame, panel, refs)?;
+            navigation,
+            |scanner, frame, panel, ordinal| {
+                let mut parsed = scanner
+                    .parser
+                    .parse_gear(frame, panel, &scanner.references)?;
+                if parsed.equipped == Some(true)
+                    && parsed.observation.equipped_character_id.is_none()
+                {
+                    let owner = scanner.read_equipped_owner(
+                        frame,
+                        panel,
+                        EquippedItem::Gear(parsed.observation.clone()),
+                    )?;
+                    parsed.observation.equipped_character_id = owner;
+                    parsed.location_key = owner.map(|id| id.to_string());
+                }
                 let semantic_fingerprint = gear_fingerprint(&parsed);
                 Ok(ScannedGearItem {
                     ordinal,
@@ -510,17 +569,23 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
     fn scan_inventory<T: std::fmt::Debug>(
         &mut self,
         kind: InventoryKind,
-        mut parse: impl FnMut(
-            &mut PanelParser<R>,
-            &RgbImage,
-            StatsPanelLayout,
-            &ReferenceCache,
-            usize,
-        ) -> HsrResult<T>,
+        navigation: InventoryNavigation,
+        mut parse: impl FnMut(&mut Self, &RgbImage, StatsPanelLayout, usize) -> HsrResult<T>,
     ) -> HsrResult<InventoryScan<T>> {
         let mut items = Vec::new();
         let traversal = (|| {
-            let mut session = self.enter_inventory(kind)?;
+            let mut session = if navigation == InventoryNavigation::SwitchTabAndClose {
+                if !self.menu_open(INVENTORY_TITLE)? {
+                    return Err(HsrError::new(
+                        "HSR-SCAN-TAB",
+                        hints::SCREEN_INVALID,
+                        "inventory category handoff did not preserve the backpack UI",
+                    ));
+                }
+                self.select_inventory_tab(kind)?
+            } else {
+                self.enter_inventory(kind)?
+            };
             let quantity = session.cursor.quantity();
             let reads_agree = session.quantity_reads[0] == session.quantity_reads[1];
             let category_cap = match kind {
@@ -560,15 +625,7 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                     inventory_dump_category(kind),
                     ordinal,
                     &session.frame,
-                    || {
-                        parse(
-                            &mut self.parser,
-                            &session.frame,
-                            session.panel,
-                            &self.references,
-                            ordinal,
-                        )
-                    },
+                    || parse(self, &session.frame, session.panel, ordinal),
                 ) {
                     Ok(item) => items.push(item),
                     Err(error)
@@ -579,10 +636,10 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                             format!("one or more entries were omitted; firstCause={error}")
                         });
                         yas::log_warn!(
-                        "一个库存条目无法可靠读出，已省略并继续下一项；覆盖率将标记为未知。完整错误详情：{}",
-                        "An inventory entry could not be read reliably and was omitted; the walk continues and coverage will be marked unknown. Full error details: {}",
-                        error
-                    );
+                            "一个库存条目无法可靠读出，已省略并继续下一项；覆盖率将标记为未知。完整错误详情：{}",
+                            "An inventory entry could not be read reliably and was omitted; the walk continues and coverage will be marked unknown. Full error details: {}",
+                            error
+                        );
                     },
                     Err(error) => {
                         yas::log_error!(
@@ -593,6 +650,9 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                         );
                         return Err(error);
                     },
+                }
+                if let Some(restored) = self.inventory_frame_after_owner.take() {
+                    session.frame = restored;
                 }
                 self.report(
                     progress_category,
@@ -638,16 +698,18 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                 CoverageLevel::Unknown
             } else if !reads_agree || items.len() != quantity {
                 let reason = format!(
-                "next-item walk parsed {} entries; quantity reads were {:?} and agreement={reads_agree}",
-                items.len(),
-                session.quantity_reads
-            );
+                    "next-item walk parsed {} entries; quantity reads were {:?} and agreement={reads_agree}",
+                    items.len(),
+                    session.quantity_reads
+                );
                 log_inventory_coverage_warning(kind, items.len(), &reason);
                 CoverageLevel::Unknown
             } else {
                 CoverageLevel::Complete
             };
-            self.leave_menu()?;
+            if navigation != InventoryNavigation::ReopenAndKeep {
+                self.leave_menu()?;
+            }
             Ok(coverage)
         })();
         let coverage = self.category_coverage(traversal)?;
@@ -710,6 +772,9 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
     }
 
     fn enter_inventory(&mut self, kind: InventoryKind) -> HsrResult<InventorySession> {
+        // A failed/attended run may leave the backpack scrolled. Reopen it
+        // through the shared menu path so "first card" means inventory start.
+        self.leave_menu()?;
         // Escape in the overworld opens the pause menu, and `1` there switches
         // the active party member (its animation swallows the next key). So
         // `1`, which leaves controller UI where pointer clicks do not change
@@ -718,6 +783,12 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
         self.issue_input(InputCommand::Key('1'))?;
         self.wait_attended(Duration::from_millis(self.config.timings.input_settle_ms))?;
 
+        self.select_inventory_tab(kind)
+    }
+
+    /// Select and validate a category inside an already-open backpack. Entry
+    /// and the cone-to-relic handoff share the same grid/panel/quantity checks.
+    fn select_inventory_tab(&mut self, kind: InventoryKind) -> HsrResult<InventorySession> {
         let tab = match kind {
             InventoryKind::LightCone => layout::LIGHT_CONE_TAB,
             InventoryKind::Gear => layout::GEAR_TAB,
@@ -827,24 +898,155 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
     /// walk cannot silently start a row late.
     fn select_first_inventory_cell(&mut self, grid: &GridGeometry) -> HsrResult<RgbImage> {
         let first = grid.first().expect("backpack grid has cells");
+        self.select_inventory_row_start(grid, first.y, "HSR-SCAN-FIRST-CELL")
+    }
+
+    fn select_inventory_row_start(
+        &mut self,
+        grid: &GridGeometry,
+        row_y: f64,
+        error_code: &'static str,
+    ) -> HsrResult<RgbImage> {
+        let first = Point::new(grid.first().expect("backpack grid has cells").x, row_y);
         let mut observed = None;
         for _ in 0..2 {
             self.issue_input(InputCommand::Click(first))?;
+            // Let the game consume the click at the card before moving away.
+            // On a busy frame an immediate move can leave the prior row selected.
+            self.wait_attended(Duration::from_millis(self.config.timings.input_settle_ms))?;
             self.issue_input(InputCommand::Hover(layout::INVENTORY_POINTER_REST))?;
             self.wait_attended(Duration::from_millis(self.config.timings.panel_switch_ms))?;
             let frame = self.capture_stable()?;
             observed = selected_card(grid, &frame);
-            if observed.is_some_and(|card| {
-                card.column == 0 && (card.y - first.y).abs() < SELECTION_ROW_SHIFT
-            }) {
+            if discover_inventory_grid(&frame).is_ok()
+                && observed.is_some_and(|card| {
+                    card.column == 0 && (card.y - first.y).abs() < SELECTION_ROW_SHIFT
+                })
+            {
                 return Ok(frame);
             }
         }
         Err(HsrError::new(
-            "HSR-SCAN-FIRST-CELL",
+            error_code,
             hints::SCREEN_INVALID,
             format!("clicking the first backpack card left selection={observed:?}"),
         ))
+    }
+
+    /// Follow the read-only Equipped link, read its Character header, then
+    /// prove that the same inventory panel was restored before continuing.
+    fn read_equipped_owner(
+        &mut self,
+        frame: &RgbImage,
+        panel: StatsPanelLayout,
+        expected: EquippedItem,
+    ) -> HsrResult<Option<u32>> {
+        let strip = panel.panel.relative(layout::RELIC_EQUIPPED);
+        let portrait = strip.crop(frame)?;
+        if let Some((_, owner)) = self
+            .equipped_owners
+            .iter()
+            .find(|(pixels, _)| *pixels == portrait)
+        {
+            return Ok(Some(*owner));
+        }
+        self.issue_input(InputCommand::Click(Point::new(
+            strip.x + strip.width / 2.0,
+            strip.y + strip.height / 2.0,
+        )))?;
+        self.wait_attended(Duration::from_millis(self.config.timings.panel_switch_ms))?;
+        let owner_frame = self.capture_stable()?;
+        annotator::add_image("equipped_owner", &owner_frame);
+        let owner = (|| {
+            let title = match &expected {
+                EquippedItem::LightCone(_) => CHARACTER_TITLE,
+                EquippedItem::Gear(_) => RELIC_OWNER_TITLE,
+            };
+            if !self.parser.shows_menu_title(&owner_frame, title)? {
+                return Err(HsrError::new("HSR-OWNER-PANEL", hints::SCREEN_INVALID,
+                    "Equipped link did not open a validated Character page; owner screenshot retained"));
+            }
+            self.parser
+                .parse_character_identity(
+                    &owner_frame,
+                    &self.references,
+                    self.config.trailblazer.as_ref(),
+                )
+                .and_then(|reference| {
+                    if self.references.character_name_candidates(&reference.name.zh_cn).len() <= 1 {
+                        return Ok(reference.game_id);
+                    }
+                    // The Equipped link opens the currently selected Path,
+                    // even when an inactive Path owns this item. Only the
+                    // inventory badge identifies that variant.
+                    let path = crate::ocr::detect_equipped_path(&portrait).ok_or_else(|| {
+                        HsrError::new("HSR-OCR-EQUIPPED-PATH", hints::SCREEN_INVALID,
+                            "equipped character has multiple Paths but its inventory badge is unreadable")
+                    })?;
+                    let name = if reference.name.zh_cn == "{NICKNAME}" {
+                        self.config.trailblazer.as_ref().map(|identity| identity.nickname.as_str())
+                    } else {
+                        Some(reference.name.zh_cn.as_str())
+                    };
+                    name.and_then(|name| self.references.resolve_character_header(
+                        name, Some(path), self.config.trailblazer.as_ref()))
+                        .map(|reference| reference.game_id)
+                        .ok_or_else(|| HsrError::new("HSR-OCR-EQUIPPED-PATH", hints::SCREEN_INVALID,
+                            "inventory Path badge does not resolve a variant of the observed character"))
+                })
+        })();
+        self.issue_input(InputCommand::Escape)?;
+        self.wait_attended(Duration::from_millis(self.config.timings.panel_switch_ms))?;
+        let returned = self.capture_stable()?;
+        annotator::add_image("equipped_owner_return", &returned);
+        let (kind, same_item) = match expected {
+            EquippedItem::LightCone(expected) => {
+                let parsed = self
+                    .parser
+                    .parse_light_cone(&returned, panel, &self.references)?;
+                let equipped = parsed.equipped;
+                let mut actual = parsed.observation;
+                actual.equipped_character_id = expected.equipped_character_id;
+                (
+                    InventoryKind::LightCone,
+                    equipped == Some(true) && actual == expected,
+                )
+            },
+            EquippedItem::Gear(expected) => {
+                let parsed = self.parser.parse_gear(&returned, panel, &self.references)?;
+                let equipped = parsed.equipped;
+                let mut actual = parsed.observation;
+                actual.equipped_character_id = expected.equipped_character_id;
+                (
+                    InventoryKind::Gear,
+                    equipped == Some(true) && actual == expected,
+                )
+            },
+        };
+        let grid = backpack_grid(kind);
+        let same_card = owner_return_selection_matches(&grid, frame, &returned)?;
+        if !same_item || !same_card {
+            return Err(HsrError::new(
+                "HSR-OWNER-RETURN",
+                hints::SCREEN_INVALID,
+                "returning from the Equipped link did not restore the original inventory panel",
+            ));
+        }
+        // Returning from Character pages scrolls a lower-row selection to the
+        // top of the backpack. Compare the next key against the new viewport.
+        self.inventory_frame_after_owner = Some(returned);
+        let owner = owner?;
+        // Path variants can share the same portrait (notably Trailblazer).
+        // Resolve their link every time instead of caching an ambiguous icon.
+        if self.references.character(owner).is_some_and(|reference| {
+            self.references
+                .character_name_candidates(&reference.name.zh_cn)
+                .len()
+                == 1
+        }) {
+            self.equipped_owners.push((portrait, owner));
+        }
+        Ok(Some(owner))
     }
 
     fn read_inventory_quantity(&mut self, frame: &RgbImage) -> HsrResult<usize> {
@@ -857,8 +1059,7 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
             layout::QUANTITY,
             &text,
         );
-        let digits: String = text.chars().filter(char::is_ascii_digit).collect();
-        inventory_quantity_from_digits(&digits).map_err(|error| {
+        inventory_quantity_from_text(&text).map_err(|error| {
             HsrError::new(
                 "HSR-SCAN-QUANTITY",
                 hints::OCR_FAILED,
@@ -900,6 +1101,21 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
         };
         let key = walk.next_key(selection.map(|card| card.column), grid.columns());
         let moved = self.press_inventory_key(key, panel, grid, previous, selection)?;
+        if key == 's' {
+            // Down can scroll the viewport or clamp to the last available
+            // column on a partial row. Locate that settled row, then click its
+            // first card; intermediate right-hand cards are never parsed.
+            let row = self.settled_selection(grid)?.ok_or_else(|| {
+                HsrError::new(
+                    "HSR-SCAN-NAV",
+                    hints::SCREEN_INVALID,
+                    "next inventory row did not expose a stable selected card",
+                )
+            })?;
+            let first = self.select_inventory_row_start(grid, row.y, "HSR-SCAN-NAV")?;
+            walk.stepped(key);
+            return Ok(first);
+        }
         walk.stepped(key);
         Ok(moved)
     }
@@ -909,14 +1125,16 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
     /// card. When that disagrees with the dead-reckoned column, wait until two
     /// consecutive fresh frames agree.
     fn settled_selection(&mut self, grid: &GridGeometry) -> HsrResult<Option<SelectedCard>> {
-        let mut last = None;
+        let mut last: Option<SelectedCard> = None;
         for _ in 0..6 {
             self.wait_attended(Duration::from_millis(
                 self.config.timings.capture_interval_ms,
             ))?;
             let frame = self.device.capture_client()?;
             let card = selected_card(grid, &frame);
-            if card.is_some() && card.map(|c| c.column) == last.map(|c: SelectedCard| c.column) {
+            if matches!((last, card), (Some(before), Some(after))
+                if before.column == after.column && (before.y - after.y).abs() < SELECTION_ROW_SHIFT)
+            {
                 return Ok(card);
             }
             last = card;
@@ -1302,10 +1520,10 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
             let mut seen = BTreeSet::new();
             let mut terminal_proven = false;
             let mut coverage_degraded = false;
-            // Bound a malfunctioning traversal by the reference roster, allowing
-            // one overlapping final page. Completion comes from the controller's
-            // terminal evidence, never from this bound or an entered total.
-            let visit_bound = self.references.character_count() * 2 + layout::CHARACTER_PAGE_SIZE;
+            // A partial drag may reveal just one new portrait. Allow a full
+            // page visit per new anchor; exhausting this bound is still Unknown,
+            // never evidence of reaching the end.
+            let visit_bound = (self.references.character_count() + 1) * layout::CHARACTER_PAGE_SIZE;
             for index in 0..visit_bound {
                 let pages = self.read_character_pages(index, index % 2 == 1)?;
                 self.observe_uid(&pages.details);
@@ -1317,10 +1535,10 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                     {
                         coverage_degraded = true;
                         yas::log_warn!(
-                        "当前角色名称对应多个公开角色模板，且画面没有足够的命途或变体证据；已省略该角色并将角色覆盖率标记为未知。完整错误详情：{}",
-                        "The current character name maps to multiple public templates and the screen lacks sufficient path or variant evidence; the entry was omitted and character coverage is marked unknown. Full error details: {}",
-                        error
-                    );
+                            "当前角色名称对应多个公开角色模板，且画面没有足够的命途或变体证据；已省略该角色并将角色覆盖率标记为未知。完整错误详情：{}",
+                            "The current character name maps to multiple public templates and the screen lacks sufficient path or variant evidence; the entry was omitted and character coverage is marked unknown. Full error details: {}",
+                            error
+                        );
                         None
                     },
                     Err(error)
@@ -1329,10 +1547,10 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                     {
                         coverage_degraded = true;
                         yas::log_warn!(
-                        "角色面板有字段无法识别，已省略该角色并将角色覆盖率标记为未知。完整错误详情：{}",
-                        "A field on the Character panel was unreadable; the entry was omitted and character coverage is marked unknown. Full error details: {}",
-                        error
-                    );
+                            "角色面板有字段无法识别，已省略该角色并将角色覆盖率标记为未知。完整错误详情：{}",
+                            "A field on the Character panel was unreadable; the entry was omitted and character coverage is marked unknown. Full error details: {}",
+                            error
+                        );
                         None
                     },
                     Err(error) => {
@@ -1346,14 +1564,16 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                     },
                 };
                 if let Some(parsed) = parsed {
-                    // A final drag clamps to the end and overlaps the previous
-                    // page. Revisited identities are expected and are not exported
-                    // twice; continue clicking through the rest of that page.
+                    // Partial and final drags can overlap prior pages. Seen IDs
+                    // only deduplicate exports; they never establish the end of
+                    // the strip. Continue through every slot of the moved page.
                     if seen.insert(parsed.observation.character_id) {
                         if let Some(trace_details) = self.accept_character_traces(pages.traces)? {
                             export_details
                                 .characters
                                 .insert(parsed.observation.character_id, trace_details);
+                        } else {
+                            coverage_degraded = true;
                         }
                         if trailblazer_gender(parsed.observation.character_id).is_some() {
                             export_details.current_trailblazer_path =
@@ -1385,10 +1605,10 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                     Err(error) if error.code() == "HSR-CHAR-ADVANCE" => {
                         coverage_degraded = true;
                         yas::log_warn!(
-                        "点击后没有切换到下一个角色，角色列表在此停止。完整错误详情：{}",
-                        "Clicking did not open another Character; roster traversal stopped here. Full error details: {}",
-                        error
-                    );
+                            "点击后没有切换到下一个角色，角色列表在此停止。完整错误详情：{}",
+                            "Clicking did not open another Character; roster traversal stopped here. Full error details: {}",
+                            error
+                        );
                         break;
                     },
                     Err(error) => return Err(error),
@@ -1426,22 +1646,11 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
             || crate::vision::last_visible_character_selected(previous) == Some(true);
         let next_slot = if paged {
             let after = drag_character_page(&mut self.device, true, &self.config.timings)?;
-            if character_bar_unchanged(previous, &after)? {
-                // Verify with a second independent drag: a missed input must
-                // not by itself claim that every Character was scanned.
-                let confirmation =
-                    drag_character_page(&mut self.device, true, &self.config.timings)?;
-                if !character_bar_unchanged(&after, &confirmation)? {
-                    return Err(HsrError::new(
-                        "HSR-CHAR-ADVANCE",
-                        hints::SCREEN_INVALID,
-                        "terminal drag confirmation moved the roster; traversal is incomplete",
-                    ));
-                }
+            if first_character_portrait_unchanged(previous, &after)? {
                 return Err(HsrError::new(
                     "HSR-CHAR-END",
                     hints::SCREEN_INVALID,
-                    "last visible portrait visited; two forward drags stayed at the roster end",
+                    "forward drag repeated the immediately preceding first visible portrait",
                 ));
             }
             0
@@ -1494,10 +1703,10 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
             self.ensure_attended()?;
             let frame = self.device.capture_client()?;
             let identity = CHARACTER_IDENTITY_REGION.crop(&frame)?;
-            if !frames_similar(previous_identity, &identity) {
+            if !glyphs_match(previous_identity, &identity) {
                 if changed_identity
                     .as_ref()
-                    .is_some_and(|prior| frames_similar(prior, &identity))
+                    .is_some_and(|prior| glyphs_match(prior, &identity))
                 {
                     return Ok(frame);
                 }
@@ -1571,14 +1780,13 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                             annotator::finalize_success(&format!("eidolon={eidolon}"));
                         },
                     }
-                    // Header OCR identifies the path before parsing Traces in either
-                    // direction; retain the frame until that reference is available.
-                    if let (Some(Ok(reference)), Some(frame)) = (&identity, &traces_frame) {
-                        traces = Some(dump_parsed_item("character_traces", index, frame, || {
-                            parser.parse_character_traces(frame, &reference.path)
-                        }));
-                        traces_frame = None;
-                    }
+                }
+                // Both traversal directions must know the observed eidolon
+                // before validating a skill's displayed maximum and OCR repair.
+                if let (Some(Ok(reference)), Some(frame)) = (&identity, &traces_frame) {
+                    traces = Some(dump_parsed_item("character_traces", index, frame, || {
+                        parser.parse_character_traces(frame, &reference.path, eidolon)
+                    }));
                 }
                 if let Some(Ok(character)) = &mut parsed {
                     character.observation.eidolon = eidolon;
@@ -1589,6 +1797,7 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                 let mut details = None;
                 let mut last = None;
                 let mut identity = None;
+                let mut identity_frame = None;
                 for (position, tab) in CharacterTab::order(reverse).into_iter().enumerate() {
                     // The previous character already left us on the first tab.
                     if position > 0 {
@@ -1610,10 +1819,25 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
                         .as_ref()
                         .is_some_and(|previous| !glyphs_match(previous, &current_identity))
                     {
-                        return Err(HsrError::new("HSR-CHAR-PANEL-IDENTITY", hints::SCREEN_INVALID,
-                            "character identity changed between tabs; refusing to combine different characters"));
+                        let detail = format!(
+                            "character identity changed between tabs at character index={index}, tab={tab:?}; refusing to combine different characters"
+                        );
+                        annotator::begin_item("character_tab_identity", index, &frame);
+                        if let Some(previous_frame) = &identity_frame {
+                            annotator::add_image("first_tab", previous_frame);
+                        }
+                        annotator::add_image("changed_tab", &frame);
+                        annotator::finalize_error(None, &detail);
+                        return Err(HsrError::new(
+                            "HSR-CHAR-PANEL-IDENTITY",
+                            hints::SCREEN_INVALID,
+                            detail,
+                        ));
                     }
                     identity = Some(current_identity);
+                    if identity_frame.is_none() {
+                        identity_frame = Some(frame.clone());
+                    }
                     if tab == CharacterTab::Details {
                         details = Some(frame.clone());
                     }
@@ -1650,8 +1874,8 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
             Ok(details) => Ok(Some(details)),
             Err(error) if !self.config.stop_on_failure && traces_unreadable(&error) => {
                 yas::log_warn!(
-                    "行迹等级无法从画面读出，已省略该角色的 skills/traces。完整错误详情：{}",
-                    "Trace levels could not be read from the screen; skills/traces for this character were omitted. Full error details: {}",
+                    "技能等级无法从画面读出，已省略该角色的技能等级。完整错误详情：{}",
+                    "Skill levels could not be read from the screen; skill levels for this character were omitted. Full error details: {}",
                     error
                 );
                 Ok(None)
@@ -1673,7 +1897,9 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
         if chrome_settled(&first, &second) {
             return Ok(second);
         }
-        log::debug!("Menu chrome differs between captures; using the latest frame (ambient animation is expected).");
+        log::debug!(
+            "Menu chrome differs between captures; using the latest frame (ambient animation is expected)."
+        );
         Ok(second)
     }
 
@@ -1773,6 +1999,60 @@ fn ensure_device_attended<D: HsrDevice>(device: &D) -> HsrResult<()> {
         ));
     }
     Ok(())
+}
+
+/// Match a selection across an owner-page return, including independently
+/// verified row movement when the game clamps the viewport around the item.
+fn owner_return_selection_matches(
+    grid: &GridGeometry,
+    before: &RgbImage,
+    after: &RgbImage,
+) -> HsrResult<bool> {
+    let Some((previous, current)) = selected_card(grid, before).zip(selected_card(grid, after))
+    else {
+        return Ok(false);
+    };
+    if previous.column != current.column {
+        return Ok(false);
+    }
+    let shift = previous.y - current.y;
+    if shift.abs() < SELECTION_ROW_SHIFT {
+        return Ok(true);
+    }
+    if shift <= 0.0 {
+        return Ok(false);
+    }
+    let stride = grid
+        .centers
+        .get(1)
+        .and_then(|row| row.first())
+        .zip(grid.first())
+        .map(|(next, first)| next.y - first.y)
+        .unwrap_or(0.0);
+    if stride <= 0.0 {
+        return Ok(false);
+    }
+    let rows = (shift / stride).round() as usize;
+    if rows == 0 || rows > grid.centers.len() {
+        return Ok(false);
+    }
+    Ok(
+        matches!(classify_inventory_reposition(before, after, grid, rows)?,
+        ScrollEvidence::Advanced { rows: observed, .. } if observed == rows),
+    )
+}
+
+/// A readable separator establishes the owned count independently of the
+/// capacity. Do not discard it and then require OCR to read the capacity too.
+fn inventory_quantity_from_text(text: &str) -> Result<usize, String> {
+    if let Some((owned, _capacity)) = text.split_once(['/', '／']) {
+        let digits: String = owned.chars().filter(char::is_ascii_digit).collect();
+        return digits
+            .parse::<usize>()
+            .map_err(|_| format!("owned={owned:?}"));
+    }
+    let digits: String = text.chars().filter(char::is_ascii_digit).collect();
+    inventory_quantity_from_digits(&digits)
 }
 
 /// Owned count from an inventory header. A missing slash concatenates the
@@ -1884,7 +2164,7 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
         // A complete reread detects visible duplicates before any status
         // mutation. The scan-order ordinal is used only to relocate the one
         // already-proven target within this single attended operation.
-        let reread = self.scan_gear()?;
+        let reread = self.scan_gear(false)?;
         if reread.coverage != CoverageLevel::Complete {
             return Err(HsrError::new(
                 "HSR-MANAGER-INVENTORY-INCOMPLETE",
@@ -2091,49 +2371,35 @@ fn backpack_grid(kind: InventoryKind) -> GridGeometry {
 }
 
 /// WASD in the backpack is spatial navigation: `d` on the last column moves
-/// focus onto the detail panel's buttons instead of wrapping. The walk is a
-/// serpentine: along a row, `s` at its end, then back along the next row.
+/// focus onto the detail panel's buttons instead of wrapping. Every row is
+/// read left-to-right; `s` is followed by a verified first-card click on the
+/// newly selected row before another item is parsed.
 /// The selection frame cross-fades for a moment after each step, so the
 /// column is also tracked by dead reckoning and resynced whenever the
 /// selected card is visible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct InventoryWalk {
-    rightward: bool,
     column: usize,
-}
-
-impl Default for InventoryWalk {
-    fn default() -> Self {
-        Self {
-            rightward: true,
-            column: 0,
-        }
-    }
 }
 
 impl InventoryWalk {
     fn next_key(&mut self, selected: Option<usize>, columns: usize) -> char {
         if columns == 0 {
-            return if self.rightward { 'd' } else { 'a' };
+            return 'd';
         }
         if let Some(index) = selected {
             self.column = index % columns;
         }
-        let at_row_end = if self.rightward {
-            self.column + 1 == columns
+        if self.column + 1 >= columns {
+            's'
         } else {
-            self.column == 0
-        };
-        match (at_row_end, self.rightward) {
-            (true, _) => 's',
-            (false, true) => 'd',
-            (false, false) => 'a',
+            'd'
         }
     }
 
     fn stepped(&mut self, key: char) {
         match key {
-            's' => self.rightward = !self.rightward,
+            's' => self.column = 0,
             'd' => self.column += 1,
             _ => self.column = self.column.saturating_sub(1),
         }
@@ -2587,7 +2853,7 @@ mod tests {
     };
 
     #[test]
-    fn inventory_walk_is_a_serpentine_over_rows() {
+    fn inventory_walk_reads_every_row_left_to_right() {
         let mut walk = InventoryWalk::default();
         let mut keys = String::new();
         for _ in 0..17 {
@@ -2596,7 +2862,7 @@ mod tests {
             walk.stepped(key);
         }
 
-        assert_eq!(keys, "dddddddsaaaaaaasd");
+        assert_eq!(keys, "dddddddsdddddddsd");
     }
 
     #[test]
@@ -2669,8 +2935,9 @@ mod tests {
 
         assert_eq!(walk.next_key(Some(7), 8), 's');
         walk.stepped('s');
-        assert_eq!(walk.next_key(Some(15), 8), 'a');
-        assert_eq!(walk.next_key(Some(8), 8), 's');
+        // The completed row transition has postvalidated column zero.
+        assert_eq!(walk.next_key(Some(8), 8), 'd');
+        assert_eq!(walk.next_key(Some(15), 8), 's');
     }
 
     fn test_grid() -> GridGeometry {
@@ -2691,6 +2958,274 @@ mod tests {
             cell_height: 0.138 * 0.90,
             confidence: 1.0,
         }
+    }
+
+    #[test]
+    fn equipped_owner_accepts_content_proven_return_from_a_fifth_visible_row() {
+        let grid = backpack_grid(InventoryKind::LightCone);
+        let stride = grid.centers[1][0].y - grid.centers[0][0].y;
+        let mut before_grid = grid.clone();
+        before_grid.centers.push(
+            grid.centers[3]
+                .iter()
+                .map(|point| Point::new(point.x, point.y + stride))
+                .collect(),
+        );
+        for point in before_grid.centers.iter_mut().flatten() {
+            point.y -= 0.072;
+        }
+        let mut after_grid = grid.clone();
+        for point in after_grid.centers.iter_mut().flatten() {
+            point.y -= 0.010;
+        }
+        let before = page_frame(&before_grid, 0, 96, Some(34));
+        let after = page_frame(&after_grid, 4, 96, Some(34));
+        assert!(owner_return_selection_matches(&grid, &before, &after).unwrap());
+        let wrong_content = page_frame(&after_grid, 5, 96, Some(42));
+        assert!(!owner_return_selection_matches(&grid, &before, &wrong_content).unwrap());
+        let no_scroll = page_frame(&before_grid, 0, 96, Some(2));
+        assert!(!owner_return_selection_matches(&grid, &before, &no_scroll).unwrap());
+    }
+
+    #[test]
+    fn equipped_owner_uses_inventory_path_instead_of_active_trailblazer_path() {
+        let grid = backpack_grid(InventoryKind::LightCone);
+        let mut original = image::imageops::resize(
+            &page_frame(&grid, 0, 32, Some(0)),
+            1920,
+            1080,
+            image::imageops::FilterType::Nearest,
+        );
+        let strip = StatsPanelLayout::MAINTAINED_SEED
+            .panel
+            .relative(layout::RELIC_EQUIPPED);
+        let atlas = image::load_from_memory(include_bytes!("assets/equipped_path_badges.png"))
+            .unwrap()
+            .to_rgb8();
+        let badge = image::imageops::crop_imm(&atlas, 34, 0, 34, 34).to_image();
+        let (width, height) = original.dimensions();
+        image::imageops::replace(
+            &mut original,
+            &badge,
+            (strip.x * width as f64).floor() as i64 + 78,
+            (strip.y * height as f64).floor() as i64 + 22,
+        );
+        let owner_frame = image::imageops::resize(
+            &character_frame(Rgb([90, 120, 170])),
+            1920,
+            1080,
+            image::imageops::FilterType::Nearest,
+        );
+        let mut scanner = HsrScanner::new(
+            ReplayDevice::new(
+                1920,
+                1080,
+                vec![
+                    owner_frame.clone(),
+                    owner_frame,
+                    original.clone(),
+                    original.clone(),
+                ],
+            ),
+            ScriptedOcrReader::default(),
+            crate::load_embedded_gilore_reference().unwrap(),
+            ScanConfig {
+                trailblazer: Some(crate::model::TrailblazerIdentity {
+                    nickname: "TestCaptain".into(),
+                    gender: crate::model::TrailblazerGender::Stelle,
+                }),
+                ..ScanConfig::default()
+            },
+        );
+        scanner.parser = PanelParser::new(
+            ScriptedOcrReader::default()
+                .with(OcrField::MenuTitle, ["角色详情"])
+                .with(OcrField::CharacterName, ["欢愉/TestCaptain"])
+                .with(OcrField::LightConeName, ["制胜的瞬间"])
+                .with(OcrField::LightConeLevel, ["80/80"])
+                .with(OcrField::LightConeSuperimposition, ["叠影5阶"])
+                .with(OcrField::LightConeEquipped, ["刃装备中"]),
+        );
+        let expected = ObservedLightCone {
+            light_cone_id: 23005,
+            level: 80,
+            ascension: 6,
+            superimposition: 5,
+            equipped_character_id: None,
+            lock: None,
+        };
+        assert_eq!(
+            scanner
+                .read_equipped_owner(
+                    &original,
+                    StatsPanelLayout::MAINTAINED_SEED,
+                    EquippedItem::LightCone(expected)
+                )
+                .unwrap(),
+            Some(8006)
+        );
+        assert_eq!(scanner.device.commands().len(), 2);
+    }
+
+    #[test]
+    fn equipped_owner_requires_return_to_the_same_inventory_panel() {
+        let grid = backpack_grid(InventoryKind::LightCone);
+        let original = page_frame(&grid, 0, 32, Some(0));
+        let owner_frame = character_frame(Rgb([90, 120, 170]));
+        for drift in [
+            "background",
+            "scroll",
+            "row_without_scroll",
+            "item",
+            "selection",
+        ] {
+            let original = if drift == "scroll" || drift == "row_without_scroll" {
+                page_frame(&grid, 0, 32, Some(8))
+            } else {
+                original.clone()
+            };
+            let mut returned = page_frame(
+                &grid,
+                if drift == "scroll" { 1 } else { 0 },
+                32,
+                Some(if drift == "selection" {
+                    1
+                } else if drift == "scroll" {
+                    8
+                } else {
+                    0
+                }),
+            );
+            for pixel in returned.pixels_mut() {
+                if *pixel == Rgb([24, 28, 35]) {
+                    *pixel = Rgb([80, 90, 100]);
+                }
+            }
+            let mut scanner = scanner_with_frames(
+                vec![
+                    owner_frame.clone(),
+                    owner_frame.clone(),
+                    returned.clone(),
+                    returned,
+                ],
+                ScanConfig::default(),
+            );
+            scanner.parser = PanelParser::new(
+                ScriptedOcrReader::default()
+                    .with(OcrField::MenuTitle, ["角色详情"])
+                    .with(OcrField::CharacterName, ["存护/三月七"])
+                    .with(OcrField::LightConeName, ["制胜的瞬间"])
+                    .with(
+                        OcrField::LightConeLevel,
+                        [if drift == "item" { "70/80" } else { "80/80" }],
+                    )
+                    .with(OcrField::LightConeSuperimposition, ["叠影5阶"])
+                    .with(OcrField::LightConeEquipped, ["装备中"]),
+            );
+            let expected = ObservedLightCone {
+                light_cone_id: 23005,
+                level: 80,
+                ascension: 6,
+                superimposition: 5,
+                equipped_character_id: None,
+                lock: None,
+            };
+            let result = scanner.read_equipped_owner(
+                &original,
+                StatsPanelLayout::MAINTAINED_SEED,
+                EquippedItem::LightCone(expected.clone()),
+            );
+            if drift == "item" || drift == "selection" || drift == "row_without_scroll" {
+                assert_eq!(result.unwrap_err().code(), "HSR-OWNER-RETURN");
+            } else {
+                assert_eq!(result.unwrap(), Some(1001));
+                // Exact cached pixels need no second navigation or OCR read.
+                assert_eq!(
+                    scanner
+                        .read_equipped_owner(
+                            &original,
+                            StatsPanelLayout::MAINTAINED_SEED,
+                            EquippedItem::LightCone(expected)
+                        )
+                        .unwrap(),
+                    Some(1001)
+                );
+                assert_eq!(scanner.device.commands().len(), 2);
+            }
+            assert_eq!(
+                scanner.device.commands().last(),
+                Some(&InputCommand::Escape)
+            );
+        }
+    }
+
+    #[test]
+    fn first_inventory_click_is_consumed_before_the_pointer_moves_away() {
+        struct DelayedClickDevice {
+            replay: ReplayDevice,
+            first: RgbImage,
+            previous: RgbImage,
+            pending: bool,
+            selected: bool,
+        }
+        impl HsrDevice for DelayedClickDevice {
+            fn identity(&self) -> &crate::device::WindowIdentity {
+                self.replay.identity()
+            }
+            fn focus_and_verify(&mut self) -> HsrResult<()> {
+                self.replay.focus_and_verify()
+            }
+            fn is_foreground(&self) -> bool {
+                self.replay.is_foreground()
+            }
+            fn is_cancelled(&self) -> bool {
+                self.replay.is_cancelled()
+            }
+            fn capture_client(&mut self) -> HsrResult<RgbImage> {
+                Ok(if self.selected {
+                    &self.first
+                } else {
+                    &self.previous
+                }
+                .clone())
+            }
+            fn input(&mut self, command: InputCommand) -> HsrResult<()> {
+                match command {
+                    InputCommand::Click(_) => self.pending = true,
+                    InputCommand::Hover(_) => self.pending = false,
+                    _ => {},
+                }
+                self.replay.input(command)
+            }
+            fn wait(&mut self, duration: Duration) -> HsrResult<()> {
+                if self.pending && duration >= Duration::from_millis(50) {
+                    self.selected = true;
+                    self.pending = false;
+                }
+                self.replay.wait(duration)
+            }
+        }
+        let grid = test_grid();
+        let first = page_frame(&grid, 0, 45, Some(0));
+        let previous = page_frame(&grid, 0, 45, Some(27));
+        let scanner = scanner_with_frames(Vec::new(), ScanConfig::default());
+        let device = DelayedClickDevice {
+            replay: ReplayDevice::new(1280, 720, Vec::new()),
+            first,
+            previous,
+            pending: false,
+            selected: false,
+        };
+        let mut delayed = HsrScanner::new(
+            device,
+            ScriptedOcrReader::default(),
+            scanner.references.clone(),
+            ScanConfig::default(),
+        );
+        let frame = delayed.select_first_inventory_cell(&grid).unwrap();
+        let selected = selected_card(&grid, &frame).unwrap();
+        assert_eq!(selected.column, 0);
+        assert!((selected.y - grid.first().unwrap().y).abs() < SELECTION_ROW_SHIFT);
     }
 
     #[test]
@@ -2978,6 +3513,22 @@ mod tests {
     }
 
     #[test]
+    fn inventory_quantity_preserves_the_separator_when_capacity_is_misread() {
+        assert_eq!(
+            inventory_quantity_from_text("遗器数量956/300").unwrap(),
+            956
+        );
+        assert_eq!(
+            inventory_quantity_from_text("Relics 956/3000").unwrap(),
+            956
+        );
+        assert_eq!(inventory_quantity_from_text("数量 257／150").unwrap(), 257);
+        assert_eq!(inventory_quantity_from_text("956/").unwrap(), 956);
+        assert_eq!(inventory_quantity_from_text("22323000").unwrap(), 2232);
+        assert!(inventory_quantity_from_text("/3000").is_err());
+    }
+
+    #[test]
     fn inventory_quantity_keeps_the_owned_count_when_the_slash_is_missing() {
         assert_eq!(inventory_quantity_from_digits("257").unwrap(), 257);
         assert_eq!(inventory_quantity_from_digits("2232").unwrap(), 2232);
@@ -2991,14 +3542,7 @@ mod tests {
     #[test]
     fn character_navigation_requires_visible_identity_change() {
         let mut previous = RgbImage::from_pixel(1280, 720, Rgb([24, 28, 35]));
-        let mut changed = previous.clone();
-        paint_rect(
-            &mut changed,
-            crate::vision::Point::new(0.158, 0.073),
-            0.10,
-            0.02,
-            Rgb([180, 120, 90]),
-        );
+        let changed = character_frame(Rgb([180, 120, 90]));
         let config = ScanConfig::default();
         paint_character_portraits(&mut previous);
         let mut scanner =
@@ -3108,17 +3652,21 @@ mod tests {
         let (from, to) = layout::character_page_drag(true);
         assert_eq!(
             scanner.device().commands(),
-            &[
-                InputCommand::Drag { from, to },
-                InputCommand::Drag { from, to }
-            ]
+            &[InputCommand::Drag { from, to }]
         );
         assert_eq!(slot, 8);
     }
 
     #[test]
-    fn portrait_page_comparison_ignores_animation_outside_the_faces() {
-        let before = RgbImage::from_pixel(1280, 720, Rgb([24, 28, 35]));
+    fn first_portrait_anchor_ignores_changes_elsewhere_in_the_strip() {
+        let mut before = RgbImage::from_pixel(1280, 720, Rgb([24, 28, 35]));
+        paint_rect(
+            &mut before,
+            layout::character_portrait(4),
+            0.02,
+            0.03,
+            Rgb([170, 90, 120]),
+        );
         let mut after = before.clone();
         paint_rect(
             &mut after,
@@ -3127,18 +3675,35 @@ mod tests {
             0.02,
             Rgb([255, 255, 255]),
         );
-        assert!(character_bar_unchanged(&before, &after).unwrap());
+        assert!(first_character_portrait_unchanged(&before, &after).unwrap());
         paint_rect(
             &mut after,
             layout::character_portrait(4),
             0.02,
             0.03,
+            Rgb([90, 170, 120]),
+        );
+        assert!(first_character_portrait_unchanged(&before, &after).unwrap());
+        // This new first portrait was already present in the old strip's
+        // fourth slot. It still proves movement relative to the old first.
+        paint_rect(
+            &mut after,
+            layout::character_portrait(0),
+            0.02,
+            0.03,
             Rgb([170, 90, 120]),
         );
-        assert!(!character_bar_unchanged(&before, &after).unwrap());
+        assert!(!first_character_portrait_unchanged(&before, &after).unwrap());
     }
 
     fn paint_character_portraits(frame: &mut RgbImage) {
+        paint_rect(
+            frame,
+            layout::character_portrait(0),
+            0.016,
+            0.035,
+            Rgb([230, 190, 80]),
+        );
         let width = frame.width();
         for (center, half_width) in [
             (width * 35 / 100, 28),
@@ -3164,6 +3729,20 @@ mod tests {
             0.02,
             color,
         );
+        // Identity checks compare neutral text glyphs, ignoring the colored
+        // background. Give each synthetic panel a distinct visible name.
+        let glyph_x = if color[0] > color[2] {
+            160
+        } else if color[1] > color[2] {
+            220
+        } else {
+            100
+        };
+        for y in 45..56 {
+            for x in glyph_x..glyph_x + 14 {
+                frame.put_pixel(x, y, Rgb([240, 240, 240]));
+            }
+        }
         frame
     }
 
@@ -3200,13 +3779,19 @@ mod tests {
         maximum: usize,
     ) -> CharacterScan {
         let frames = with_character_menu_reopened(frames);
-        let reader = ScriptedOcrReader::default()
+        let mut reader = ScriptedOcrReader::default()
             .with(OcrField::MenuTitle, ["", "角色详情"])
             .with(OcrField::CharacterName, names.iter().copied())
             .with(
                 OcrField::CharacterLevel,
                 std::iter::repeat_n("等级 80/80", names.len()),
             );
+        for key in ["basic", "skill", "ult", "talent"] {
+            reader = reader.with(
+                OcrField::CharacterSkill(key),
+                std::iter::repeat_n(if key == "basic" { "1/6" } else { "1/10" }, names.len()),
+            );
+        }
         let config = ScanConfig {
             timings: ScanTimings {
                 panel_timeout_ms: 40,
@@ -3357,6 +3942,52 @@ mod tests {
     }
 
     #[test]
+    fn character_advance_waits_through_background_drift_until_name_changes() {
+        let label_frame = |background: Rgb<u8>, text_x: u32| {
+            let mut frame = character_frame(Rgb([90, 120, 170]));
+            for y in 40..65 {
+                for x in 84..274 {
+                    frame.put_pixel(x, y, background);
+                }
+            }
+            for y in 45..56 {
+                for x in text_x..text_x + 14 {
+                    frame.put_pixel(x, y, Rgb([240, 240, 240]));
+                }
+            }
+            frame
+        };
+        let previous = label_frame(Rgb([24, 28, 35]), 100);
+        let background_drift = label_frame(Rgb([80, 110, 160]), 100);
+        let next_character = label_frame(Rgb([80, 110, 160]), 160);
+        let previous_identity = CHARACTER_IDENTITY_REGION.crop(&previous).unwrap();
+        let mut scanner = scanner_with_frames(
+            vec![
+                background_drift.clone(),
+                background_drift,
+                next_character.clone(),
+                next_character,
+            ],
+            ScanConfig {
+                timings: ScanTimings {
+                    character_switch_ms: 0,
+                    poll_interval_ms: 1,
+                    ..ScanTimings::default()
+                },
+                ..ScanConfig::default()
+            },
+        );
+
+        let changed = scanner
+            .wait_until_identity_changes(&previous_identity, 18, Duration::from_millis(20))
+            .unwrap();
+        let changed_identity = CHARACTER_IDENTITY_REGION.crop(&changed).unwrap();
+
+        assert!(!glyphs_match(&previous_identity, &changed_identity));
+        assert_eq!(scanner.device.remaining_frames(), 0);
+    }
+
+    #[test]
     fn cancellation_during_character_tabs_joins_worker_and_stops_input() {
         for reverse in [false, true] {
             let frame = character_frame(Rgb([90, 120, 170]));
@@ -3428,6 +4059,34 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_traces_keep_the_character_but_never_claim_complete_coverage() {
+        let mut frame = character_frame(Rgb([90, 120, 170]));
+        paint_rect(
+            &mut frame,
+            layout::character_portrait(0),
+            0.065,
+            0.07,
+            Rgb([230, 190, 80]),
+        );
+        let reader = ScriptedOcrReader::default()
+            .with(OcrField::MenuTitle, ["", "角色详情"])
+            .with(OcrField::CharacterName, ["三月七"])
+            .with(OcrField::CharacterLevel, ["80/80"])
+            .with(OcrField::CharacterSkill("basic"), ["5/17"]);
+        let mut scanner = HsrScanner::new(
+            ReplayDevice::new(1280, 720, with_character_menu_reopened(vec![frame; 14])),
+            reader,
+            two_character_references(),
+            ScanConfig::default(),
+        );
+        let result = scanner.scan_characters().unwrap();
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].character_id, 1001);
+        assert!(result.details.characters.is_empty());
+        assert_eq!(result.coverage, CoverageLevel::Unknown);
+    }
+
+    #[test]
     fn short_roster_finishes_at_its_last_visible_portrait() {
         let mut frame = character_frame(Rgb([90, 120, 170]));
         paint_rect(
@@ -3447,7 +4106,7 @@ mod tests {
     }
 
     #[test]
-    fn moving_terminal_confirmation_does_not_claim_roster_end() {
+    fn repeated_first_anchor_ends_immediately_without_a_confirmation_drag() {
         let before = character_frame(Rgb([90, 120, 170]));
         let mut moved = before.clone();
         paint_character_portraits(&mut moved);
@@ -3456,7 +4115,8 @@ mod tests {
         let error = scanner
             .advance_character(&before, &mut slot, 8)
             .unwrap_err();
-        assert_eq!(error.code(), "HSR-CHAR-ADVANCE");
+        assert_eq!(error.code(), "HSR-CHAR-END");
+        assert_eq!(scanner.device.remaining_frames(), 1);
     }
 
     #[test]
@@ -3503,7 +4163,11 @@ mod tests {
                 observed.lock().unwrap().push((category, event))
             }));
             let scan = scanner
-                .scan_inventory(kind, |_, _, _, _, ordinal| Ok(ordinal))
+                .scan_inventory(
+                    kind,
+                    InventoryNavigation::ReopenAndClose,
+                    |_, _, _, ordinal| Ok(ordinal),
+                )
                 .unwrap();
             assert_eq!(scan.items, [0]);
             assert_eq!(scan.coverage, CoverageLevel::Unknown);
@@ -3557,13 +4221,17 @@ mod tests {
                             ..Default::default()
                         },
                     );
-                    let result = scanner.scan_inventory::<usize>(kind, |_, _, _, _, _| {
-                        Err(HsrError::new(
-                            code,
-                            hints::FOCUS_REQUIRED,
-                            "OCR_POLICY_MARKER",
-                        ))
-                    });
+                    let result = scanner.scan_inventory::<usize>(
+                        kind,
+                        InventoryNavigation::ReopenAndClose,
+                        |_, _, _, _| {
+                            Err(HsrError::new(
+                                code,
+                                hints::FOCUS_REQUIRED,
+                                "OCR_POLICY_MARKER",
+                            ))
+                        },
+                    );
                     if stop || code == "HSR-NAV-TEST" {
                         let error = result.err().expect("debug or navigation error must stop");
                         assert_eq!(error.code(), code);
@@ -3616,7 +4284,11 @@ mod tests {
             let mut baseline = make(1, false);
             assert_eq!(
                 baseline
-                    .scan_inventory(kind, |_, _, _, _, ordinal| Ok(ordinal))
+                    .scan_inventory(
+                        kind,
+                        InventoryNavigation::ReopenAndClose,
+                        |_, _, _, ordinal| Ok(ordinal)
+                    )
                     .unwrap()
                     .items,
                 [0]
@@ -3625,7 +4297,11 @@ mod tests {
             for save in [false, true] {
                 let mut scanner = make(0, save);
                 scanner.device.cancel_after_commands(stop_at);
-                let scan = scanner.scan_inventory(kind, |_, _, _, _, ordinal| Ok(ordinal));
+                let scan = scanner.scan_inventory(
+                    kind,
+                    InventoryNavigation::ReopenAndClose,
+                    |_, _, _, ordinal| Ok(ordinal),
+                );
                 if save {
                     let scan = scan.unwrap();
                     assert_eq!(scan.items, [0]);
@@ -3643,7 +4319,11 @@ mod tests {
             scanner.device.lose_focus_after_commands(stop_at);
             assert_eq!(
                 scanner
-                    .scan_inventory(kind, |_, _, _, _, ordinal| Ok(ordinal))
+                    .scan_inventory(
+                        kind,
+                        InventoryNavigation::ReopenAndClose,
+                        |_, _, _, ordinal| Ok(ordinal)
+                    )
                     .unwrap_err()
                     .hint(),
                 hints::FOCUS_REQUIRED

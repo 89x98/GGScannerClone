@@ -1114,6 +1114,24 @@ impl ReferenceCache {
         unique_best_name(text, self.characters.values(), |entry| &entry.name)
     }
 
+    /// Short equipment labels provide too little text for fuzzy matching:
+    /// a stray OCR glyph must not become a one-character character name.
+    pub fn resolve_character_name_exact(&self, text: &str) -> Option<&CharacterReference> {
+        let text = normalize_name(text);
+        if text.is_empty() {
+            return None;
+        }
+        exactly_one(
+            self.characters
+                .values()
+                .filter(|entry| {
+                    text == normalize_name(&entry.name.zh_cn)
+                        || text == normalize_name(&entry.name.en)
+                })
+                .collect(),
+        )
+    }
+
     /// Enumerate best-scoring character-name candidates. Multiple public
     /// variants such as March 7th deliberately remain present until visible
     /// Path evidence is applied.
@@ -1162,13 +1180,34 @@ impl ReferenceCache {
                     .then_some((entry, nickname.as_ref()?))
             })
             .collect();
-        exactly_one(
+        let direct = exactly_one(
             best_name_candidates(name, &visible, |entry| entry.1)
                 .into_iter()
                 .map(|entry| entry.0)
                 .filter(|entry| path.is_none_or(|path| character_path_matches(&entry.path, path)))
                 .collect(),
-        )
+        );
+        if direct.is_some() || path.is_some() {
+            return direct;
+        }
+        // OCR may retain Path and Name while dropping only their slash.
+        // Reuse the canonical path labels and require an exact normalized
+        // suffix name. Do not fuzzily guess a split or override a direct name.
+        let mut joined = BTreeMap::new();
+        for (entry, visible_name) in visible {
+            for label in character_path_labels(&entry.path) {
+                if let Some(suffix) = name.trim().strip_prefix(label) {
+                    let suffix = normalize_name(suffix);
+                    if !suffix.is_empty()
+                        && (suffix == normalize_name(&visible_name.zh_cn)
+                            || suffix == normalize_name(&visible_name.en))
+                    {
+                        joined.insert(entry.game_id, entry);
+                    }
+                }
+            }
+        }
+        exactly_one(joined.into_values().collect())
     }
 
     pub fn resolve_light_cone_name(&self, text: &str) -> Option<&LightConeReference> {
@@ -1730,6 +1769,21 @@ mod name_tests {
         references
             .resolve_character_header(name, path, trailblazer)
             .map(|entry| entry.game_id)
+    }
+
+    #[test]
+    fn character_header_without_slash_uses_exact_path_and_name_evidence() {
+        let references = crate::load_embedded_gilore_reference().unwrap();
+        assert_eq!(header_id(&references, "毁灭雪衣", None, None), Some(1214));
+        assert_eq!(
+            header_id(&references, "Destruction Xueyi", None, None),
+            Some(1214)
+        );
+        assert_eq!(header_id(&references, "雪衣", None, None), Some(1214));
+        assert_eq!(header_id(&references, "存护雪衣", None, None), None);
+        assert_eq!(header_id(&references, "毁灭雪", None, None), None);
+        assert_eq!(header_id(&references, "巡猎三月七", None, None), Some(1224));
+        assert_eq!(header_id(&references, "三月七", None, None), None);
     }
 
     #[test]

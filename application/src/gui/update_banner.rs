@@ -73,36 +73,39 @@ pub fn show(
                                 show_restart_dialog(exe_path, worker_state, lang);
                             },
                             Ok(Err(error)) => {
-                                *worker_state.lock().unwrap() = UpdateState::Failed(
-                                    UiError::from_anyhow(
-                                        UiText::new(
-                                            "更新无法下载或安装。可前往 GitHub 发布页手动下载，或检查网络连接、磁盘空间和安全软件设置后重试。",
-                                            "The update could not be downloaded or installed. Download it manually from the GitHub release page, or check the network connection, disk space, and security software before retrying.",
-                                        ),
-                                        &error,
+                                let failure = UiError::from_anyhow(
+                                    UiText::new(
+                                        "更新无法下载或安装。可前往 GitHub 发布页手动下载，或检查网络连接、磁盘空间和安全软件设置后重试。",
+                                        "The update could not be downloaded or installed. Download it manually from the GitHub release page, or check the network connection, disk space, and security software before retrying.",
                                     ),
+                                    &error,
                                 );
+                                failure.log_diagnostics();
+                                *worker_state.lock().unwrap() = UpdateState::Failed(failure);
                             },
                             Err(panic_info) => {
-                                *worker_state.lock().unwrap() =
-                                    UpdateState::Failed(UiError::from_panic(
-                                        UiText::new(
-                                            "更新任务因意外的内部错误而停止。请复制完整错误并报告此问题。",
-                                            "The update task stopped because of an unexpected internal error. Copy the full error and report this problem.",
-                                        ),
-                                        panic_info.as_ref(),
-                                    ));
+                                let failure = UiError::from_panic(
+                                    UiText::new(
+                                        "更新任务因意外的内部错误而停止。请复制完整错误并报告此问题。",
+                                        "The update task stopped because of an unexpected internal error. Copy the full error and report this problem.",
+                                    ),
+                                    panic_info.as_ref(),
+                                );
+                                failure.log_diagnostics();
+                                *worker_state.lock().unwrap() = UpdateState::Failed(failure);
                             },
                         }
                     });
                     if let Err(error) = spawn_result {
-                        *arc.lock().unwrap() = UpdateState::Failed(UiError::from_error(
+                        let failure = UiError::from_error(
                             UiText::new(
                                 "更新后台任务无法启动。请检查系统资源，然后重试。",
                                 "The update background task could not start. Check available system resources, then retry.",
                             ),
                             error,
-                        ));
+                        );
+                        failure.log_diagnostics();
+                        *arc.lock().unwrap() = UpdateState::Failed(failure);
                     }
                 }
                 if ui.button(skip).clicked() {
@@ -175,39 +178,40 @@ pub fn spawn_check(asset_name: &'static str, update_state: &Arc<Mutex<UpdateStat
                 };
             },
             Ok(Ok(genshin_scanner::updater::UpdateStatus::ManualDownload { latest_version })) => {
-                *state.lock().unwrap() = UpdateState::Failed(UiError::from_message(
+                let failure = UiError::from_message(
                     UiText::new(
                         format!("发现新版本 {latest_version}，但未找到此版本的程序文件。请前往 GitHub 发布页手动下载。当前版本仍可继续使用。"),
                         format!("Release {latest_version} is available, but its executable for this edition was not found. Download manually from the GitHub release page. You can keep using the current version."),
                     ),
                     format!("No executable for {asset_name} in release {latest_version}"),
-                ));
+                );
+                failure.log_diagnostics();
+                *state.lock().unwrap() = UpdateState::Failed(failure);
             },
             Ok(Ok(_)) => {
                 *state.lock().unwrap() = UpdateState::None;
             },
             Ok(Err(error)) => {
-                yas::log_debug!(
-                    "无法检查更新。完整错误详情: {:#}",
-                    "Could not check for updates. Full error details: {:#}",
-                    error
-                );
-                *state.lock().unwrap() = UpdateState::Failed(UiError::from_anyhow(
+                let failure = UiError::from_anyhow(
                     UiText::new(
                         "无法检查更新。当前版本仍可继续使用；请检查网络连接，重启程序以重试，或关闭此提示。",
                         "Updates could not be checked. You can keep using this version; check the network connection, restart the application to retry, or dismiss this message.",
                     ),
                     &error,
-                ));
+                );
+                failure.log_diagnostics();
+                *state.lock().unwrap() = UpdateState::Failed(failure);
             },
             Err(panic_info) => {
-                *state.lock().unwrap() = UpdateState::Failed(UiError::from_panic(
+                let failure = UiError::from_panic(
                     UiText::new(
                         "检查更新的后台任务因意外的内部错误而停止。当前版本仍可继续使用。",
                         "The background update check stopped because of an unexpected internal error. You can keep using the current version.",
                     ),
                     panic_info.as_ref(),
-                ));
+                );
+                failure.log_diagnostics();
+                *state.lock().unwrap() = UpdateState::Failed(failure);
             },
         }
     });

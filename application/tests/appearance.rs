@@ -190,7 +190,7 @@ fn sidebar_theme_toggle_switches_on_one_click_in_its_own_row() {
             })
             .collect();
         let button = texts.iter().find(|(text, _)| *text == label).unwrap().1;
-        let language = texts.iter().find(|(text, _)| *text == "中").unwrap().1;
+        let language = texts.iter().find(|(text, _)| *text == "中文").unwrap().1;
         assert!(button.y > language.y + 20.0);
         assert!(!texts.iter().any(|(text, _)| *text == "System theme"));
         draw(vec![egui::Event::PointerMoved(button), click(button, true)]);

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use yas::{log_error, log_info};
+use yas::{log_debug, log_error};
 
 use super::capture_frame::CaptureFrame;
 use super::grid_voter::GridAnnotation;
@@ -125,14 +125,14 @@ enum WorkerEvent<R> {
 /// current phase. `processed` may be non-zero because OCR runs concurrently.
 pub fn log_capture_finished(processed: usize, total: usize) {
     if processed < total {
-        log_info!(
+        log_debug!(
             "[OCR] 本轮截图采集已完成，OCR仍在处理中，请等待：{}/{}",
             "[OCR] this screenshot capture phase is complete; OCR is still processing, please wait: {}/{}",
             processed,
             total
         );
     } else {
-        log_info!(
+        log_debug!(
             "[OCR] 本轮截图采集已完成，OCR处理进度：{}/{}",
             "[OCR] this screenshot capture phase is complete; OCR processing progress: {}/{}",
             processed,
@@ -143,7 +143,7 @@ pub fn log_capture_finished(processed: usize, total: usize) {
 
 /// Log OCR progress after [`log_capture_finished`] has announced the handoff.
 pub fn log_ocr_progress(processed: usize, total: usize) {
-    log_info!(
+    log_debug!(
         "[OCR] 处理进度：{}/{}",
         "[OCR] processing progress: {}/{}",
         processed,
@@ -161,10 +161,9 @@ pub fn log_ocr_progress(processed: usize, total: usize) {
 /// - `Ok(None)` — skip this item (e.g., non-artifact)
 /// - `Err(e)` — log error, skip item
 ///
-/// OCR progress stays silent while the capture thread controls the game. Once
-/// all screenshots have been submitted, the worker logs processed/total
-/// progress and can signal the capture thread to stop via
-/// `WorkerHandle::should_stop`.
+/// OCR progress callbacks drive the GUI while scanning. Optional debug logs
+/// retain timing details for developer investigations without duplicating the
+/// ordinary progress display.
 pub fn start_worker<M, R, F>(
     stop_on_failure: bool,
     process_fn: F,

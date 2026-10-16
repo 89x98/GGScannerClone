@@ -353,6 +353,149 @@ pub fn classify_inventory_scroll(
     grid: &GridGeometry,
     requested_rows: usize,
 ) -> HsrResult<ScrollEvidence> {
+    classify_inventory_scroll_inner(before, after, grid, grid, requested_rows, true)
+}
+
+/// Prove an automatic viewport reposition from row contents. A moved selection
+/// alone cannot establish that the same item remained selected across a menu.
+pub fn classify_inventory_reposition(
+    before: &RgbImage,
+    after: &RgbImage,
+    grid: &GridGeometry,
+    requested_rows: usize,
+) -> HsrResult<ScrollEvidence> {
+    if before.dimensions() != after.dimensions() {
+        return Err(HsrError::new(
+            "HSR-SCROLL-GEOMETRY",
+            hints::SCREEN_INVALID,
+            "inventory reposition screenshots have different dimensions",
+        ));
+    }
+    let uncertain = ScrollEvidence::Uncertain { confidence: 0.0 };
+    let Some((old, new)) = selected_card(grid, before).zip(selected_card(grid, after)) else {
+        return Ok(uncertain);
+    };
+    let Some((first, next)) = grid
+        .first()
+        .zip(grid.centers.get(1).and_then(|row| row.first()))
+    else {
+        return Ok(uncertain);
+    };
+    let stride = next.y - first.y;
+    if requested_rows == 0
+        || requested_rows > grid.rows()
+        || stride <= 0.0
+        || old.column != new.column
+        || old.y <= new.y
+    {
+        return Ok(uncertain);
+    }
+    let unchanged = signature_distance(
+        &grid_row_signatures(before, grid).concat(),
+        &grid_row_signatures(after, grid).concat(),
+    );
+    if unchanged <= 0.020 {
+        return Ok(ScrollEvidence::End {
+            confidence: (1.0 - unchanged / 0.020).clamp(0.0, 1.0),
+        });
+    }
+    // Keyboard scrolling can leave a clipped row at the top and a fifth
+    // selectable row below the four nominal centers. Returning from Character
+    // clamps a different origin. Anchor BOTH sets of content samples to the
+    // actual selected card, without rounding that origin to a nominal row.
+    let mut before_grid = grid.clone();
+    let mut after_grid = grid.clone();
+    before_grid.centers.clear();
+    after_grid.centers.clear();
+    let top = (first.y - grid.cell_height * 0.75).max(0.10);
+    let half_height = grid.cell_height / 2.0;
+    for offset in -(grid.rows() as i32)..=grid.rows() as i32 {
+        let old_y = old.y + offset as f64 * stride;
+        let new_y = new.y + offset as f64 * stride;
+        if old_y - half_height < top
+            || new_y - half_height < top
+            || old_y + half_height > 0.86
+            || new_y + half_height > 0.86
+        {
+            continue;
+        }
+        before_grid.centers.push(
+            grid.centers[0]
+                .iter()
+                .map(|point| Point::new(point.x, old_y))
+                .collect(),
+        );
+        after_grid.centers.push(
+            grid.centers[0]
+                .iter()
+                .map(|point| Point::new(point.x, new_y))
+                .collect(),
+        );
+    }
+    if before_grid.centers.is_empty() {
+        return Ok(uncertain);
+    }
+    crate::annotator::record_region(
+        "reposition_before",
+        before,
+        NormRect::new(0.0, 0.0, 0.75, 1.0),
+    );
+    crate::annotator::record_region(
+        "reposition_after",
+        after,
+        NormRect::new(0.0, 0.0, 0.75, 1.0),
+    );
+    let before_content = grid_row_content_signatures(before, &before_grid)?;
+    let mut score = 1.0_f64;
+    // The border detector can choose either end of a short brightness plateau.
+    // Average card interiors and allow only three reference pixels of jitter;
+    // sparse point samples alias the detailed artwork at that displacement.
+    for jitter in -3..=3 {
+        let mut aligned = after_grid.clone();
+        for point in aligned.centers.iter_mut().flatten() {
+            point.y += jitter as f64 / 1080.0;
+        }
+        score = score.min(signature_distance(
+            &before_content,
+            &grid_row_content_signatures(after, &aligned)?,
+        ));
+    }
+    // Use the strict scroll-content threshold, with an independent unchanged
+    // comparison. A moved selection alone never proves a valid return.
+    if score <= 0.030 && (unchanged - score >= 0.008 || score <= 0.018) {
+        Ok(ScrollEvidence::Advanced {
+            rows: requested_rows,
+            confidence: (1.0 - score / 0.030).clamp(0.0, 1.0),
+        })
+    } else {
+        Ok(uncertain)
+    }
+}
+
+fn grid_row_content_signatures(image: &RgbImage, grid: &GridGeometry) -> HsrResult<Vec<u8>> {
+    let mut signature = Vec::new();
+    for center in grid.centers.iter().flatten() {
+        let crop = NormRect::new(
+            center.x - grid.cell_width * 0.34,
+            center.y - grid.cell_height * 0.34,
+            grid.cell_width * 0.68,
+            grid.cell_height * 0.68,
+        )
+        .crop(image)?;
+        let averaged = imageops::resize(&crop, 12, 12, imageops::FilterType::Triangle);
+        signature.extend_from_slice(averaged.as_raw());
+    }
+    Ok(signature)
+}
+
+fn classify_inventory_scroll_inner(
+    before: &RgbImage,
+    after: &RgbImage,
+    grid: &GridGeometry,
+    after_grid: &GridGeometry,
+    requested_rows: usize,
+    use_selection_evidence: bool,
+) -> HsrResult<ScrollEvidence> {
     crate::annotator::record_region("scroll_before", before, NormRect::new(0.0, 0.0, 0.75, 1.0));
     crate::annotator::record_region("scroll_after", after, NormRect::new(0.0, 0.0, 0.75, 1.0));
     if before.dimensions() != after.dimensions() {
@@ -382,7 +525,7 @@ pub fn classify_inventory_scroll(
     // If the selected card remains visible, its row displacement is strong
     // independent evidence. This also works when adjacent items are genuinely
     // identical and their panel/card pixels cannot distinguish them.
-    if requested_rows < rows {
+    if use_selection_evidence && requested_rows < rows {
         if let (Some((before_index, before_gap)), Some((after_index, after_gap))) =
             (selected_cell(grid, before), selected_cell(grid, after))
         {
@@ -402,13 +545,13 @@ pub fn classify_inventory_scroll(
     }
 
     let before_rows = grid_row_signatures(before, grid);
-    let after_rows = grid_row_signatures(after, grid);
+    let after_rows = grid_row_signatures(after, after_grid);
     let unchanged_grid = signature_distance(&before_rows.concat(), &after_rows.concat());
     let before_gutter = scroll_gutter_signature(before, grid);
-    let after_gutter = scroll_gutter_signature(after, grid);
+    let after_gutter = scroll_gutter_signature(after, after_grid);
     let unchanged_gutter = signature_distance(&before_gutter, &after_gutter);
 
-    if unchanged_grid <= 0.020 && unchanged_gutter <= 0.014 {
+    if unchanged_grid <= 0.020 && (!use_selection_evidence || unchanged_gutter <= 0.014) {
         let confidence = 1.0 - (unchanged_grid / 0.020).max(unchanged_gutter / 0.014);
         return Ok(ScrollEvidence::End {
             confidence: confidence.clamp(0.0, 1.0),
@@ -654,17 +797,21 @@ pub fn frames_similar(left: &RgbImage, right: &RgbImage) -> bool {
 
 /// Compare only the white glyphs of two crops, for the same text drawn over
 /// different screen backgrounds (the Character breadcrumb sits on plain dark
-/// on the Eidolon screen but on a starry nebula on Details). Live breadcrumbs
-/// of one Character overlap ≥0.95; adjacent Characters ≤0.54. Crops with no
-/// glyphs at all carry no evidence of a change.
+/// on the Eidolon screen but on a starry nebula on Details). Compare neutral
+/// bright pixels so text dimming and colored background changes do not affect
+/// the glyph mask. Crops with no glyphs carry no evidence of a change.
 pub fn glyphs_match(left: &RgbImage, right: &RgbImage) -> bool {
     crate::annotator::record_detection("glyphs_match_left", left);
     crate::annotator::record_detection("glyphs_match_right", right);
-    const MIN_OVERLAP: f64 = 0.8;
     if left.dimensions() != right.dimensions() {
         return false;
     }
-    let glyph = |pixel: &Rgb<u8>| pixel.0.iter().all(|&channel| channel > 200);
+    const MIN_OVERLAP: f64 = 0.8;
+    let glyph = |pixel: &Rgb<u8>| {
+        let minimum = *pixel.0.iter().min().unwrap();
+        let maximum = *pixel.0.iter().max().unwrap();
+        minimum >= 80 && maximum.saturating_sub(minimum) <= 30
+    };
     let (mut both, mut either) = (0_usize, 0_usize);
     for (a, b) in left.pixels().zip(right.pixels()) {
         let (a, b) = (glyph(a), glyph(b));
@@ -971,6 +1118,25 @@ mod tests {
 
         assert!(glyphs_match(&plain, &nebula));
         assert!(!glyphs_match(&plain, &other_name));
+    }
+
+    #[test]
+    fn glyphs_match_survives_breadcrumb_dimming_between_tabs() {
+        let text = |background: u8, foreground: u8, glyph_x: u32| {
+            let mut image = RgbImage::from_pixel(120, 30, Rgb([background; 3]));
+            for y in 8..22 {
+                for x in glyph_x..glyph_x + 30 {
+                    image.put_pixel(x, y, Rgb([foreground; 3]));
+                }
+            }
+            image
+        };
+        let bright = text(10, 240, 10);
+        let dimmed = text(4, 142, 10);
+        let different_name = text(4, 142, 60);
+
+        assert!(glyphs_match(&bright, &dimmed));
+        assert!(!glyphs_match(&bright, &different_name));
     }
 
     fn synthetic_grid(width: u32, height: u32) -> RgbImage {

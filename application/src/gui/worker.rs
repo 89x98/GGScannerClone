@@ -4,8 +4,8 @@ use std::thread::{self, JoinHandle};
 
 use super::log_bridge;
 use super::state::{
-    AppState, Lang, LogSource, NativeException, NativeMemoryOperation, TaskKind, TaskStatus,
-    UiError, UiText,
+    AppState, LogSource, NativeException, NativeMemoryOperation, TaskKind, TaskStatus, UiError,
+    UiText,
 };
 
 // ── Windows SEH guard ────────────────────────────────────────────
@@ -516,12 +516,7 @@ fn spawn_with_safety_net(
                 ),
             };
             let error = UiError::from_panic(hint, panic_info.as_ref());
-            let lang = if yas::lang::is_en() {
-                Lang::En
-            } else {
-                Lang::Zh
-            };
-            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.hint_text(lang));
+            error.log_diagnostics();
             let mut guard = lock_status_recover(&status_for_crash);
             // Only overwrite if still Running — don't clobber a proper Failed/Completed
             if matches!(*guard, TaskStatus::Running(_)) {
@@ -631,12 +626,7 @@ impl TaskHandle {
         }
         *lock_recover(&self.native_failure) = Some(error.clone());
 
-        let lang = if yas::lang::is_en() {
-            Lang::En
-        } else {
-            Lang::Zh
-        };
-        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.hint_text(lang));
+        error.log_diagnostics();
 
         // Keep the ordinary status in sync when possible, but never block on
         // it after an abnormal thread exit.
@@ -695,12 +685,7 @@ impl TaskHandle {
 
 /// Store and log an ordinary task failure without flattening its inner cause.
 pub(super) fn set_task_failure(status: &Arc<Mutex<TaskStatus>>, error: UiError) {
-    let lang = if yas::lang::is_en() {
-        Lang::En
-    } else {
-        Lang::Zh
-    };
-    log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.hint_text(lang));
+    error.log_diagnostics();
     *lock_status_recover(status) = TaskStatus::Failed(error);
 }
 
@@ -1003,6 +988,7 @@ fn scan_result_status(
 #[cfg(test)]
 mod feedback_tests {
     use super::*;
+    use crate::gui::state::Lang;
     use crate::gui::task_progress::{Step, StepState, TaskProgress};
 
     #[test]
@@ -1021,7 +1007,11 @@ mod feedback_tests {
     #[test]
     fn partial_filename_marks_capped_exports_without_a_cancel_signal() {
         assert!(matches!(
-            scan_result_status(Ok("C:/exports/good_export_partial_2026-10-13_12-00-00.json".into()), &TaskProgress::default(), false),
+            scan_result_status(
+                Ok("C:/exports/good_export_partial_2026-10-13_12-00-00.json".into()),
+                &TaskProgress::default(),
+                false
+            ),
             TaskStatus::Exported { partial: true, .. }
         ));
     }

@@ -87,7 +87,8 @@ pub fn is_done(status: &str, date: &str) -> bool {
         .chars()
         .filter(|c| c.is_ascii_digit() || *c == '/' || *c == '-' || *c == '.')
         .collect();
-    let has_separator = date_clean.contains('/') || date_clean.contains('-') || date_clean.contains('.');
+    let has_separator =
+        date_clean.contains('/') || date_clean.contains('-') || date_clean.contains('.');
     if !has_separator || date_clean.len() < 6 {
         return false;
     }

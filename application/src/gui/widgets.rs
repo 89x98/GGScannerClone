@@ -380,7 +380,8 @@ pub fn delay_group(
                                         |ui| {
                                             ui.spacing_mut().item_spacing.x = 3.0;
                                             // Reserve the help icon even when a long label truncates.
-                                            let label_width = (ui.available_width() - 19.0).max(0.0);
+                                            let label_width =
+                                                (ui.available_width() - 19.0).max(0.0);
                                             ui.add_sized(
                                                 egui::vec2(label_width, 20.0),
                                                 egui::Label::new(rich)

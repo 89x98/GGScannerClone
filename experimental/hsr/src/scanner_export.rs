@@ -21,6 +21,8 @@ pub struct CharacterDetails {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ability_version: Option<u32>,
     pub skills: BTreeMap<String, u32>,
+    /// Capture-only one-time unlock flags. Screenshot scans leave these empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub traces: BTreeMap<String, bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memosprite: Option<BTreeMap<String, u32>>,
@@ -64,7 +66,8 @@ pub fn build_scanner_export(
         let r = refs
             .light_cone(c.light_cone_id)
             .ok_or_else(|| invalid("unknown Light Cone"))?;
-        // TODO(ocr): Chinese 「装备中」 has no character name; location stays "".
+        // The live walker follows the Equipped link when the strip has no name.
+        // If no owner was observed, v4 represents that location as an empty string.
         // v4 requires a lock boolean; an unread lock icon serializes as false.
         cones.push(json!({"id": c.light_cone_id.to_string(), "name": r.name.en,
             "level": c.level, "ascension": c.ascension, "superimposition": c.superimposition,
@@ -87,7 +90,7 @@ pub fn build_scanner_export(
             "value": s.value}))
             })
             .collect::<HsrResult<Vec<_>>>()?;
-        // TODO(ocr): equipped character is often unknown from the portrait row.
+        // The live walker resolves nameless equipped strips through the owner page.
         // v4 requires lock/discard booleans; unread icons serialize as false.
         relics.push(json!({"set_id": r.set_key, "name": r.set_name.en,
             "slot": match r.slot { GearSlot::Head => "Head", GearSlot::Hands => "Hands",

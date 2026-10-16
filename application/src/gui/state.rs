@@ -405,6 +405,28 @@ impl UiError {
         }
     }
 
+    /// Log the diagnostic details behind the concise UI hint. The hint is
+    /// already visible in the status card, so logs should add the cause users
+    /// need when they share the log window for support.
+    pub fn log_diagnostics(&self) {
+        let lang = if yas::lang::is_en() {
+            Lang::En
+        } else {
+            Lang::Zh
+        };
+        let details = match self {
+            Self::Detailed {
+                technical_details, ..
+            } => yas::lang::localize(technical_details),
+            Self::NativeException(_) => self.technical_details(lang),
+        };
+        yas::log_error!(
+            "任务失败。诊断详情：{}",
+            "Task failed. Diagnostic details: {}",
+            details
+        );
+    }
+
     pub fn copy_text(&self, lang: Lang) -> String {
         format!(
             "{}\n\n{}\n{}",
@@ -556,15 +578,20 @@ impl RefreshState {
             if let RefreshState::Running(h) = old {
                 match h.join() {
                     Ok(Ok(())) => *self = RefreshState::Ok,
-                    Ok(Err(msg)) => *self = RefreshState::Failed(msg),
+                    Ok(Err(msg)) => {
+                        msg.log_diagnostics();
+                        *self = RefreshState::Failed(msg);
+                    },
                     Err(panic_info) => {
-                        *self = RefreshState::Failed(UiError::from_panic(
+                        let error = UiError::from_panic(
                             UiText::new(
                                 "无法刷新游戏数据，因为后台任务意外停止。",
                                 "Game data could not be refreshed because the background task stopped unexpectedly.",
                             ),
                             panic_info.as_ref(),
-                        ))
+                        );
+                        error.log_diagnostics();
+                        *self = RefreshState::Failed(error)
                     },
                 }
             }
@@ -801,7 +828,7 @@ impl AppState {
             artifact_min_rarity: 4,
             verbose: self.verbose,
             stop_on_failure: self.stop_on_failure,
-            log_progress: true,
+            log_progress: false,
             dump_images: self.dump_images,
             hdr_mode: self.hdr_mode,
             hdr_white_point: yas::capture::constants::DEFAULT_HDR_WHITE_POINT,

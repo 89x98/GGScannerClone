@@ -8,7 +8,6 @@ use super::worker;
 
 use genshin_scanner::capture::monitor::{CaptureCommand, CaptureState};
 use genshin_scanner::capture::player_data::CaptureExportSettings;
-use genshin_scanner::fs_utils::{CAPTURE_EXPORT_PREFIX, EXPORT_JSON_SUFFIX};
 use genshin_scanner::scanner::common::models::GoodExport;
 
 /// Handle to the capture monitor running on a background tokio runtime.
@@ -58,12 +57,7 @@ impl CaptureHandle {
                 *poisoned.into_inner() = Some(error.clone());
             },
         }
-        let lang = if yas::lang::is_en() {
-            Lang::En
-        } else {
-            Lang::Zh
-        };
-        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.hint_text(lang));
+        error.log_diagnostics();
     }
 
     pub fn is_finished(&self) -> bool {
@@ -208,7 +202,13 @@ impl CaptureTabState {
     }
 
     pub fn tick(&mut self) {
+        let previous = self.phase.clone();
         update_phase(self);
+        if self.phase != previous {
+            if let Phase::Failed(error) = &self.phase {
+                error.log_diagnostics();
+            }
+        }
     }
 
     pub fn requires_restart(&self) -> bool {
@@ -375,8 +375,8 @@ fn spawn_capture(
             } else {
                 Lang::Zh
             };
+            failure.log_diagnostics();
             let msg = failure.technical_details(lang);
-            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.hint_text(lang));
             if let Ok(mut s) = state_for_crash.lock() {
                 s.error = Some(msg);
             }
@@ -438,6 +438,9 @@ fn start_capture(tab: &mut CaptureTabState) {
             ),
             &e,
         ));
+        if let Phase::Failed(error) = &tab.phase {
+            error.log_diagnostics();
+        }
         return;
     }
     tab.capture_state = Arc::new(Mutex::new(CaptureState::default()));
@@ -468,6 +471,7 @@ fn start_capture(tab: &mut CaptureTabState) {
             tab.phase = Phase::Initializing;
         },
         Err(error) => {
+            error.log_diagnostics();
             tab.handle = None;
             tab.pending_export = None;
             tab.phase = Phase::Failed(error);
@@ -522,7 +526,8 @@ pub fn show_status(
         Phase::Waiting => capture_status::waiting(
             shared.has_key_exchange,
             (tab.include_characters && !shared.has_characters)
-                || ((tab.include_weapons || tab.include_artifacts) && !shared.has_items),
+                || (tab.include_weapons && !shared.has_items && shared.weapon_count == 0)
+                || (tab.include_artifacts && !shared.has_items && shared.artifact_count == 0),
             tab.include_achievements && !shared.has_achievements,
         ),
         Phase::Stopping => Stage::Stopping,
@@ -554,7 +559,8 @@ pub fn show_status(
     };
     widgets::status_content(ui, "genshin-capture-status", 1, |ui| {
         super::theme::task_status(ui, l, feedback.as_ref(), text);
-        if stage != Stage::Ready && stage != Stage::Done
+        if stage != Stage::Ready
+            && stage != Stage::Done
             && (tab.include_characters
                 || tab.include_weapons
                 || tab.include_artifacts
@@ -578,7 +584,7 @@ pub fn show_status(
                     "weapons",
                     "武器",
                     "Weapons",
-                    cs.has_items,
+                    cs.has_items || cs.weapon_count > 0,
                     cs.weapon_count,
                 ),
                 (
@@ -586,7 +592,7 @@ pub fn show_status(
                     "artifacts",
                     "圣遗物",
                     "Artifacts",
-                    cs.has_items,
+                    cs.has_items || cs.artifact_count > 0,
                     cs.artifact_count,
                 ),
                 (
@@ -614,6 +620,24 @@ pub fn show_status(
         }
     });
     ui.add_space(12.0);
+    if matches!(
+        tab.phase,
+        Phase::Waiting | Phase::Stopped | Phase::Failed(_)
+    ) {
+        capture_status::show_diagnostics(
+            ui,
+            l,
+            capture_status::Diagnostics {
+                active: matches!(tab.phase, Phase::Waiting),
+                ready: shared.listener_ready,
+                elapsed: shared.elapsed_secs,
+                packets: shared.packet_count,
+                commands: shared.command_count,
+                error: shared.last_transport_error.as_deref(),
+                details: shared.diagnostics(),
+            },
+        );
+    }
     ui.add_enabled_ui(!tab.is_busy() && !game_busy, |ui| {
         ui.checkbox(
             &mut tab.only_keep_latest_dump,
@@ -670,13 +694,22 @@ fn update_phase(tab: &mut CaptureTabState) {
                 handle.close();
             }
             tab.pending_export = None;
-            tab.phase = Phase::Failed(UiError::from_message(
-                UiText::new(
-                    "抓包器在启动或读取游戏数据时停止。",
-                    "Capture stopped while starting or reading game data.",
-                ),
-                error,
-            ));
+            let hint = tab
+                .capture_state
+                .lock()
+                .map(|state| {
+                    if state.elapsed_secs >= 300 {
+                        let (zh, en) = state.timeout_hint();
+                        UiText::new(zh, en)
+                    } else {
+                        UiText::new(
+                            "抓包器在启动或读取游戏数据时停止。",
+                            "Capture stopped while starting or reading game data.",
+                        )
+                    }
+                })
+                .unwrap_or_else(|_| UiText::new("抓包失败", "Capture failed"));
+            tab.phase = Phase::Failed(UiError::from_message(hint, error));
             return;
         }
     }
@@ -703,41 +736,14 @@ fn update_phase(tab: &mut CaptureTabState) {
         match export_result {
             Ok(Ok(export)) => {
                 let timestamp = genshin_scanner::cli::chrono_timestamp();
-                let filename = format!(
-                    "{}{}{}",
-                    CAPTURE_EXPORT_PREFIX, timestamp, EXPORT_JSON_SUFFIX
-                );
-                let path = std::path::Path::new(&tab.output_dir).join(&filename);
-                if tab.only_keep_latest_dump {
-                    match genshin_scanner::fs_utils::remove_previous_exports(
-                        std::path::Path::new(&tab.output_dir),
-                        genshin_scanner::fs_utils::CAPTURE_EXPORT_PREFIX,
-                    ) {
-                        Ok(removed) => {
-                            if removed > 0 {
-                                yas::log_info!(
-                                    "仅保留最新导出：已删除 {} 个旧导出",
-                                    "Only keep latest dump: removed {} old export(s)",
-                                    removed
-                                );
-                            }
-                        },
-                        Err(e) => {
-                            tab.phase = Phase::Failed(UiError::from_anyhow(
-                                UiText::new(
-                                    "无法清理旧导出文件。请检查输出目录是否可写，或关闭正在使用这些文件的程序。",
-                                    "Old export files could not be removed. Check that the output folder is writable and that no other application is using those files.",
-                                ),
-                                &e,
-                            ));
-                            tab.pending_export = None;
-                            return;
-                        },
-                    }
-                }
                 match serde_json::to_string_pretty(&export) {
-                    Ok(json) => match std::fs::write(&path, &json) {
-                        Ok(_) => {
+                    Ok(json) => match genshin_scanner::fs_utils::write_capture_export(
+                        std::path::Path::new(&tab.output_dir),
+                        &json,
+                        &timestamp,
+                        tab.only_keep_latest_dump,
+                    ) {
+                        Ok(path) => {
                             let cc = export.characters.as_ref().map_or(0, |v| v.len());
                             let wc = export.weapons.as_ref().map_or(0, |v| v.len());
                             let ac = export.artifacts.as_ref().map_or(0, |v| v.len());
@@ -773,12 +779,12 @@ fn update_phase(tab: &mut CaptureTabState) {
                             };
                         },
                         Err(e) => {
-                            tab.phase = Phase::Failed(UiError::from_error(
+                            tab.phase = Phase::Failed(UiError::from_anyhow(
                                 UiText::new(
-                                    "导出文件无法写入。请检查输出目录、可用磁盘空间和文件权限。",
-                                    "The export file could not be written. Check the output folder, available disk space, and file permissions.",
+                                    "导出文件无法保存或旧文件无法清理。请检查输出目录、磁盘空间和文件权限；详情中会标明是否已保存新文件。",
+                                    "The export could not be saved or older files could not be removed. Check the folder, disk space and permissions; details indicate whether the new file was saved.",
                                 ),
-                                e,
+                                &e,
                             ));
                         },
                     },

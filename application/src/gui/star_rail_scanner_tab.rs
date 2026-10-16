@@ -59,6 +59,23 @@ pub fn show_status(
             if matches!(status, Some(super::state::TaskStatus::Failed(_))) {
                 display.interrupt_unfinished();
             }
+            if matches!(
+                status,
+                Some(super::state::TaskStatus::Exported { partial: true, .. })
+            ) {
+                widgets::hint(
+                    ui,
+                    widgets::partial_export_hint(
+                        lang,
+                        &display,
+                        &[
+                            ("characters", settings.max_characters),
+                            ("light_cones", settings.max_light_cones),
+                            ("gear", settings.max_gear),
+                        ],
+                    ),
+                );
+            }
             super::task_progress::show(ui, lang, &display);
         }
     });

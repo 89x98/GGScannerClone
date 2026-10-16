@@ -40,6 +40,16 @@ use worker::TaskHandle;
 
 /// Launch the GUI application.
 pub fn run_gui() {
+    run_gui_with_agent_mode(consume_agent_mode_marker());
+}
+
+/// Launch the GUI with its selected game's loopback manager started immediately.
+/// This is reserved for the local, opt-in scanner iteration workflow.
+pub fn run_gui_agent_mode() {
+    run_gui_with_agent_mode(true);
+}
+
+fn run_gui_with_agent_mode(agent_mode: bool) {
     #[cfg(feature = "capture")]
     const PRODUCT_NAME: &str = "GGScanner";
     #[cfg(not(feature = "capture"))]
@@ -145,7 +155,12 @@ pub fn run_gui() {
         options,
         Box::new(|cc| {
             setup_fonts(&cc.egui_ctx);
-            Ok(Box::new(GuiApp::new(state, app_config, &cc.egui_ctx)))
+            Ok(Box::new(GuiApp::new(
+                state,
+                app_config,
+                &cc.egui_ctx,
+                agent_mode,
+            )))
         }),
     ) {
         let lang = if yas::lang::is_en() {
@@ -169,6 +184,19 @@ pub fn run_gui() {
     ) {
         restart::exit_for_update();
     }
+}
+
+fn consume_agent_mode_marker() -> bool {
+    let marker = genshin_scanner::cli::exe_dir()
+        .join("data")
+        .join("ggscanner-agent-mode.once");
+    let Ok(value) = std::fs::read_to_string(&marker) else {
+        return false;
+    };
+    if value.trim() != "agent-mode-v1" || std::fs::remove_file(marker).is_err() {
+        return false;
+    }
+    true
 }
 
 fn show_startup_error(product_name: &str, lang: Lang, failure: &state::UiError) {
@@ -238,14 +266,19 @@ struct GuiApp {
 }
 
 impl GuiApp {
-    fn new(state: AppState, app_config: ApplicationConfigStore, ctx: &egui::Context) -> Self {
+    fn new(
+        state: AppState,
+        app_config: ApplicationConfigStore,
+        ctx: &egui::Context,
+        agent_mode: bool,
+    ) -> Self {
         theme::install(ctx, app_config.config.appearance);
         #[cfg(feature = "capture")]
         let capture_tab_state =
             capture_tab::CaptureTabState::from_config(state.output_dir.clone(), &state.user_config);
         let star_rail =
             star_rail_state::StarRailState::new(app_config.config.star_rail.output_dir.clone());
-        Self {
+        let mut app = Self {
             save_settings: true,
             splits: layout::Splits::default(),
             logos: shell::Logos::load(ctx),
@@ -258,6 +291,62 @@ impl GuiApp {
             server_handle: None,
             #[cfg(feature = "capture")]
             capture_tab: capture_tab_state,
+        };
+        if agent_mode {
+            app.start_agent_manager();
+        }
+        app
+    }
+
+    fn start_agent_manager(&mut self) {
+        self.app_config
+            .config
+            .navigation
+            .select_tab(ToolTab::Manager);
+        if let Err(error) = self.app_config.persist_now() {
+            log::warn!(
+                target: yas::lang::LOCALIZED_LOG_TARGET,
+                "{}",
+                error
+            );
+        }
+
+        if let Err(error) = privilege::ensure_admin_for_action() {
+            let failure = state::UiError::from_anyhow(
+                state::UiText::new(
+                    "Agent 模式需要管理员权限；请通过 GGScanner Agent 启动任务重新打开程序。",
+                    "Agent mode requires administrator privileges; restart through the GGScanner Agent task.",
+                ),
+                &error,
+            );
+            match self.app_config.config.navigation.active_game {
+                Game::Genshin => {
+                    *self.state.server_status.lock().unwrap() = state::TaskStatus::Failed(failure);
+                },
+                Game::StarRail => {
+                    *self.star_rail.manager_status.lock().unwrap() =
+                        state::TaskStatus::Failed(failure);
+                },
+            }
+            return;
+        }
+
+        match self.app_config.config.navigation.active_game {
+            Game::Genshin => {
+                self.state
+                    .server_enabled
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.server_handle = Some(worker::spawn_server(&self.state));
+            },
+            Game::StarRail => {
+                let settings = &self.app_config.config.star_rail;
+                self.star_rail.manager_handle = Some(star_rail_worker::spawn_manager_server(
+                    settings,
+                    self.star_rail.manager_status.clone(),
+                    self.star_rail.manager_progress.clone(),
+                    self.star_rail.manager_job.clone(),
+                ));
+            },
         }
     }
 }

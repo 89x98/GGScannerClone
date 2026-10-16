@@ -136,6 +136,21 @@ pub fn show_status(
             if matches!(status, Some(TaskStatus::Failed(_))) {
                 display.interrupt_unfinished();
             }
+            if matches!(status, Some(TaskStatus::Exported { partial: true, .. })) {
+                widgets::hint(
+                    ui,
+                    widgets::partial_export_hint(
+                        l,
+                        &display,
+                        &[
+                            ("characters", state.char_max_count),
+                            ("weapons", state.weapon_max_count),
+                            ("artifacts", state.artifact_max_count),
+                            ("achievements", state.achievement_max_count),
+                        ],
+                    ),
+                );
+            }
             super::task_progress::show(ui, l, &display);
         }
     });
@@ -188,10 +203,12 @@ pub fn show_status(
             ));
             *state.scan_progress.lock().unwrap() = Default::default();
         } else if let Err(e) = super::privilege::ensure_admin_for_action() {
-            *state.scan_status.lock().unwrap() = TaskStatus::Failed(UiError::from_anyhow(
+            let error = UiError::from_anyhow(
                 UiText::new("请以管理员身份启动程序", "Restart the app as administrator"),
                 &e,
-            ));
+            );
+            error.log_diagnostics();
+            *state.scan_status.lock().unwrap() = TaskStatus::Failed(error);
         } else {
             state.names_need_attention = false;
             state.persist_config_now();

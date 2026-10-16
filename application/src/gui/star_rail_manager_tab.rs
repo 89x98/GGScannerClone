@@ -87,10 +87,12 @@ pub fn show_status(
         .clicked()
     {
         if let Err(error) = super::privilege::ensure_admin_for_action() {
-            *state.manager_status.lock().unwrap() = TaskStatus::Failed(UiError::from_anyhow(
+            let failure = UiError::from_anyhow(
                 UiText::new("请以管理员身份启动程序", "Restart the app as administrator"),
                 &error,
-            ));
+            );
+            failure.log_diagnostics();
+            *state.manager_status.lock().unwrap() = TaskStatus::Failed(failure);
         } else {
             state.manager_handle = Some(star_rail_worker::spawn_manager_server(
                 settings,

@@ -1666,7 +1666,6 @@ pub fn run_scan_core_observed(
 
     // Fetch and load mappings
     report("加载映射数据 / Loading mappings...");
-    log_info!("加载映射数据...", "Loading mappings...");
     let overrides = user_config.to_overrides();
     let mappings = Arc::new(MappingManager::new(&overrides)?);
     log_info!(
@@ -1697,7 +1696,6 @@ pub fn run_scan_core_observed(
     report("加载OCR模型 / Loading OCR models...");
     let pool_config = user_config.resolve_ocr_pool_config();
     let pools = Arc::new(SharedOcrPools::new(pool_config, &config.ocr.backends())?);
-    log_info!("OCR模型加载完成", "OCR models loaded");
 
     let scan_result = run_scan_phases(
         &mut ctrl,
@@ -1751,10 +1749,6 @@ pub fn run_scan_core_observed(
         || achievements.as_ref().is_some_and(|items| {
             config.achievement_max_count > 0 && items.len() >= config.achievement_max_count
         });
-
-    if token.is_cancelled() {
-        log_info!("扫描被用户中断", "Scan stopped by user");
-    }
 
     if characters.as_ref().is_none_or(Vec::is_empty)
         && weapons.as_ref().is_none_or(Vec::is_empty)

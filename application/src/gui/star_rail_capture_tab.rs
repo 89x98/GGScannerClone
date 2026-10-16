@@ -64,12 +64,7 @@ impl StarRailCaptureHandle {
                 *poisoned.into_inner() = Some(error.clone());
             },
         }
-        let lang = if yas::lang::is_en() {
-            Lang::En
-        } else {
-            Lang::Zh
-        };
-        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.hint_text(lang));
+        error.log_diagnostics();
     }
 
     fn is_finished(&self) -> bool {
@@ -214,7 +209,13 @@ impl StarRailCaptureState {
     /// visible tab. The app calls this every frame so switching to another
     /// Star Rail tab cannot strand a completed monitor or its export.
     pub fn tick(&mut self) {
+        let previous = self.phase.clone();
         update_phase(self);
+        if self.phase != previous {
+            if let CapturePhase::Failed(error) = &self.phase {
+                error.log_diagnostics();
+            }
+        }
     }
 
     pub fn requires_restart(&self) -> bool {
@@ -378,7 +379,9 @@ pub fn show_status(
     };
     let text = if stage == Stage::Achievements {
         lang.t("正在接收成就", "Receiving achievements")
-    } else { stage.headline(lang) };
+    } else {
+        stage.headline(lang)
+    };
     let feedback = match &state.phase {
         CapturePhase::Idle if !capture_targets(settings).any() => {
             Some(super::state::TaskStatus::AwaitingInput(UiText::new(
@@ -399,6 +402,22 @@ pub fn show_status(
         super::theme::task_status(ui, lang, feedback.as_ref(), text);
         if stage != Stage::Ready && stage != Stage::Done && capture_targets(settings).any() {
             capture_status::show_connection(ui, lang, stage, shared.has_key_exchange);
+            capture_status::show_diagnostics(
+                ui,
+                lang,
+                capture_status::Diagnostics {
+                    active: matches!(
+                        state.phase,
+                        CapturePhase::Initializing | CapturePhase::Waiting
+                    ),
+                    ready: shared.listener_ready,
+                    elapsed: shared.elapsed_secs,
+                    packets: shared.packet_count,
+                    commands: shared.command_count,
+                    error: shared.last_transport_error.as_deref(),
+                    details: shared.diagnostics(),
+                },
+            );
         }
         for (selected, key, zh, en, complete, count) in [
             (
@@ -536,7 +555,10 @@ fn start_capture(settings: &StarRailSettings, state: &mut StarRailCaptureState) 
                 native_failure: Mutex::new(None),
             });
         },
-        Err(error) => state.phase = CapturePhase::Failed(error),
+        Err(error) => {
+            error.log_diagnostics();
+            state.phase = CapturePhase::Failed(error);
+        },
     }
 }
 
@@ -887,9 +909,7 @@ mod feedback_tests {
         }
         let achievements =
             texts(|ui| show_status(ui, Lang::En, &mut settings, &mut state, false, false));
-        assert!(achievements
-            .iter()
-            .any(|s| s == "Receiving achievements"));
+        assert!(achievements.iter().any(|s| s == "Receiving achievements"));
         assert!(!achievements.iter().any(|s| s.contains("Import the file")));
         state.phase = CapturePhase::Done {
             summary: UiText::new("已完成", "Completed"),

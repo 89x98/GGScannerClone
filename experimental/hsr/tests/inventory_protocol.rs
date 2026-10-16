@@ -260,7 +260,11 @@ fn achievements_are_optional_but_cannot_complete_inventory_capture_alone() {
     hsr_scanner::pipeline::build_export_with_achievements(
         ValidatedObservationSnapshot::from_packet_capture(inventory).unwrap(),
         hsr_scanner::pipeline::build_achievement_snapshot(
-            only.state().quests.iter().map(|quest| quest.id).collect::<Vec<_>>(),
+            only.state()
+                .quests
+                .iter()
+                .map(|quest| quest.id)
+                .collect::<Vec<_>>(),
             "test",
             &refs,
         )

@@ -107,7 +107,9 @@ fn localize_embedded_bilingual(msg: &str) -> String {
         let chinese = &localized[phrase_start..separator_idx];
         let english = &localized[suffix_start..phrase_end];
         let has_cjk = chinese.chars().any(is_cjk_character);
-        let has_english = english.chars().any(|character| character.is_ascii_alphabetic());
+        let has_english = english
+            .chars()
+            .any(|character| character.is_ascii_alphabetic());
 
         if has_cjk && has_english {
             let replacement = if is_en() { english } else { chinese }.to_string();
