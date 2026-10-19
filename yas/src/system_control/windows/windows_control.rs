@@ -38,6 +38,29 @@ impl WindowsSystemControl {
         anyhow::Ok(())
     }
 
+    pub fn mouse_drag(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) -> anyhow::Result<()> {
+        self.enigo.mouse_move_to(x0, y0);
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        self.enigo.mouse_down(MouseButton::Left);
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        // Move over 1.2 seconds and ease into both endpoints. A linear, fast
+        // sweep can leave the game's portrait bar moving after release.
+        let steps = 30;
+        for step in 1..=steps {
+            let progress = f64::from(step) / f64::from(steps);
+            let eased = progress * progress * (3.0 - 2.0 * progress);
+            let x = x0 + (f64::from(x1 - x0) * eased).round() as i32;
+            let y = y0 + (f64::from(y1 - y0) * eased).round() as i32;
+            self.enigo.mouse_move_to(x, y);
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+        // Stop while still holding so a precise page drag does not become a
+        // fling with inertia after the button is released.
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        self.enigo.mouse_up(MouseButton::Left);
+        anyhow::Ok(())
+    }
+
     pub fn mouse_scroll(&mut self, amount: i32, _try_find: bool) -> anyhow::Result<()> {
         self.enigo.mouse_scroll_y(amount);
 

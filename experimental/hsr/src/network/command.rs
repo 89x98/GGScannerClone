@@ -88,8 +88,8 @@ pub enum GameCommandError {
     HeaderTooShort { expected: usize, actual: usize },
     #[error("command buffer must be at least {expected} bytes, but was {actual}")]
     CommandTooShort { expected: usize, actual: usize },
-    #[error("decryption key is missing for command")]
-    DecryptionKeyMissing,
+    #[error("decryption key {version} is missing for command")]
+    DecryptionKeyMissing { version: u32 },
     #[error("decrypted version does not match expected version")]
     VersionMismatch,
 }

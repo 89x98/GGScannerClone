@@ -125,6 +125,12 @@ fn visible_grid_samples(image: &RgbImage, scaler: &CoordScaler) -> Vec<u8> {
 }
 
 fn visible_grid_cell_samples(image: &RgbImage, scaler: &CoordScaler) -> Vec<Vec<u8>> {
+    annotator::record_region(
+        "visible_grid_samples",
+        image,
+        (0.0, 100.0, 1310.0, 980.0),
+        scaler,
+    );
     let mut samples = Vec::with_capacity(GRID_ROWS * GRID_COLS);
     for row in 0..GRID_ROWS {
         for col in 0..GRID_COLS {
@@ -147,6 +153,7 @@ fn scrollbar_band_samples(image: &RgbImage, scaler: &CoordScaler) -> Vec<Vec<u8>
     // x=1265) and the detail panel (starting near x=1310). Cover the complete
     // vertical travel: the thumb can be near y=1000 late in a large inventory.
     const BAND_RECT: (f64, f64, f64, f64) = (1278.0, 80.0, 22.0, 950.0);
+    annotator::record_region("scrollbar_band", image, BAND_RECT, scaler);
     let (x, y, width, height) = BAND_RECT;
     let x0 = scaler.x(x).max(0) as u32;
     let y0 = scaler.y(y).max(0) as u32;
@@ -429,6 +436,12 @@ fn sample_grid_cells(
     scanned_row: usize,
     last_row_col: usize,
 ) -> Vec<Vec<u8>> {
+    annotator::record_region(
+        "grid_cell_samples",
+        image,
+        (0.0, 100.0, 1310.0, 980.0),
+        scaler,
+    );
     let mut samples = Vec::new();
     for r in start_row..start_row + visible_rows {
         let cum_row = scanned_row + (r - start_row);
@@ -584,7 +597,7 @@ pub fn open_backpack_to_tab(
         Err(ref e) => log_warn!(
             "[backpack] 首次物品数量读取失败，重新打开背包后重试: {}",
             "[backpack] first item-count read failed; reopening the backpack before retrying: {}",
-            e
+            yas::lang::localize(&e.to_string())
         ),
     }
 
@@ -741,6 +754,49 @@ pub struct GridPageLayout {
     pub screen_start_row: usize,
 }
 
+impl GridPageLayout {
+    fn cell_position(&self, index: usize) -> Option<(usize, usize)> {
+        let offset = index.checked_sub(self.page_start_idx)?;
+        if offset >= self.page_items {
+            return None;
+        }
+        Some((
+            self.screen_start_row + offset / GRID_COLS,
+            offset % GRID_COLS,
+        ))
+    }
+}
+
+/// Only reselect a failed item if its original grid page is still visible.
+pub fn focus_failed_item(
+    ctrl: &mut GenshinGameController,
+    layout: Option<GridPageLayout>,
+    index: usize,
+    delay_ms: u64,
+) {
+    if ctrl.check_rmb() {
+        return;
+    }
+    if let Some((row, col)) = layout.and_then(|page| page.cell_position(index)) {
+        ctrl.click_at(
+            GRID_FIRST_X + col as f64 * GRID_OFFSET_X,
+            GRID_FIRST_Y + row as f64 * GRID_OFFSET_Y,
+        );
+        utils::sleep(delay_ms as u32);
+        log_info!(
+            "[OCR] 已选中识别失败的物品（索引{}），请截图反馈",
+            "[OCR] Selected the failed item (index {}); please attach a screenshot to your report",
+            index
+        );
+    } else {
+        log_warn!(
+            "[OCR] 识别失败的物品（索引{}）已不在当前页，无法回选",
+            "[OCR] Failed item (index {}) is no longer on the current page; cannot reselect it",
+            index
+        );
+    }
+}
+
 pub enum GridEvent {
     /// Fired at the start of each page if `probe_last_cell_per_page` is set.
     /// `scan_grid` has already clicked the bottom-right visible cell, waited
@@ -878,6 +934,10 @@ const SCROLL_STABLE_INTERVAL_MS: u32 = 80;
 /// A first unchanged page turn is never terminal; reposition the pointer and
 /// send the same atomic wheel input once more before deciding the list ended.
 const SCROLL_RETRY_COUNT: usize = 1;
+
+/// Upper bound used when the backpack header count cannot describe the visible
+/// list (for example, after a set or recent-five-star filter is applied).
+pub const FILTERED_BACKPACK_SCAN_BUDGET: usize = 10_000;
 
 fn scroll_ticks_for_rows(row_count: usize, completed_pages: u32) -> i32 {
     let ticks_per_row = SCROLL_TICKS_PER_PAGE as f64 / GRID_ROWS as f64;
@@ -1832,7 +1892,7 @@ impl<'a> BackpackScanner<'a> {
                         log_error!(
                             "[backpack] 无法确认完整翻页距离: {}",
                             "[backpack] Could not confirm the requested scroll distance: {}",
-                            e
+                            yas::lang::localize(&e.to_string())
                         );
                         missed_count += 1;
                         termination = ScanTermination::CaptureFailure;
@@ -1905,6 +1965,20 @@ mod tests {
     use image::Rgb;
 
     use super::*;
+
+    #[test]
+    fn failed_item_position_respects_partial_tail_pages_and_page_boundaries() {
+        let page = GridPageLayout {
+            page_start_idx: 56,
+            page_items: 11,
+            screen_start_row: 3,
+        };
+        assert_eq!(page.cell_position(55), None);
+        assert_eq!(page.cell_position(56), Some((3, 0)));
+        assert_eq!(page.cell_position(64), Some((4, 0)));
+        assert_eq!(page.cell_position(66), Some((4, 2)));
+        assert_eq!(page.cell_position(67), None);
+    }
 
     fn fill_grid_cell(
         image: &mut RgbImage,

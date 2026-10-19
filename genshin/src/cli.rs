@@ -7,6 +7,7 @@ use clap::{command, ArgMatches, Args, FromArgMatches};
 use serde::{Deserialize, Serialize};
 use yas::{log_debug, log_error, log_info, log_warn};
 
+use yas::capture::constants::DEFAULT_HDR_WHITE_POINT;
 use yas::capture::CaptureMethod;
 use yas::game_info::{GameInfo, GameInfoBuilder};
 
@@ -25,7 +26,9 @@ use crate::scanner::common::ocr_pool::{
     OcrBackends, OcrPoolConfig, SharedOcrPools, DEFAULT_ARTIFACT_OCR, DEFAULT_CHARACTER_OCR,
     DEFAULT_WEAPON_OCR,
 };
-use crate::scanner::common::scan_runner::{run_scan_phases, ScanFailurePolicy, ScanRunOptions};
+use crate::scanner::common::scan_runner::{
+    run_scan_phases, ScanFailurePolicy, ScanPhaseResult, ScanRunOptions,
+};
 use crate::scanner::weapon::GoodWeaponScannerConfig;
 
 /// Config file path relative to the executable directory.
@@ -356,7 +359,7 @@ fn extract_onnxruntime_dll(zip_bytes: &[u8], dest: &std::path::Path) -> Result<(
         let mut file = archive
             .by_index(i)
             .map_err(|e| anyhow!("无法读取压缩包条目 / Cannot read zip entry: {}", e))?;
-        let name = file.name().to_string();
+        let name = file.name()?.into_owned();
         if suffixes.iter().any(|s| name.ends_with(s)) {
             let mut buf = Vec::new();
             file.read_to_end(&mut buf)?;
@@ -712,20 +715,11 @@ fn default_mgr_scroll() -> u64 {
 fn default_true() -> bool {
     true
 }
-pub const DEFAULT_HDR_WHITE_POINT: f32 = 4.0;
 fn default_hdr_white_point() -> f32 {
     DEFAULT_HDR_WHITE_POINT
 }
 fn default_server_port() -> u16 {
     8765
-}
-
-pub fn capture_method_for_hdr_mode(hdr_mode: bool) -> CaptureMethod {
-    if hdr_mode {
-        CaptureMethod::Wgc
-    } else {
-        CaptureMethod::BitBlt
-    }
 }
 
 /// Deserialize a u64 that may arrive as a number, a numeric string, or an
@@ -842,13 +836,55 @@ const U64_FIELDS: &[&str] = &[
     "artifact_open_delay",
 ];
 
-/// Sanitize a parsed JSON object: remove u64 fields that have non-numeric values
-/// (e.g. empty strings from old config migrations) so serde defaults apply.
+/// Migrate retired capture settings and remove invalid numeric fields so serde
+/// defaults apply (e.g. empty strings from old config migrations).
 fn sanitize_config_json(val: &mut serde_json::Value) {
     let obj = match val.as_object_mut() {
         Some(o) => o,
         None => return,
     };
+    // Unversioned files saved continue_on_failure (the inverse of the new
+    // stop_on_failure). Preserve explicit choices; absent fields use defaults.
+    if !obj.contains_key("schema_version") {
+        if !obj.contains_key("stop_on_failure") {
+            if let Some(continue_scanning) = obj
+                .get("continue_on_failure")
+                .and_then(serde_json::Value::as_bool)
+            {
+                obj.insert("stop_on_failure".to_owned(), (!continue_scanning).into());
+            }
+        }
+        obj.insert(
+            "schema_version".to_owned(),
+            good_config_schema_version().into(),
+        );
+    }
+    for key in [
+        "continue_on_failure",
+        "update_inventory",
+        "ocr_pool_v4_override",
+        "ocr_pool_v5_override",
+    ] {
+        obj.remove(key);
+    }
+    // Legacy unversioned good_config.json could store capture_method="print_window".
+    // Both config-loading paths sanitize before deserialization. Replace only
+    // this retired backend with the normal HDR-derived choice.
+    if obj
+        .get("capture_method")
+        .and_then(serde_json::Value::as_str)
+        == Some("print_window")
+    {
+        let hdr_mode = obj
+            .get("hdr_mode")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        obj.insert(
+            "capture_method".to_owned(),
+            serde_json::to_value(CaptureMethod::for_hdr_mode(hdr_mode))
+                .expect("capture method is serializable"),
+        );
+    }
     for &field in U64_FIELDS {
         let should_remove = match obj.get(field) {
             Some(serde_json::Value::Number(_)) => false,
@@ -861,6 +897,22 @@ fn sanitize_config_json(val: &mut serde_json::Value) {
     }
 }
 
+fn good_config_schema_version() -> u32 {
+    1
+}
+
+pub fn parse_user_config(contents: &str) -> Result<GoodUserConfig> {
+    let mut value: serde_json::Value = serde_json::from_str(contents)?;
+    sanitize_config_json(&mut value);
+    let config: GoodUserConfig = serde_json::from_value(value)?;
+    anyhow::ensure!(
+        config.schema_version == good_config_schema_version(),
+        "unsupported good_config schema version: {}",
+        config.schema_version
+    );
+    Ok(config)
+}
+
 /// User config stored in `data/good_config.json`.
 ///
 /// Holds user-specific in-game names and scanner timing settings.
@@ -868,6 +920,8 @@ fn sanitize_config_json(val: &mut serde_json::Value) {
 /// New fields are added with serde defaults so old config files still load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoodUserConfig {
+    #[serde(default = "good_config_schema_version")]
+    pub schema_version: u32,
     /// In-game Traveler name (leave empty if not renamed)
     #[serde(default)]
     pub traveler_name: String,
@@ -1031,7 +1085,7 @@ pub struct GoodUserConfig {
     #[serde(default)]
     pub verbose: bool,
     #[serde(default)]
-    pub continue_on_failure: bool,
+    pub stop_on_failure: bool,
     #[serde(default)]
     pub dump_images: bool,
     #[serde(default)]
@@ -1056,12 +1110,10 @@ pub struct GoodUserConfig {
     pub achievement_max_count: usize,
     #[serde(default = "default_server_port")]
     pub server_port: u16,
-    #[serde(default = "default_true")]
-    pub update_inventory: bool,
-    #[serde(default, alias = "manage_recent_artifacts")]
+    #[serde(default = "default_true", alias = "manage_recent_artifacts")]
     pub filter_involved_sets: bool,
 
-    // --- GOODCapture GUI settings ---
+    // --- GGScanner capture GUI settings ---
     #[serde(default = "default_true")]
     pub capture_include_characters: bool,
     #[serde(default = "default_true")]
@@ -1074,13 +1126,6 @@ pub struct GoodUserConfig {
     pub capture_dump_packets: bool,
     #[serde(default = "default_true")]
     pub capture_only_keep_latest_export: bool,
-
-    /// Advanced: force OCR v5 pool size. 0 = auto-detect from RAM. Non-zero forces that size.
-    #[serde(default)]
-    pub ocr_pool_v5_override: usize,
-    /// Advanced: force OCR v4 pool size. 0 = auto-detect from RAM. Non-zero forces that size.
-    #[serde(default)]
-    pub ocr_pool_v4_override: usize,
 }
 
 impl GoodUserConfig {
@@ -1101,34 +1146,16 @@ impl GoodUserConfig {
         }
     }
 
-    /// Resolve OCR pool sizes: auto-detect from RAM, then apply any non-zero user overrides.
+    /// OCR concurrency follows available memory; there are no user overrides.
     pub fn resolve_ocr_pool_config(&self) -> OcrPoolConfig {
-        let mut cfg = OcrPoolConfig::detect();
-        if self.ocr_pool_v5_override > 0 {
-            log_info!(
-                "OCR v5 池大小手动覆盖: {} → {}",
-                "OCR v5 pool size manually overridden: {} → {}",
-                cfg.v5_count,
-                self.ocr_pool_v5_override,
-            );
-            cfg.v5_count = self.ocr_pool_v5_override;
-        }
-        if self.ocr_pool_v4_override > 0 {
-            log_info!(
-                "OCR v4 池大小手动覆盖: {} → {}",
-                "OCR v4 pool size manually overridden: {} → {}",
-                cfg.v4_count,
-                self.ocr_pool_v4_override,
-            );
-            cfg.v4_count = self.ocr_pool_v4_override;
-        }
-        cfg
+        OcrPoolConfig::detect()
     }
 }
 
 impl Default for GoodUserConfig {
     fn default() -> Self {
         Self {
+            schema_version: good_config_schema_version(),
             traveler_name: String::new(),
             wanderer_name: String::new(),
             manekin_name: String::new(),
@@ -1157,7 +1184,7 @@ impl Default for GoodUserConfig {
             scan_artifacts: true,
             scan_achievements: false,
             verbose: false,
-            continue_on_failure: false,
+            stop_on_failure: false,
             dump_images: false,
             hdr_mode: false,
             hdr_white_point: default_hdr_white_point(),
@@ -1170,16 +1197,13 @@ impl Default for GoodUserConfig {
             artifact_max_count: 0,
             achievement_max_count: 0,
             server_port: default_server_port(),
-            update_inventory: true,
-            filter_involved_sets: false,
+            filter_involved_sets: true,
             capture_include_characters: true,
             capture_include_weapons: true,
             capture_include_artifacts: true,
             capture_include_achievements: true,
             capture_dump_packets: false,
             capture_only_keep_latest_export: true,
-            ocr_pool_v5_override: 0,
-            ocr_pool_v4_override: 0,
         }
     }
 }
@@ -1195,14 +1219,7 @@ pub fn load_config_or_default() -> GoodUserConfig {
         Ok(contents) => {
             // Parse as generic JSON first so we can sanitize invalid field types
             // (e.g. empty strings in u64 fields from old config versions).
-            let parsed: Result<serde_json::Value, _> = serde_json::from_str(&contents);
-            let config_result = match parsed {
-                Ok(mut val) => {
-                    sanitize_config_json(&mut val);
-                    serde_json::from_value::<GoodUserConfig>(val)
-                },
-                Err(e) => Err(e),
-            };
+            let config_result = parse_user_config(&contents);
             match config_result {
                 Ok(config) => config,
                 Err(e) => {
@@ -1231,6 +1248,27 @@ pub fn load_config_or_default() -> GoodUserConfig {
 /// Save the user config to data/good_config.json.
 pub fn save_config(config: &GoodUserConfig) -> Result<()> {
     let path = config_path();
+    save_user_config_to_path(config, &path)
+}
+
+pub fn save_user_config_to_path(config: &GoodUserConfig, path: &std::path::Path) -> Result<()> {
+    anyhow::ensure!(
+        config.schema_version == good_config_schema_version(),
+        "unsupported good_config schema version: {}",
+        config.schema_version
+    );
+    if path.exists() {
+        let existing: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+        if let Some(version) = existing
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+        {
+            anyhow::ensure!(
+                version <= u64::from(good_config_schema_version()),
+                "refusing to overwrite newer good_config schema version: {version}"
+            );
+        }
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -1263,11 +1301,8 @@ fn load_or_create_config() -> Result<GoodUserConfig> {
     let contents = std::fs::read_to_string(&path)?;
     // Parse as generic JSON first so we can sanitize invalid field types
     // (e.g. empty strings in u64 fields from old config versions).
-    let mut val: serde_json::Value = serde_json::from_str(&contents)
-        .map_err(|e| anyhow!("配置解析失败 / Failed to parse {}: {}", path.display(), e))?;
-    sanitize_config_json(&mut val);
-    let config: GoodUserConfig = serde_json::from_value(val)
-        .map_err(|e| anyhow!("配置解析失败 / Failed to parse {}: {}", path.display(), e))?;
+    let config = parse_user_config(&contents)
+        .with_context(|| format!("配置解析失败 / Failed to parse {}", path.display()))?;
     log_debug!("已加载配置: {}", "Loaded config from {}", path.display());
 
     // Re-save to strip invalid/default entries and add any new default fields
@@ -1399,13 +1434,13 @@ pub struct GoodScannerConfig {
     )]
     pub verbose: bool,
 
-    /// 单项失败时继续扫描 / Continue when items fail
+    /// 识别失败时停止 / Stop on OCR errors
     #[arg(
-        long = "continue-on-failure",
-        help = "单项失败时继续扫描\nContinue scanning when individual items fail",
+        long = "stop-on-failure",
+        help = "识别失败时停止\nStop scanning on the first OCR error",
         help_heading = "通用选项 / Global Options"
     )]
-    pub continue_on_failure: bool,
+    pub stop_on_failure: bool,
 
     /// 逐项显示扫描进度 / Log each scanned item
     #[arg(
@@ -1529,7 +1564,7 @@ impl GoodScannerApplication {
     }
 
     pub fn build_command() -> clap::Command {
-        let cmd = command!();
+        let cmd = command!().version(env!("GGSCANNER_BUILD_VERSION"));
         <GoodScannerConfig as Args>::augment_args_for_update(cmd)
     }
 
@@ -1553,7 +1588,7 @@ impl GoodScannerApplication {
             next_delay: user_config.char_next_delay,
             open_delay: user_config.char_open_delay,
             close_delay: user_config.char_close_delay,
-            continue_on_failure: config.continue_on_failure,
+            continue_on_failure: !config.stop_on_failure,
             log_progress: config.log_progress,
             dump_images: config.dump_images,
             max_count: config.char_max_count,
@@ -1572,7 +1607,7 @@ impl GoodScannerApplication {
             delay_scroll: user_config.inv_scroll_delay,
             delay_tab: user_config.inv_tab_delay,
             open_delay: user_config.inv_open_delay,
-            continue_on_failure: config.continue_on_failure,
+            continue_on_failure: !config.stop_on_failure,
             log_progress: config.log_progress,
             dump_images: config.dump_images,
             max_count: config.weapon_max_count,
@@ -1594,7 +1629,7 @@ impl GoodScannerApplication {
             delay_scroll: user_config.inv_scroll_delay,
             delay_tab: user_config.inv_tab_delay,
             open_delay: user_config.inv_open_delay,
-            continue_on_failure: config.continue_on_failure,
+            continue_on_failure: !config.stop_on_failure,
             log_progress: config.log_progress,
             dump_images: config.dump_images,
             max_count: config.artifact_max_count,
@@ -1620,7 +1655,7 @@ impl GoodScannerApplication {
             scroll_delay: user_config.achievement_scroll_delay,
             category_delay: user_config.achievement_category_delay,
             open_delay: user_config.achievement_open_delay,
-            continue_on_failure: config.continue_on_failure,
+            continue_on_failure: !config.stop_on_failure,
             log_progress: config.log_progress,
             dump_images: config.dump_images,
             max_count: config.achievement_max_count,
@@ -1631,7 +1666,7 @@ impl GoodScannerApplication {
     pub fn run(&self) -> Result<()> {
         println!(
             "{}",
-            yas::lang::localize("正在启动扫描器... / GOOD Scanner starting...")
+            yas::lang::localize("正在启动扫描器... / GGScanner starting...")
         );
 
         init_rayon_pool();
@@ -1674,12 +1709,12 @@ impl GoodScannerApplication {
             weapon_min_rarity: config.weapon_min_rarity,
             artifact_min_rarity: config.artifact_min_rarity,
             verbose: config.verbose,
-            continue_on_failure: config.continue_on_failure,
+            stop_on_failure: config.stop_on_failure,
             log_progress: config.log_progress,
             dump_images: config.dump_images || config.debug_ach_scroll,
             hdr_mode: config.hdr_mode || user_config.hdr_mode,
             hdr_white_point: DEFAULT_HDR_WHITE_POINT,
-            capture_method: capture_method_for_hdr_mode(config.hdr_mode || user_config.hdr_mode),
+            capture_method: CaptureMethod::for_hdr_mode(config.hdr_mode || user_config.hdr_mode),
             output_dir: config.output_dir.clone(),
             ocr: config.ocr.clone(),
             char_max_count: config.char_max_count,
@@ -1795,7 +1830,7 @@ pub struct ScanCoreConfig {
     pub weapon_min_rarity: i32,
     pub artifact_min_rarity: i32,
     pub verbose: bool,
-    pub continue_on_failure: bool,
+    pub stop_on_failure: bool,
     pub log_progress: bool,
     pub dump_images: bool,
     pub hdr_mode: bool,
@@ -1809,7 +1844,7 @@ pub struct ScanCoreConfig {
     pub achievement_max_count: usize,
     /// If true, keep the artifact tab's 5-star acquired-time filter enabled.
     pub artifact_keep_five_star_filter: bool,
-    /// If true, export partial results when the user cancels mid-scan.
+    /// Legacy caller option retained for compatibility; user scans now always save partial results.
     pub save_on_cancel: bool,
     /// Dump one-tick achievement list scrolls, then exit.
     pub debug_ach_scroll: bool,
@@ -1825,7 +1860,7 @@ impl Default for ScanCoreConfig {
             weapon_min_rarity: 3,
             artifact_min_rarity: 4,
             verbose: false,
-            continue_on_failure: false,
+            stop_on_failure: false,
             log_progress: false,
             dump_images: false,
             hdr_mode: false,
@@ -1854,7 +1889,7 @@ impl ScanCoreConfig {
             scan_achievements: self.scan_achievements,
             scan_all: false,
             verbose: self.verbose,
-            continue_on_failure: self.continue_on_failure,
+            stop_on_failure: self.stop_on_failure,
             log_progress: self.log_progress,
             output_dir: self.output_dir.clone(),
             ocr: self.ocr.clone(),
@@ -1883,6 +1918,17 @@ pub fn run_scan_core(
     status_fn: Option<&dyn Fn(&str)>,
     cancel_token: Option<yas::cancel::CancelToken>,
 ) -> Result<String> {
+    run_scan_core_observed(user_config, config, status_fn, cancel_token, None, None)
+}
+
+pub fn run_scan_core_observed(
+    user_config: &GoodUserConfig,
+    config: &ScanCoreConfig,
+    status_fn: Option<&dyn Fn(&str)>,
+    cancel_token: Option<yas::cancel::CancelToken>,
+    progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
+    phase_fn: Option<&crate::scanner::common::progress::ScanPhaseFn<'_>>,
+) -> Result<String> {
     init_rayon_pool();
     crate::scanner::common::annotator::init(config.dump_images);
     crate::scanner::common::pixel_profile::set_hdr_mode(config.hdr_mode);
@@ -1901,7 +1947,6 @@ pub fn run_scan_core(
 
     // Fetch and load mappings
     report("加载映射数据 / Loading mappings...");
-    log_info!("加载映射数据...", "Loading mappings...");
     let overrides = user_config.to_overrides();
     let mappings = Arc::new(MappingManager::new(&overrides)?);
     log_info!(
@@ -1923,7 +1968,7 @@ pub fn run_scan_core(
     );
 
     report("初始化屏幕截图 / Initializing screen capture...");
-    let capture_method = capture_method_for_hdr_mode(config.hdr_mode);
+    let capture_method = CaptureMethod::for_hdr_mode(config.hdr_mode);
     let mut ctrl = GenshinGameController::new(game_info, capture_method)
         .context("屏幕截图初始化失败 / Screen capture initialization failed")?;
     let token = cancel_token.unwrap_or_else(yas::cancel::CancelToken::new);
@@ -1932,69 +1977,86 @@ pub fn run_scan_core(
     report("加载OCR模型 / Loading OCR models...");
     let pool_config = user_config.resolve_ocr_pool_config();
     let pools = Arc::new(SharedOcrPools::new(pool_config, &config.ocr.backends())?);
-    log_info!("OCR模型加载完成", "OCR models loaded");
 
-    let save_on_cancel = config.save_on_cancel;
     let scan_result = run_scan_phases(
         &mut ctrl,
         mappings,
         pools,
         user_config,
         config,
-        None,
+        progress_fn,
         status_fn,
+        phase_fn,
         token.clone(),
         ScanRunOptions {
-            save_on_cancel,
+            save_on_cancel: true,
             accept_cancelled_success: true,
             failure_policy: ScanFailurePolicy::ContinueOnError,
         },
     )?;
 
+    let mut partial = token.is_cancelled()
+        || matches!(
+            scan_result.characters,
+            ScanPhaseResult::Incomplete | ScanPhaseResult::Failed(_)
+        )
+        || matches!(
+            scan_result.weapons,
+            ScanPhaseResult::Incomplete | ScanPhaseResult::Failed(_)
+        )
+        || matches!(
+            scan_result.artifacts,
+            ScanPhaseResult::Incomplete | ScanPhaseResult::Failed(_)
+        )
+        || matches!(
+            scan_result.achievements,
+            ScanPhaseResult::Incomplete | ScanPhaseResult::Failed(_)
+        );
     let characters = scan_result.characters.into_complete();
     let weapons = scan_result.weapons.into_complete();
     let artifacts = scan_result.artifacts.into_complete();
     let achievements = scan_result.achievements.into_complete();
 
-    if token.is_cancelled() {
-        log_info!("扫描被用户中断", "Scan stopped by user");
-        if !save_on_cancel {
-            return Err(anyhow!("扫描被用户中断 / Scan stopped by user"));
+    // A configured cap only makes the export partial when it was actually reached.
+    partial |= characters
+        .as_ref()
+        .is_some_and(|items| config.char_max_count > 0 && items.len() >= config.char_max_count)
+        || weapons.as_ref().is_some_and(|items| {
+            config.weapon_max_count > 0 && items.len() >= config.weapon_max_count
+        })
+        || artifacts.as_ref().is_some_and(|items| {
+            config.artifact_max_count > 0 && items.len() >= config.artifact_max_count
+        })
+        || achievements.as_ref().is_some_and(|items| {
+            config.achievement_max_count > 0 && items.len() >= config.achievement_max_count
+        });
+
+    if characters.as_ref().is_none_or(Vec::is_empty)
+        && weapons.as_ref().is_none_or(Vec::is_empty)
+        && artifacts.as_ref().is_none_or(Vec::is_empty)
+        && achievements.as_ref().is_none_or(Vec::is_empty)
+    {
+        if token.is_cancelled() {
+            return Err(crate::scanner::common::progress::ScanCancelled.into());
         }
+        anyhow::bail!("未识别出数据，未导出 / No data recognized; nothing exported");
     }
 
     // Wait for any pending debug image writes to finish
     crate::scanner::common::annotator::flush();
 
     // Export as GOOD v3
+    report("正在导出数据 / Saving export");
     let export = GoodExport::new(characters, weapons, artifacts).with_achievements(achievements);
     let json = serde_json::to_string_pretty(&export)?;
 
-    let timestamp = chrono_timestamp();
-    let output_dir = PathBuf::from(&config.output_dir);
-    std::fs::create_dir_all(&output_dir)?;
-    if user_config.only_keep_latest_export {
-        let removed = crate::fs_utils::remove_previous_exports(
-            &output_dir,
-            crate::fs_utils::SCANNER_EXPORT_PREFIX,
-        )?;
-        if removed > 0 {
-            log_info!(
-                "仅保留最新导出：已删除 {} 个旧导出",
-                "Only keep latest dump: removed {} old export(s)",
-                removed
-            );
-        }
-    }
-    let filename = format!(
-        "{}{}{}",
-        crate::fs_utils::SCANNER_EXPORT_PREFIX,
-        timestamp,
-        crate::fs_utils::EXPORT_JSON_SUFFIX
-    );
-    let path = output_dir.join(&filename);
-
-    std::fs::write(&path, &json)?;
+    let path = crate::fs_utils::write_scan_export(
+        &PathBuf::from(&config.output_dir),
+        &json,
+        &chrono_timestamp(),
+        partial,
+        user_config.only_keep_latest_export,
+    )?;
     let path_str = path.display().to_string();
     log_info!("已导出: {}", "Exported to {}", path_str);
 
@@ -2017,6 +2079,34 @@ pub fn run_server_core(
     dump_images: bool,
     dump_job_data: bool,
     status_fn: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
+) -> Result<()> {
+    run_server_core_observed(
+        user_config,
+        server_port,
+        ocr,
+        enabled,
+        shutdown,
+        stop_on_all_matched,
+        filter_involved_sets,
+        dump_images,
+        dump_job_data,
+        status_fn,
+        None,
+    )
+}
+
+pub fn run_server_core_observed(
+    user_config: &GoodUserConfig,
+    server_port: u16,
+    ocr: &OcrEngineArgs,
+    enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop_on_all_matched: bool,
+    filter_involved_sets: bool,
+    dump_images: bool,
+    dump_job_data: bool,
+    status_fn: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
+    native_job: Option<std::sync::Arc<std::sync::Mutex<crate::manager::models::JobState>>>,
 ) -> Result<()> {
     init_rayon_pool();
     crate::scanner::common::annotator::init(dump_images);
@@ -2059,7 +2149,7 @@ pub fn run_server_core(
         scan_artifacts: true,
         dump_images,
         hdr_mode: user_config.hdr_mode,
-        capture_method: capture_method_for_hdr_mode(user_config.hdr_mode),
+        capture_method: CaptureMethod::for_hdr_mode(user_config.hdr_mode),
         ocr: ocr.clone(),
         ..ScanCoreConfig::default()
     };
@@ -2073,7 +2163,7 @@ pub fn run_server_core(
         log_info!("查找游戏窗口...", "Finding game window...");
         let game_info = GoodScannerApplication::get_game_info()?;
         log_info!("初始化屏幕截图...", "Initializing screen capture...");
-        let capture_method = capture_method_for_hdr_mode(exec_user_config.hdr_mode);
+        let capture_method = CaptureMethod::for_hdr_mode(exec_user_config.hdr_mode);
         let ctrl = GenshinGameController::new(game_info, capture_method)?;
         log_info!("加载OCR模型...", "Loading OCR models...");
         let pool_config = exec_user_config.resolve_ocr_pool_config();
@@ -2100,13 +2190,14 @@ pub fn run_server_core(
         }))
     };
 
-    crate::server::run_server(
+    crate::server::run_server_observed(
         server_port,
         init_executor,
         enabled,
         shutdown,
         dump_job_data,
         status_fn,
+        native_job,
     )
 }
 
@@ -2147,7 +2238,7 @@ pub fn run_manage_json(
     let mappings = Arc::new(MappingManager::new(&overrides)?);
 
     let game_info = GoodScannerApplication::get_game_info()?;
-    let capture_method = capture_method_for_hdr_mode(user_config.hdr_mode);
+    let capture_method = CaptureMethod::for_hdr_mode(user_config.hdr_mode);
     let mut ctrl = GenshinGameController::new(game_info, capture_method)?;
     let token = cancel_token.unwrap_or_else(yas::cancel::CancelToken::new);
 
@@ -2173,6 +2264,31 @@ pub fn run_manage_json(
 mod tests {
     use super::*;
     use crate::scanner::common::ocr_pool::OcrSlotBackends;
+
+    #[test]
+    fn stop_on_failure_controls_every_scanner_and_defaults_to_continue() {
+        for (args, stop) in [(vec![], false), (vec!["--stop-on-failure"], true)] {
+            let config = parse_scanner_args(&args);
+            assert_eq!(config.stop_on_failure, stop);
+            let user = GoodUserConfig::default();
+            assert_eq!(
+                GoodScannerApplication::make_char_config(&config, &user).continue_on_failure,
+                !stop
+            );
+            assert_eq!(
+                GoodScannerApplication::make_weapon_config(&config, &user).continue_on_failure,
+                !stop
+            );
+            assert_eq!(
+                GoodScannerApplication::make_artifact_config(&config, &user).continue_on_failure,
+                !stop
+            );
+            assert_eq!(
+                GoodScannerApplication::make_achievement_config(&config, &user).continue_on_failure,
+                !stop
+            );
+        }
+    }
     use clap::{Args, Command, FromArgMatches};
 
     fn parse_scanner_args(args: &[&str]) -> GoodScannerConfig {
@@ -2210,6 +2326,28 @@ mod tests {
         assert_eq!(backends.character, expect("ppocrv5"));
         assert_eq!(backends.weapon, expect("ppocrv4"));
         assert_eq!(backends.artifact, expect("ppocrv4"));
+    }
+
+    #[test]
+    fn retired_capture_method_migrates_without_losing_genshin_preferences() {
+        for hdr_mode in [false, true] {
+            let mut saved = serde_json::json!({
+                "capture_method":"print_window", "hdr_mode":hdr_mode,
+                "traveler_name":"Traveler", "char_tab_delay":750,
+                "scan_artifacts":false, "dump_images":true
+            });
+            sanitize_config_json(&mut saved);
+            let config: GoodUserConfig = serde_json::from_value(saved).unwrap();
+            assert_eq!(config.capture_method, CaptureMethod::for_hdr_mode(hdr_mode));
+            assert_eq!(config.hdr_mode, hdr_mode);
+            assert_eq!(config.traveler_name, "Traveler");
+            assert_eq!(config.char_tab_delay, 750);
+            assert!(!config.scan_artifacts);
+            assert!(config.dump_images);
+            assert!(!serde_json::to_string(&config)
+                .unwrap()
+                .contains("print_window"));
+        }
     }
 
     #[test]

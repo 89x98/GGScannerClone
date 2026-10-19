@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, VecDeque};
 
+use genshin_scanner::scanner::common::ocr_factory::create_ocr_model;
 use image::RgbImage;
 use regex::Regex;
-use yas::ocr::{ImageToText, PPOCRChV4RecInfer};
+use yas::ocr::ImageToText;
 
 use crate::{
     annotator,
@@ -10,7 +11,7 @@ use crate::{
     layout,
     model::{
         CharacterReference, GearReference, ObservedCharacter, ObservedGear, ObservedLightCone,
-        ObservedSubstat, StatReference, StatValueKind,
+        ObservedSubstat, StatReference, StatValueKind, TrailblazerIdentity,
     },
     reference::ReferenceCache,
     scanner_export::CharacterDetails,
@@ -19,6 +20,8 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OcrField {
+    Uid,
+    MenuTitle,
     InventoryQuantity,
     CharacterName,
     CharacterLevel,
@@ -39,6 +42,8 @@ pub enum OcrField {
 impl OcrField {
     pub fn dump_name(self) -> String {
         match self {
+            Self::Uid => "uid".to_string(),
+            Self::MenuTitle => "menu_title".to_string(),
             Self::InventoryQuantity => "quantity".to_string(),
             Self::CharacterName => "character_name".to_string(),
             Self::CharacterLevel => "character_level".to_string(),
@@ -58,32 +63,104 @@ impl OcrField {
     }
 }
 
-pub trait OcrReader {
+pub trait OcrReader: Send {
     fn read(&mut self, field: OcrField, image: &RgbImage) -> HsrResult<String>;
 }
 
-pub struct PaddleOcrReader {
-    model: PPOCRChV4RecInfer,
+/// Picks the recognizer for each field.
+pub trait OcrModels {
+    fn model(&self, field: OcrField) -> &dyn ImageToText<RgbImage>;
+}
+
+type BoxedOcrModel = Box<dyn ImageToText<RgbImage> + Send>;
+
+/// Per-field routing from a live eval against a packet-capture export
+/// (`examples/ocr_field_eval.rs`, 80 Character / 300 Relic / 275 Light Cone
+/// panels). Character name and trace levels were within one read of v4, and
+/// stay on v6 tiny with the other text fields. Fields the eval does not cover
+/// stay on v4.
+pub struct DefaultOcrModels {
+    v4: BoxedOcrModel,
+    v5: BoxedOcrModel,
+    v6_tiny: BoxedOcrModel,
+}
+
+impl DefaultOcrModels {
+    pub fn new() -> HsrResult<Self> {
+        Ok(Self {
+            v4: load_model("ppocrv4")?,
+            v5: load_model("ppocrv5")?,
+            v6_tiny: load_model("ppocrv6tiny")?,
+        })
+    }
+}
+
+fn load_model(backend: &str) -> HsrResult<BoxedOcrModel> {
+    create_ocr_model(backend).map_err(|error| {
+        HsrError::new(
+            "HSR-OCR-MODEL",
+            hints::OCR_FAILED,
+            format!("PaddleOCR {backend} initialization failed; cause={error}"),
+        )
+    })
+}
+
+impl OcrModels for DefaultOcrModels {
+    fn model(&self, field: OcrField) -> &dyn ImageToText<RgbImage> {
+        match field {
+            // A light streak from the 3D preview often crosses the watermark;
+            // v5 read 13/20 such frames, v4 7/20, v6 tiny 6/20.
+            OcrField::Uid => self.v5.as_ref(),
+            // v6 tiny: all six Relic fields 300/300 vs v4 299/300; Light Cone
+            // names 258 vs 257 (v4 read 广 as 廣); Character levels 79 vs 77.
+            // Character names were 77/78 and trace levels were tied at 77/77;
+            // both stay on v6 tiny so one model covers the close text fields.
+            OcrField::GearName
+            | OcrField::GearLevel
+            | OcrField::GearMainName
+            | OcrField::GearMainValue
+            | OcrField::GearSubName(_)
+            | OcrField::GearSubValue(_)
+            | OcrField::LightConeName
+            | OcrField::CharacterLevel
+            | OcrField::CharacterName
+            | OcrField::CharacterSkill(_) => self.v6_tiny.as_ref(),
+            OcrField::MenuTitle
+            | OcrField::InventoryQuantity
+            | OcrField::GearEquipped
+            | OcrField::LightConeLevel
+            | OcrField::LightConeSuperimposition
+            | OcrField::LightConeEquipped => self.v4.as_ref(),
+        }
+    }
+}
+
+pub struct PaddleOcrReader<M = DefaultOcrModels> {
+    models: M,
 }
 
 impl PaddleOcrReader {
     pub fn new() -> HsrResult<Self> {
-        PPOCRChV4RecInfer::new()
-            .map(|model| Self { model })
-            .map_err(|error| {
-                HsrError::new(
-                    "HSR-OCR-MODEL",
-                    hints::OCR_FAILED,
-                    format!("PaddleOCR v4 initialization failed; cause={error}"),
-                )
-            })
+        DefaultOcrModels::new().map(Self::with_models)
     }
 }
 
-impl OcrReader for PaddleOcrReader {
+impl<M: OcrModels> PaddleOcrReader<M> {
+    pub fn with_models(models: M) -> Self {
+        Self { models }
+    }
+}
+
+impl<M: OcrModels + Send> OcrReader for PaddleOcrReader<M> {
     fn read(&mut self, field: OcrField, image: &RgbImage) -> HsrResult<String> {
-        let infer = |model: &PPOCRChV4RecInfer, image: &RgbImage| {
-            model.image_to_text(image, false).map_err(|error| {
+        let model = self.models.model(field);
+        let infer = |image: &RgbImage| {
+            genshin_scanner::scanner::common::annotator::observe_ocr(
+                &field.dump_name(),
+                image,
+                || model.image_to_text(image, false),
+            )
+            .map_err(|error| {
                 HsrError::new(
                     "HSR-OCR-INFERENCE",
                     hints::OCR_FAILED,
@@ -91,7 +168,7 @@ impl OcrReader for PaddleOcrReader {
                 )
             })
         };
-        let text = infer(&self.model, image)?.trim().to_string();
+        let text = infer(image)?.trim().to_string();
         if !text.is_empty() {
             return Ok(text);
         }
@@ -101,7 +178,7 @@ impl OcrReader for PaddleOcrReader {
             "OCR {} was empty on the first read; retrying the same crop.",
             field.dump_name()
         );
-        Ok(infer(&self.model, image)?.trim().to_string())
+        Ok(infer(image)?.trim().to_string())
     }
 }
 
@@ -214,12 +291,8 @@ pub struct ParsedGearPanel {
 }
 
 /// Minimum joint lock/discard icon confidence that the live manager may treat
-/// as actionable. The icon classifier reports `0.0..=1.0`; `0.60` requires a
-/// dominant-minus-competing classified-pixel margin of at least five percent.
-/// Competing gold/neutral evidence at or above thirty percent of the dominant
-/// signal is unknown regardless of its raw pixel count. This maintained
-/// conservative boundary is still subject to the explicitly documented
-/// real-client calibration pass.
+/// as actionable. A crop that matches a live icon cluster reports `1.0`.
+/// A crop that matches none reports `0.0`.
 pub const MANAGED_ICON_CONFIDENCE_THRESHOLD: f64 = 0.60;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -301,14 +374,32 @@ impl<R: OcrReader> PanelParser<R> {
         let name_color_crop = layout.crop(frame, layout::RELIC_NAME)?;
         let rarity =
             detect_rarity(&rarity_crop).or_else(|| detect_rarity_from_name_color(&name_color_crop));
-        annotator::record_ocr(
-            "gear_rarity",
-            rarity_rect,
+        annotator::set_final(
+            "rarity_stars",
             &rarity.map(|value| value.to_string()).unwrap_or_default(),
         );
         let rarity = rarity.ok_or_else(|| ocr_semantic("gear rarity unreadable"))?;
         let level_text = self.read_crop(OcrField::GearLevel, frame, layout, layout::RELIC_LEVEL)?;
-        let level = parse_first_u8(&level_text, 15, "gear level")?;
+        // "+0" is white on the card. The recognizer often turns the plus into a
+        // leading 4 ("40") or returns nothing. Enhanced pieces ("+15") already
+        // parse, so the second read only runs when the first text is unusable.
+        let level = match parse_gear_level(&level_text) {
+            Some(level) => level,
+            None => {
+                let boosted = dark_glyphs_on_white(&layout.crop(frame, layout::RELIC_LEVEL)?);
+                let retry = self.reader.read(OcrField::GearLevel, &boosted)?;
+                annotator::record_ocr(
+                    "gear_level",
+                    layout.panel.relative(layout::RELIC_LEVEL),
+                    &retry,
+                );
+                parse_gear_level(&retry).ok_or_else(|| {
+                    ocr_semantic(format!(
+                        "gear level was missing or outside 0..=15; text={level_text:?}; retry={retry:?}"
+                    ))
+                })?
+            },
+        };
 
         let mut main_name = self.read_crop(
             OcrField::GearMainName,
@@ -380,6 +471,12 @@ impl<R: OcrReader> PanelParser<R> {
 
         let mut substats = Vec::new();
         for index in 0..4 {
+            let value_image = layout.crop(frame, layout::relic_sub_value(index))?;
+            // Lines are a contiguous prefix. A blank value column is the end of
+            // the list; the set-bonus paragraph below it is not another substat.
+            if !substat_value_ink(&value_image) {
+                break;
+            }
             let name = self.read_crop(
                 OcrField::GearSubName(index),
                 frame,
@@ -392,8 +489,8 @@ impl<R: OcrReader> PanelParser<R> {
                 layout,
                 layout::relic_sub_value(index),
             )?;
-            if name.trim().is_empty() && value.trim().is_empty() {
-                continue;
+            if value.trim().is_empty() {
+                break;
             }
             let stat = resolve_stat_with_context(references, strip_inactive_suffix(&name), &value)
                 .ok_or_else(|| {
@@ -429,17 +526,9 @@ impl<R: OcrReader> PanelParser<R> {
         let lock_rect = layout.lock_button(InventoryKind::Gear);
         let lock_crop = lock_rect.crop(frame)?;
         let (lock, lock_confidence) = detect_icon_state(&lock_crop);
-        record_icon("gear_lock", lock_rect, &lock_crop, lock, lock_confidence);
         let discard_rect = layout.discard_button();
         let discard_crop = discard_rect.crop(frame)?;
         let (discard, discard_confidence) = detect_discard_state(&discard_crop);
-        record_icon(
-            "gear_discard",
-            discard_rect,
-            &discard_crop,
-            discard,
-            discard_confidence,
-        );
 
         Ok(ParsedGearPanel {
             observation: ObservedGear {
@@ -473,9 +562,11 @@ impl<R: OcrReader> PanelParser<R> {
             layout,
             layout::LIGHT_CONE_NAME,
         )?;
-        let reference = references
-            .resolve_light_cone_name(&name)
-            .ok_or_else(|| ocr_semantic("Light Cone name did not resolve uniquely"))?;
+        let reference = references.resolve_light_cone_name(&name).ok_or_else(|| {
+            ocr_semantic(format!(
+                "Light Cone name did not resolve uniquely; text={name}"
+            ))
+        })?;
         annotator::set_final(
             OcrField::LightConeName.dump_name().as_str(),
             &reference.game_id.to_string(),
@@ -505,13 +596,6 @@ impl<R: OcrReader> PanelParser<R> {
         let lock_rect = layout.lock_button(InventoryKind::LightCone);
         let lock_crop = lock_rect.crop(frame)?;
         let (lock, icon_confidence) = detect_icon_state(&lock_crop);
-        record_icon(
-            "light_cone_lock",
-            lock_rect,
-            &lock_crop,
-            lock,
-            icon_confidence,
-        );
         Ok(ParsedLightConePanel {
             observation: ObservedLightCone {
                 light_cone_id: reference.game_id,
@@ -533,8 +617,19 @@ impl<R: OcrReader> PanelParser<R> {
         &mut self,
         frame: &RgbImage,
         references: &ReferenceCache,
+        trailblazer: Option<&TrailblazerIdentity>,
         eidolon: u8,
     ) -> HsrResult<ParsedCharacterPanel> {
+        let reference = self.parse_character_identity(frame, references, trailblazer)?;
+        self.parse_character_level(frame, reference, eidolon)
+    }
+
+    pub fn parse_character_identity(
+        &mut self,
+        frame: &RgbImage,
+        references: &ReferenceCache,
+        trailblazer: Option<&TrailblazerIdentity>,
+    ) -> HsrResult<CharacterReference> {
         let name_crop = layout::CHARACTER_NAME.crop(frame)?;
         let name_text = self.reader.read(OcrField::CharacterName, &name_crop)?;
         annotator::record_ocr(
@@ -543,22 +638,28 @@ impl<R: OcrReader> PanelParser<R> {
             &name_text,
         );
         let (path_text, character_name) = character_header_segments(&name_text);
-        let reference = path_text
-            .map_or_else(
-                || references.resolve_character_name(character_name),
-                |path| references.resolve_character_name_and_path(character_name, path),
-            )
+        let reference = references
+            .resolve_character_header(character_name, path_text, trailblazer)
             .cloned()
             .ok_or_else(|| {
                 ocr_resolution(
                     "HSR-OCR-CHARACTER-AMBIGUOUS",
-                    "character name did not resolve uniquely; duplicate variants and renameable characters require independent path/variant evidence or explicit user configuration",
+                    format!("character header {name_text:?} did not resolve uniquely; duplicate variants need readable path evidence and the Trailblazer needs the configured nickname and gender"),
                 )
             })?;
         annotator::set_final(
             OcrField::CharacterName.dump_name().as_str(),
             &reference.game_id.to_string(),
         );
+        Ok(reference)
+    }
+
+    pub fn parse_character_level(
+        &mut self,
+        frame: &RgbImage,
+        reference: CharacterReference,
+        eidolon: u8,
+    ) -> HsrResult<ParsedCharacterPanel> {
         let level_crop = layout::CHARACTER_LEVEL.crop(frame)?;
         let level_text = self.reader.read(OcrField::CharacterLevel, &level_crop)?;
         annotator::record_ocr(
@@ -578,36 +679,67 @@ impl<R: OcrReader> PanelParser<R> {
         })
     }
 
+    /// Whether the top-left menu title contains any of `needles` (lowercase).
+    pub fn shows_menu_title(&mut self, frame: &RgbImage, needles: &[&str]) -> HsrResult<bool> {
+        let text = self
+            .reader
+            .read(OcrField::MenuTitle, &layout::MENU_TITLE.crop(frame)?)?;
+        annotator::record_ocr(
+            OcrField::MenuTitle.dump_name().as_str(),
+            layout::MENU_TITLE,
+            &text,
+        );
+        let text = text.to_lowercase();
+        Ok(needles.iter().any(|needle| text.contains(needle)))
+    }
+
+    pub fn read_uid(&mut self, frame: &RgbImage) -> HsrResult<Option<u64>> {
+        let text = self.reader.read(OcrField::Uid, &layout::UID.crop(frame)?)?;
+        annotator::record_ocr(OcrField::Uid.dump_name().as_str(), layout::UID, &text);
+        Ok(parse_uid(&text))
+    }
+
     pub fn parse_character_traces(
         &mut self,
         frame: &RgbImage,
         path: &str,
+        eidolon: u8,
     ) -> HsrResult<CharacterDetails> {
         let layout = layout::traces_for_path(path)
             .ok_or_else(|| ocr_semantic(format!("no traces layout for path={path}")))?;
         let mut skills = BTreeMap::new();
         let mut memosprite = BTreeMap::new();
         for &(key, x, y) in layout.skills {
-            let rect = layout::skill_level_rect(x, y);
+            let rect = layout::skill_level_rect(key, x, y);
             let crop = rect.crop(frame)?;
             let field = OcrField::CharacterSkill(key);
             let text = self.reader.read(field, &crop)?;
             annotator::record_ocr(&field.dump_name(), rect, &text);
-            let level = parse_trace_level(&text, key)?;
+            let parsed = parse_trace_level(&text, key, eidolon)?;
+            let level = parsed.level;
+            annotator::set_final(&field.dump_name(), &level.to_string());
+            if parsed.repaired_max {
+                yas::log_info!(
+                    "技能等级 OCR 分隔符已唯一校正：{}，{:?} → {}/{}（基础等级 {}）。",
+                    "Uniquely repaired skill OCR separator: {}, {:?} -> {}/{} (base level {}).",
+                    key,
+                    text,
+                    parsed.shown,
+                    parsed.shown_max,
+                    level
+                );
+            }
             if let Some(memo_key) = key.strip_prefix("memosprite_") {
                 memosprite.insert(memo_key.to_string(), u32::from(level));
             } else {
                 skills.insert(key.to_string(), u32::from(level));
             }
         }
-        let mut traces = BTreeMap::new();
-        for &(key, x, y) in layout.unlocks {
-            traces.insert(key.to_string(), trace_node_unlocked(frame, x, y));
-        }
         Ok(CharacterDetails {
             ability_version: None,
             skills,
-            traces,
+            // One-time unlock nodes are outside the screenshot scan contract.
+            traces: BTreeMap::new(),
             memosprite: (!memosprite.is_empty()).then_some(memosprite),
         })
     }
@@ -627,31 +759,168 @@ impl<R: OcrReader> PanelParser<R> {
     }
 }
 
-fn parse_trace_level(text: &str, key: &str) -> HsrResult<u8> {
-    if !text.contains('/') {
-        return Err(ocr_semantic(format!(
-            "trace level for {key} missing slash; got {text:?}"
-        )));
+/// The `UID` prefix can OCR as `U1D`, so only a single nine- or ten-digit run
+/// counts; a stray prefix digit stays a separate run.
+fn parse_uid(text: &str) -> Option<u64> {
+    let runs: Vec<&str> = text
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|run| (9..=10).contains(&run.len()))
+        .collect();
+    match runs.as_slice() {
+        [uid] => uid.parse().ok(),
+        _ => None,
     }
-    let maximum = match key {
+}
+
+/// Eidolons raise both the displayed level and its maximum (`8/12`, `5/7`).
+/// Exports carry the base level, so the bonus `shown_max - base_max` is
+/// removed. OCR often reads the slash as `1` (`6/6` → `616`); a slashless
+/// reading is accepted only when exactly one `1` split yields a legal pair.
+/// An extra denominator `1` is removed only when the observed eidolon rank
+/// permits one maximum. Ambiguous E3/E5 skill-bonus assignments are not guessed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedTraceLevel {
+    level: u8,
+    shown: u8,
+    shown_max: u8,
+    repaired_max: bool,
+}
+
+fn parse_trace_level(text: &str, key: &str, eidolon: u8) -> HsrResult<ParsedTraceLevel> {
+    let base_max: u8 = match key {
         "basic" | "memosprite_skill" | "memosprite_talent" => 6,
         _ => 10,
     };
-    parse_first_u8(text, maximum, &format!("trace {key}"))
-}
-
-fn trace_node_unlocked(image: &RgbImage, x: f64, y: f64) -> bool {
-    let [r, g, b] = sample_pixel(image, x, y);
-    let dist = |tr: i32, tg: i32, tb: i32| {
-        (i32::from(r) - tr).pow(2) + (i32::from(g) - tg).pow(2) + (i32::from(b) - tb).pow(2)
+    let bonus = if base_max == 6 { 1 } else { 2 };
+    let legal_maxima: &[u8] = match eidolon {
+        0..=2 => &[base_max],
+        5..=6 if key != "elation" => &[base_max + bonus],
+        _ => &[base_max, base_max + bonus],
     };
-    dist(255, 255, 255).min(dist(178, 200, 255)) < 3000
+    let legal = |shown: u8, shown_max: u8| {
+        legal_maxima.contains(&shown_max)
+            && shown >= 1 + (shown_max - base_max)
+            && shown <= shown_max
+    };
+    let compact: String = text
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '/')
+        .collect();
+    let mut repaired_max = false;
+    let pairs: std::collections::BTreeSet<(u8, u8)> = match compact.split_once('/') {
+        Some((shown_text, max_text)) => {
+            let original = shown_text.parse().ok().zip(max_text.parse().ok());
+            if original.is_some_and(|(shown, maximum)| legal(shown, maximum)) {
+                original.into_iter().collect()
+            } else {
+                // Do not change the numerator or guess a maximum. Remove one
+                // OCR-inserted '1' from the denominator, accepting only a unique
+                // legal pair for this skill and observed eidolon rank.
+                if legal_maxima.len() != 1 {
+                    return Err(ocr_semantic(format!(
+                        "ambiguous skill maximum for {key} at eidolon={eidolon}; got {text:?}"
+                    )));
+                }
+                repaired_max = true;
+                max_text
+                    .char_indices()
+                    .filter(|&(_, c)| c == '1')
+                    .filter_map(|(index, _)| {
+                        let maximum = format!("{}{}", &max_text[..index], &max_text[index + 1..]);
+                        Some((shown_text.parse().ok()?, maximum.parse().ok()?))
+                    })
+                    .filter(|&(shown, maximum)| legal(shown, maximum))
+                    .collect()
+            }
+        },
+        None => compact
+            .char_indices()
+            .filter(|&(index, c)| c == '1' && index > 0 && index + 1 < compact.len())
+            .filter_map(|(index, _)| {
+                Some((
+                    compact[..index].parse().ok()?,
+                    compact[index + 1..].parse().ok()?,
+                ))
+            })
+            .filter(|&(shown, shown_max)| legal(shown, shown_max))
+            .collect(),
+    };
+    if pairs.len() == 1 {
+        let (shown, shown_max) = *pairs.first().unwrap();
+        if legal(shown, shown_max) {
+            return Ok(ParsedTraceLevel {
+                level: shown - (shown_max - base_max),
+                shown,
+                shown_max,
+                repaired_max,
+            });
+        }
+    }
+    Err(ocr_semantic(format!(
+        "trace level for {key} is not a legal level/max pair; got {text:?}"
+    )))
 }
 
-fn sample_pixel(image: &RgbImage, x: f64, y: f64) -> [u8; 3] {
-    let px = ((x * f64::from(image.width())).round() as u32).min(image.width().saturating_sub(1));
-    let py = ((y * f64::from(image.height())).round() as u32).min(image.height().saturating_sub(1));
-    image.get_pixel(px, py).0
+/// Relic levels are `+0` through `+15`. A leading plus is often read as `4`,
+/// so `+0` arrives as `40` and `+12` as `412`.
+fn substat_value_ink(image: &RgbImage) -> bool {
+    annotator::record_detection("substat_value_ink", image);
+    let ink = image
+        .pixels()
+        .filter(|pixel| {
+            let [r, g, b] = pixel.0;
+            let white = r > 200 && g > 200 && b > 200;
+            let orange = r > 175 && g > 100 && r > b.saturating_add(40);
+            white || orange
+        })
+        .count();
+    ink >= 12
+}
+
+fn parse_gear_level(text: &str) -> Option<u8> {
+    let regex = Regex::new(r"\d+").expect("static regex");
+    let numbers: Vec<u32> = regex
+        .find_iter(text)
+        .filter_map(|capture| capture.as_str().parse().ok())
+        .collect();
+    if let Some(value) = numbers.iter().copied().find(|value| *value <= 15) {
+        return Some(value as u8);
+    }
+    for value in numbers {
+        let digits = value.to_string();
+        let Some(rest) = digits.strip_prefix('4') else {
+            continue;
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        if let Ok(level) = rest.parse::<u32>() {
+            if level <= 15 {
+                return Some(level as u8);
+            }
+        }
+    }
+    // The white "+0" glyph is read as "+古" (or "+口" after a contrast retry).
+    // A real level is "+1"…"+"15", so a plus and one zero-like character is 0.
+    let trimmed = text.trim();
+    if let Some(rest) = trimmed.strip_prefix('+') {
+        let rest = rest.trim();
+        const ZERO_GLYPHS: &[char] = &['古', '口', '〇', '○', '日', '曰', 'Ｏ', 'O', 'o', '０'];
+        if rest.chars().count() == 1 && ZERO_GLYPHS.contains(&rest.chars().next().unwrap_or('\0')) {
+            return Some(0);
+        }
+    }
+    None
+}
+
+fn dark_glyphs_on_white(image: &RgbImage) -> RgbImage {
+    let mut output = image.clone();
+    for pixel in output.pixels_mut() {
+        let [r, g, b] = pixel.0;
+        let glyph = r > 210 && g > 210 && b > 210;
+        pixel.0 = if glyph { [0, 0, 0] } else { [255, 255, 255] };
+    }
+    output
 }
 
 fn parse_first_u8(text: &str, maximum: u8, label: &str) -> HsrResult<u8> {
@@ -666,18 +935,55 @@ fn parse_first_u8(text: &str, maximum: u8, label: &str) -> HsrResult<u8> {
 
 fn parse_level_and_cap(text: &str) -> HsrResult<(u8, u8)> {
     let regex = Regex::new(r"\d+").expect("static regex");
-    let values: Vec<u8> = regex
+    let runs: Vec<&str> = regex
         .find_iter(text)
-        .filter_map(|capture| capture.as_str().parse().ok())
+        .map(|capture| capture.as_str())
         .collect();
-    let level = *values
+    let first = runs
         .first()
         .ok_or_else(|| ocr_semantic("level was unreadable"))?;
-    let cap = values.get(1).copied().unwrap_or_else(|| infer_cap(level));
+    let (level, cap) = match first.parse::<u8>().ok().filter(|level| *level <= 100) {
+        Some(level) => (
+            level,
+            runs.get(1)
+                .and_then(|cap| cap.parse().ok())
+                .unwrap_or_else(|| infer_cap(level)),
+        ),
+        None => {
+            split_misread_level_slash(first).ok_or_else(|| ocr_semantic("level was unreadable"))?
+        },
+    };
     if !(1..=100).contains(&level) || !(20..=100).contains(&cap) || level > cap {
         return Err(ocr_semantic("level/cap values are mechanically invalid"));
     }
     Ok((level, cap))
+}
+
+/// The dim cap after the slash is often truncated, and the slash itself is
+/// either dropped (`1/20` → `120`) or read as `7` or `1` (`80/80` → `8078`).
+/// Accept a split only when exactly one reading gives a level inside its
+/// ascension band (cap−10..=cap) and a cap whose visible prefix matches.
+fn split_misread_level_slash(digits: &str) -> Option<(u8, u8)> {
+    const CAPS: [u8; 7] = [20, 30, 40, 50, 60, 70, 80];
+    let mut readings = (1..digits.len().min(3))
+        .flat_map(|at| {
+            let slash_misread = matches!(digits.as_bytes()[at], b'7' | b'1');
+            [(at, at), (at, at + 1)]
+                .into_iter()
+                .filter(move |&(end, resume)| resume == end || slash_misread)
+        })
+        .flat_map(|(end, resume)| {
+            let level = digits[..end].parse::<u8>().ok();
+            let suffix = &digits[resume..];
+            CAPS.iter().filter_map(move |&cap| {
+                let level = level?;
+                let floor = if cap == 20 { 1 } else { cap - 10 };
+                ((floor..=cap).contains(&level) && cap.to_string().starts_with(suffix))
+                    .then_some((level, cap))
+            })
+        });
+    let reading = readings.next()?;
+    readings.next().is_none().then_some(reading)
 }
 
 fn infer_cap(level: u8) -> u8 {
@@ -807,7 +1113,7 @@ fn parse_equipped(
             .replace("已装备", "")
             .replace("已裝備", "");
         let location = references
-            .resolve_character_name(&stripped)
+            .resolve_character_name_exact(&stripped)
             .map(|reference| reference.key.clone());
         return (Some(true), location);
     }
@@ -822,95 +1128,148 @@ fn parse_equipped(
     }
 }
 
-/// Tri-state icon classifier. Gold pixels identify an active lock/mark; a
-/// clear neutral-white glyph identifies the inactive state. Low-contrast or
-/// mixed evidence remains unknown and is never coerced to false.
+/// Inventory Path badges have decorative borders absent from Character
+/// headers. Match their neutral bright glyphs, independently of the portrait
+/// and the gold/black item background. Unknown/new badges fail closed.
+/// The sanitized atlas contains Hunt, Harmony, Preservation, Remembrance,
+/// and Elation: the currently observable multi-Path equipment badges.
+pub fn detect_equipped_path(strip: &RgbImage) -> Option<&'static str> {
+    annotator::record_detection("equipped_path_strip", strip);
+    let atlas = image::load_from_memory(include_bytes!("assets/equipped_path_badges.png"))
+        .ok()?
+        .to_rgb8();
+    let strip = image::imageops::resize(strip, 308, 60, image::imageops::FilterType::Nearest);
+    let paths = ["Rogue", "Shaman", "Knight", "Memory", "Elation"];
+    let mut scores = Vec::new();
+    for (index, path) in paths.into_iter().enumerate() {
+        let mut best = 0.0_f64;
+        // Label length/localization can shift the centered avatar and badge.
+        // Search only the left side, never the Equipped text on the right.
+        for y in 10..=26 {
+            for x in 12..=126 {
+                let mut intersection = 0_usize;
+                let mut union = 0_usize;
+                for dy in 0..34 {
+                    for dx in 0..34 {
+                        let expected = atlas.get_pixel(index as u32 * 34 + dx, dy)[0] > 180;
+                        let actual = strip
+                            .get_pixel(x + dx, y + dy)
+                            .0
+                            .iter()
+                            .all(|value| *value > 180);
+                        intersection += usize::from(expected && actual);
+                        union += usize::from(expected || actual);
+                    }
+                }
+                if union > 0 {
+                    best = best.max(intersection as f64 / union as f64);
+                }
+            }
+        }
+        scores.push((path, best));
+    }
+    scores.sort_by(|left, right| right.1.total_cmp(&left.1));
+    (scores[0].1 >= 0.78 && scores[0].1 - scores[1].1 >= 0.15).then_some(scores[0].0)
+}
+
+/// Closed versus open padlock.
+///
+/// On relics the closed lock is a white keycap with a black body, and the
+/// open lock is a thin light stroke on the gold card (or a dim tan outline
+/// once the relic is marked for discard). On light cones both states are a
+/// white glyph on a black disk; the closed body fills about three times as
+/// many pixels as the open outline. Gold from the relic card is not a lock.
 pub fn detect_icon_state(image: &RgbImage) -> (Option<bool>, f64) {
+    genshin_scanner::scanner::common::annotator::observe_detection("lock_icon", image, || {
+        detect_icon_pixels(image)
+    })
+}
+
+fn detect_icon_pixels(image: &RgbImage) -> (Option<bool>, f64) {
     if image.as_raw().is_empty() {
         return (None, 0.0);
     }
+    let mut white = 0_usize;
+    let mut dark = 0_usize;
     let mut gold = 0_usize;
-    let mut neutral = 0_usize;
     for pixel in image.pixels() {
         let [r, g, b] = pixel.0;
+        if r > 200 && g > 200 && b > 200 {
+            white += 1;
+        }
+        if r < 48 && g < 48 && b < 48 {
+            dark += 1;
+        }
         if r > 155 && g > 105 && r > b.saturating_add(35) && g > b.saturating_add(15) {
             gold += 1;
         }
-        if r > 165 && g > 165 && b > 165 && r.abs_diff(g) < 28 && g.abs_diff(b) < 28 {
-            neutral += 1;
-        }
     }
-    let total = image.width() as usize * image.height() as usize;
-    let gold_ratio = gold as f64 / total.max(1) as f64;
-    let neutral_ratio = neutral as f64 / total.max(1) as f64;
-    let (state, dominant, competing, recognition_floor) = if gold_ratio > neutral_ratio {
-        (true, gold_ratio, neutral_ratio, 0.018)
-    } else {
-        (false, neutral_ratio, gold_ratio, 0.022)
-    };
-
-    // A strong total count is not useful when the two mutually-exclusive UI
-    // states both have substantial support. Unknown gets zero confidence so a
-    // mixed lock crop also makes the joint lock/discard manager evidence
-    // non-actionable rather than allowing the other icon through by itself.
-    if dominant <= recognition_floor || competing >= dominant * 0.30 {
-        return (None, 0.0);
+    let total = (image.width() as usize * image.height() as usize).max(1) as f64;
+    let white_ratio = white as f64 / total;
+    let dark_ratio = dark as f64 / total;
+    let gold_ratio = gold as f64 / total;
+    if white_ratio >= 0.22 && dark_ratio >= 0.04 {
+        return (Some(true), 1.0);
     }
-
-    let confidence = ((dominant - competing) * 12.0).min(1.0);
-    (Some(state), confidence)
+    if (0.08..0.22).contains(&white_ratio) {
+        return (Some(false), 1.0);
+    }
+    // Discarded relics draw the open padlock in the card's own tan, with no
+    // white keycap. A flat gold or flat white crop has no outline.
+    if white_ratio < 0.08 && gold_ratio >= 0.45 && edge_density(image) >= 0.05 {
+        return (Some(false), 1.0);
+    }
+    (None, 0.0)
 }
 
-/// Discard sits on the 5-star gold card. Card chrome is not a discard mark.
-/// kel-z template-matches the lit trash icon; we keep that idea fail-closed:
-/// red/orange fill is discarded, a gray/white glyph without that fill is not,
-/// and gold-only chrome stays unknown.
+/// Trash-can mark.
+///
+/// Gray is the muted can on a locked relic: discard stays off until the relic
+/// is unlocked. White is the same can on an unlocked relic that is not marked;
+/// the button is available. A red can on a white disk is the marked state.
+/// The gold card around the can is not a mark.
 pub fn detect_discard_state(image: &RgbImage) -> (Option<bool>, f64) {
+    genshin_scanner::scanner::common::annotator::observe_detection("discard_icon", image, || {
+        detect_discard_pixels(image)
+    })
+}
+
+fn detect_discard_pixels(image: &RgbImage) -> (Option<bool>, f64) {
     if image.as_raw().is_empty() {
         return (None, 0.0);
     }
     let mut red = 0_usize;
     let mut gray = 0_usize;
     let mut white = 0_usize;
-    let mut card_gold = 0_usize;
     for pixel in image.pixels() {
         let [r, g, b] = pixel.0;
-        let is_red = r > 170 && r > g.saturating_add(50) && g < 140 && b < 120;
-        if is_red {
+        if r > 150 && g < 110 && b < 110 && r > g.saturating_add(40) {
             red += 1;
             continue;
         }
-        if r > 165 && g > 165 && b > 165 && r.abs_diff(g) < 28 && g.abs_diff(b) < 28 {
+        if r > 185 && g > 185 && b > 185 {
             white += 1;
             continue;
         }
-        if r.abs_diff(g) < 25 && g.abs_diff(b) < 25 && (60..160).contains(&r) {
+        if r.abs_diff(g) < 18 && g.abs_diff(b) < 18 && (70..180).contains(&r) {
             gray += 1;
-            continue;
-        }
-        if r > 155 && g > 105 && r > b.saturating_add(35) && g > b.saturating_add(15) {
-            card_gold += 1;
         }
     }
     let total = (image.width() as usize * image.height() as usize).max(1) as f64;
     let red_ratio = red as f64 / total;
     let gray_ratio = gray as f64 / total;
     let white_ratio = white as f64 / total;
-    let gold_ratio = card_gold as f64 / total;
-
-    if red_ratio >= 0.08 && red_ratio >= gray_ratio && red_ratio >= white_ratio {
-        return (Some(true), (red_ratio * 8.0).min(1.0));
+    if red_ratio >= 0.06 {
+        return (Some(true), 1.0);
     }
-    if white_ratio >= 0.022 && white_ratio > gold_ratio && white_ratio >= red_ratio * 3.0 {
-        return (Some(false), ((white_ratio - red_ratio) * 12.0).min(1.0));
-    }
-    if gray_ratio >= 0.08 && red_ratio < 0.03 && gray_ratio >= gold_ratio * 0.30 {
-        return (Some(false), (gray_ratio * 6.0).min(1.0));
+    if gray_ratio >= 0.10 || white_ratio >= 0.08 {
+        return (Some(false), 1.0);
     }
     (None, 0.0)
 }
 
 fn edge_density(image: &RgbImage) -> f64 {
+    annotator::record_detection("glyph_edge_density", image);
     if image.width() < 2 || image.height() < 2 {
         return 0.0;
     }
@@ -935,6 +1294,7 @@ fn edge_density(image: &RgbImage) -> f64 {
 }
 
 fn detect_rarity(image: &RgbImage) -> Option<u8> {
+    annotator::record_detection("rarity_stars", image);
     // Count separated bright/gold runs along the horizontal star strip. This
     // intentionally ignores exact RGB constants and scales with the crop.
     let mut active_columns = Vec::with_capacity(image.width() as usize);
@@ -970,6 +1330,7 @@ fn detect_rarity(image: &RgbImage) -> Option<u8> {
 /// gold/purple/blue. This is a fallback only after the star-run detector
 /// returns nothing, so a real star crop is never overridden.
 fn detect_rarity_from_name_color(image: &RgbImage) -> Option<u8> {
+    annotator::record_detection("rarity_name_color", image);
     let mut gold = 0_u32;
     let mut purple = 0_u32;
     let mut blue = 0_u32;
@@ -996,13 +1357,6 @@ fn detect_rarity_from_name_color(image: &RgbImage) -> Option<u8> {
     }
 }
 
-fn record_icon(field: &str, rect: NormRect, crop: &RgbImage, state: Option<bool>, confidence: f64) {
-    let summary = format!("state={state:?} confidence={confidence:.2}");
-    annotator::record_ocr(field, rect, &summary);
-    let pixel = crop.get_pixel(crop.width() / 2, crop.height() / 2).0;
-    annotator::record_pixel(field, rect.center(), pixel, &summary);
-}
-
 fn ocr_semantic(detail: impl Into<String>) -> HsrError {
     HsrError::new("HSR-OCR-SEMANTIC", hints::OCR_FAILED, detail)
 }
@@ -1023,6 +1377,119 @@ mod tests {
         },
         reference::GiloreBundleReferenceProvider,
     };
+
+    #[test]
+    fn single_unlock_nodes_are_omitted_from_screen_details() {
+        // Sanitized live node pixels only: no character, account, or UID text.
+        let frame = image::load_from_memory(include_bytes!(
+            "../tests/fixtures/abundance_partial_trace_nodes.png"
+        ))
+        .unwrap()
+        .to_rgb8();
+        let mut reader = ScriptedOcrReader::default();
+        for key in ["basic", "skill", "ult", "talent"] {
+            reader = reader.with(
+                OcrField::CharacterSkill(key),
+                [if key == "basic" { "1/6" } else { "1/10" }],
+            );
+        }
+        let details = PanelParser::new(reader)
+            .parse_character_traces(&frame, "Priest", 0)
+            .unwrap();
+        assert!(details.traces.is_empty());
+        assert!(serde_json::to_value(details)
+            .unwrap()
+            .get("traces")
+            .is_none());
+    }
+
+    #[test]
+    fn uid_reads_the_single_long_digit_run() {
+        assert_eq!(parse_uid("UID:600732506"), Some(600_732_506));
+        assert_eq!(parse_uid("U1D 600732506"), Some(600_732_506));
+        assert_eq!(parse_uid("UID:1234567890"), Some(1_234_567_890));
+        assert_eq!(parse_uid("UID:6007325"), None);
+        assert_eq!(parse_uid(""), None);
+    }
+
+    #[test]
+    fn trace_level_removes_the_eidolon_bonus_and_recovers_a_misread_slash() {
+        assert_eq!(parse_trace_level("6/6", "basic", 0).unwrap().level, 6);
+        assert_eq!(parse_trace_level("5/7", "basic", 6).unwrap().level, 4);
+        assert_eq!(parse_trace_level("9/12", "skill", 6).unwrap().level, 7);
+        assert_eq!(parse_trace_level("10/10", "ult", 0).unwrap().level, 10);
+        assert_eq!(parse_trace_level("12/12", "talent", 6).unwrap().level, 10);
+        assert_eq!(parse_trace_level("616", "basic", 0).unwrap().level, 6);
+        assert_eq!(parse_trace_level("417", "basic", 6).unwrap().level, 3);
+        assert_eq!(parse_trace_level("10110", "skill", 0).unwrap().level, 10);
+        assert!(parse_trace_level("7/6", "basic", 0).is_err());
+        assert!(parse_trace_level("1/12", "skill", 6).is_err());
+        assert!(parse_trace_level("66", "basic", 0).is_err());
+    }
+
+    #[test]
+    fn inserted_one_is_repaired_only_for_a_unique_eidolon_maximum() {
+        for (raw, key, rank, expected, maximum) in [
+            ("5/17", "basic", 6, 4, 7),
+            ("3/17", "basic", 6, 2, 7),
+            ("10/110", "elation", 2, 10, 10),
+            ("10/112", "skill", 6, 8, 12),
+        ] {
+            let parsed = parse_trace_level(raw, key, rank).unwrap();
+            assert_eq!(
+                (parsed.level, parsed.shown_max, parsed.repaired_max),
+                (expected, maximum, true)
+            );
+        }
+        for (raw, key, rank) in [
+            ("5/17", "basic", 0),
+            ("5/17", "basic", 3),
+            ("5/18", "basic", 6),
+            ("10/1110", "skill", 0),
+            ("1/12", "skill", 6),
+        ] {
+            assert!(
+                parse_trace_level(raw, key, rank).is_err(),
+                "{raw}/{key}/E{rank}"
+            );
+        }
+    }
+
+    #[test]
+    fn elation_skill_is_read_without_single_unlock_nodes() {
+        let mut reader = ScriptedOcrReader::default();
+        for key in ["basic", "skill", "ult", "talent", "elation"] {
+            reader = reader.with(
+                OcrField::CharacterSkill(key),
+                [if key == "basic" { "4/6" } else { "10/10" }],
+            );
+        }
+        let details = PanelParser::new(reader)
+            .parse_character_traces(
+                &RgbImage::from_pixel(1920, 1080, Rgb([0, 0, 0])),
+                "Elation",
+                2,
+            )
+            .unwrap();
+        assert_eq!(details.skills.len(), 5);
+        assert_eq!(details.skills["elation"], 10);
+        assert!(details.traces.is_empty());
+    }
+
+    #[test]
+    fn gear_level_treats_a_leading_four_as_a_misread_plus() {
+        assert_eq!(parse_gear_level("+15"), Some(15));
+        assert_eq!(parse_gear_level("15"), Some(15));
+        assert_eq!(parse_gear_level("0"), Some(0));
+        assert_eq!(parse_gear_level("+0"), Some(0));
+        assert_eq!(parse_gear_level("40"), Some(0));
+        assert_eq!(parse_gear_level("412"), Some(12));
+        assert_eq!(parse_gear_level("415"), Some(15));
+        assert_eq!(parse_gear_level("+古"), Some(0));
+        assert_eq!(parse_gear_level("+口"), Some(0));
+        assert_eq!(parse_gear_level(""), None);
+        assert_eq!(parse_gear_level("99"), None);
+    }
 
     fn references() -> ReferenceCache {
         let snapshot: ReferenceSnapshot =
@@ -1119,6 +1586,50 @@ mod tests {
         }
     }
 
+    fn rect_bounds(image: &RgbImage, rect: NormRect) -> (u32, u32, u32, u32) {
+        let x0 = (rect.x * image.width() as f64).floor() as u32;
+        let y0 = (rect.y * image.height() as f64).floor() as u32;
+        let x1 = ((rect.x + rect.width) * image.width() as f64)
+            .ceil()
+            .min(image.width() as f64) as u32;
+        let y1 = ((rect.y + rect.height) * image.height() as f64)
+            .ceil()
+            .min(image.height() as f64) as u32;
+        (x0, y0, x1, y1)
+    }
+
+    fn paint_closed_padlock(image: &mut RgbImage, rect: NormRect) {
+        paint_rect(image, rect, Rgb([210, 168, 90]));
+        let (x0, y0, x1, y1) = rect_bounds(image, rect);
+        let width = x1.saturating_sub(x0);
+        let height = y1.saturating_sub(y0);
+        let inset_x = width / 5;
+        let inset_y = height / 5;
+        for y in y0 + inset_y..y1.saturating_sub(inset_y) {
+            for x in x0 + inset_x..x1.saturating_sub(inset_x) {
+                image.put_pixel(x, y, Rgb([236, 236, 236]));
+            }
+        }
+        let body_x = width / 3;
+        let body_y = height / 3;
+        for y in y0 + body_y..y1.saturating_sub(body_y) {
+            for x in x0 + body_x..x1.saturating_sub(body_x) {
+                image.put_pixel(x, y, Rgb([18, 18, 18]));
+            }
+        }
+    }
+
+    fn paint_open_padlock(image: &mut RgbImage, rect: NormRect) {
+        paint_rect(image, rect, Rgb([12, 12, 16]));
+        let (x0, y0, x1, y1) = rect_bounds(image, rect);
+        let band = ((y1 - y0) / 8).max(1);
+        for y in y0..y0 + band {
+            for x in x0..x1 {
+                image.put_pixel(x, y, Rgb([230, 230, 230]));
+            }
+        }
+    }
+
     fn generated_panel_frame(lock: Rgb<u8>, discard: Rgb<u8>) -> RgbImage {
         generated_panel_frame_with_rarity(lock, discard, 5)
     }
@@ -1146,6 +1657,12 @@ mod tests {
         paint_rect(&mut frame, layout.lock_button(InventoryKind::Gear), lock);
         paint_rect(&mut frame, layout.discard_button(), discard);
         paint_text_evidence(&mut frame, layout.panel.relative(layout::RELIC_EQUIPPED));
+        for index in 0..4 {
+            paint_text_evidence(
+                &mut frame,
+                layout.panel.relative(layout::relic_sub_value(index)),
+            );
+        }
         frame
     }
 
@@ -1165,19 +1682,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    fn icon_image_with_counts(gold: usize, neutral: usize) -> RgbImage {
-        let mut image = RgbImage::from_pixel(100, 100, Rgb([24, 28, 35]));
-        assert!(gold + neutral <= image.pixels().count());
-        for (index, pixel) in image.pixels_mut().enumerate() {
-            if index < gold {
-                *pixel = Rgb([220, 170, 70]);
-            } else if index < gold + neutral {
-                *pixel = Rgb([220, 220, 220]);
-            }
-        }
-        image
     }
 
     fn paint_icon_ratios(
@@ -1251,7 +1755,18 @@ mod tests {
     }
 
     #[test]
-    fn character_traces_read_visible_levels_and_unlock_pixels() {
+    fn level_recovers_a_slash_read_as_a_digit() {
+        assert_eq!(parse_level_and_cap("等级8078.").unwrap(), (80, 80));
+        assert_eq!(parse_level_and_cap("等级70780").unwrap(), (70, 80));
+        assert_eq!(parse_level_and_cap("等级6017").unwrap(), (60, 70));
+        assert_eq!(parse_level_and_cap("等级807").unwrap(), (80, 80));
+        assert_eq!(parse_level_and_cap("等级：120.").unwrap(), (1, 20));
+        assert_eq!(parse_level_and_cap("等级2020").unwrap(), (20, 20));
+        assert!(parse_level_and_cap("等级4078").is_err());
+    }
+
+    #[test]
+    fn character_traces_read_only_upgradeable_skill_levels() {
         let frame = RgbImage::from_pixel(1920, 1080, Rgb([255, 255, 255]));
         let mut parser = PanelParser::new(
             ScriptedOcrReader::default()
@@ -1260,12 +1775,11 @@ mod tests {
                 .with(OcrField::CharacterSkill("ult"), ["8/10"])
                 .with(OcrField::CharacterSkill("talent"), ["8/10"]),
         );
-        let details = parser.parse_character_traces(&frame, "Knight").unwrap();
+        let details = parser.parse_character_traces(&frame, "Knight", 0).unwrap();
         assert_eq!(details.skills["basic"], 1);
         assert_eq!(details.skills["skill"], 5);
         assert!(details.ability_version.is_none());
-        assert_eq!(details.traces.len(), 13);
-        assert!(details.traces.values().all(|unlocked| *unlocked));
+        assert!(details.traces.is_empty());
         assert!(details.memosprite.is_none());
     }
 
@@ -1284,46 +1798,62 @@ mod tests {
     }
 
     #[test]
+    fn live_lock_keycap_is_locked_even_on_a_gold_card() {
+        let mut image = RgbImage::from_pixel(40, 40, Rgb([210, 168, 90]));
+        for y in 8..32 {
+            for x in 8..32 {
+                image.put_pixel(x, y, Rgb([236, 236, 236]));
+            }
+        }
+        for y in 16..26 {
+            for x in 16..24 {
+                image.put_pixel(x, y, Rgb([18, 18, 18]));
+            }
+        }
+        let (state, confidence) = detect_icon_state(&image);
+        assert_eq!(state, Some(true));
+        assert!(confidence >= 0.6, "confidence={confidence}");
+    }
+
+    #[test]
     fn icon_state_preserves_unknown() {
         let blank = RgbImage::from_pixel(40, 40, Rgb([30, 30, 30]));
         assert_eq!(detect_icon_state(&blank).0, None);
         let gold = RgbImage::from_pixel(40, 40, Rgb([220, 170, 70]));
-        assert_eq!(detect_icon_state(&gold).0, Some(true));
+        assert_eq!(detect_icon_state(&gold).0, None);
         let white = RgbImage::from_pixel(40, 40, Rgb([220, 220, 220]));
-        assert_eq!(detect_icon_state(&white).0, Some(false));
+        assert_eq!(detect_icon_state(&white).0, None);
     }
 
     #[test]
-    fn icon_confidence_boundary_uses_the_dominant_minus_competing_margin() {
-        for (gold, neutral, expected) in [
-            (599, 100, Some(true)),
-            (600, 100, Some(true)),
-            (100, 599, Some(false)),
-            (100, 600, Some(false)),
-        ] {
-            let (state, confidence) = detect_icon_state(&icon_image_with_counts(gold, neutral));
-            assert_eq!(state, expected);
-            if gold.max(neutral) - gold.min(neutral) == 500 {
-                assert!(
-                    confidence >= MANAGED_ICON_CONFIDENCE_THRESHOLD,
-                    "exact five-percent net margin must meet the documented boundary: {confidence}"
-                );
-            } else {
-                assert!(
-                    confidence < MANAGED_ICON_CONFIDENCE_THRESHOLD,
-                    "a net margin below five percent must not be actionable: {confidence}"
-                );
+    fn open_padlock_is_unlocked_on_relics_and_light_cones() {
+        let mut relic = RgbImage::from_pixel(40, 40, Rgb([210, 168, 90]));
+        for y in 0..5 {
+            for x in 0..40 {
+                relic.put_pixel(x, y, Rgb([230, 230, 230]));
             }
         }
-    }
+        let (state, confidence) = detect_icon_state(&relic);
+        assert_eq!(state, Some(false));
+        assert!(confidence >= MANAGED_ICON_CONFIDENCE_THRESHOLD);
 
-    #[test]
-    fn competing_gold_and_neutral_evidence_is_unknown_in_both_directions() {
-        for (gold, neutral) in [(400, 600), (600, 400), (150, 500), (500, 150)] {
-            let (state, confidence) = detect_icon_state(&icon_image_with_counts(gold, neutral));
-            assert_eq!(state, None, "gold={gold}, neutral={neutral}");
-            assert_eq!(confidence, 0.0, "gold={gold}, neutral={neutral}");
+        let mut cone = RgbImage::from_pixel(40, 40, Rgb([12, 12, 16]));
+        for y in 0..5 {
+            for x in 0..40 {
+                cone.put_pixel(x, y, Rgb([230, 230, 230]));
+            }
         }
+        assert_eq!(detect_icon_state(&cone).0, Some(false));
+
+        let mut dim = RgbImage::from_pixel(40, 40, Rgb([210, 168, 90]));
+        for y in 8..32 {
+            for x in 8..32 {
+                if x < 12 || x >= 28 || y < 12 || y >= 28 {
+                    dim.put_pixel(x, y, Rgb([120, 90, 40]));
+                }
+            }
+        }
+        assert_eq!(detect_icon_state(&dim).0, Some(false));
     }
 
     #[test]
@@ -1334,11 +1864,28 @@ mod tests {
                 image.put_pixel(x, y, Rgb([90, 90, 90]));
             }
         }
-        assert_eq!(detect_icon_state(&image).0, Some(true));
         assert_eq!(detect_discard_state(&image).0, Some(false));
 
         let gold_only = RgbImage::from_pixel(40, 40, Rgb([220, 170, 70]));
         assert_eq!(detect_discard_state(&gold_only).0, None);
+
+        let mut white_can = RgbImage::from_pixel(40, 40, Rgb([210, 168, 90]));
+        for y in 10..30 {
+            for x in 16..24 {
+                white_can.put_pixel(x, y, Rgb([230, 230, 230]));
+            }
+        }
+        assert_eq!(detect_discard_state(&white_can).0, Some(false));
+
+        let mut marked = RgbImage::from_pixel(40, 40, Rgb([236, 236, 236]));
+        for y in 12..28 {
+            for x in 14..26 {
+                marked.put_pixel(x, y, Rgb([210, 40, 40]));
+            }
+        }
+        let (state, confidence) = detect_discard_state(&marked);
+        assert_eq!(state, Some(true));
+        assert!(confidence >= MANAGED_ICON_CONFIDENCE_THRESHOLD);
     }
 
     #[test]
@@ -1369,7 +1916,7 @@ mod tests {
             .with(OcrField::CharacterLevel, ["等级 80/80"]);
         let mut parser = PanelParser::new(reader);
         let parsed = parser
-            .parse_character_details(&frame, &references(), 6)
+            .parse_character_details(&frame, &references(), None, 6)
             .unwrap();
         assert_eq!(parsed.observation.character_id, 1001);
         assert_eq!(parsed.observation.level, 80);
@@ -1385,11 +1932,7 @@ mod tests {
     fn generated_light_cone_screenshot_parses_fields_without_full_frame_ocr() {
         let layout = StatsPanelLayout::MAINTAINED_SEED;
         let mut frame = RgbImage::from_pixel(1920, 1080, Rgb([24, 28, 35]));
-        paint_rect(
-            &mut frame,
-            layout.lock_button(InventoryKind::LightCone),
-            Rgb([220, 220, 220]),
-        );
+        paint_open_padlock(&mut frame, layout.lock_button(InventoryKind::LightCone));
         paint_text_evidence(&mut frame, layout.panel.relative(layout::RELIC_EQUIPPED));
         let reader = ScriptedOcrReader::default()
             .with(OcrField::LightConeName, ["制胜的瞬间"])
@@ -1409,7 +1952,8 @@ mod tests {
     #[test]
     fn generated_gear_screens_cover_cavern_and_planar_reference_categories() {
         let layout = StatsPanelLayout::MAINTAINED_SEED;
-        let frame = generated_panel_frame(Rgb([230, 180, 65]), Rgb([220, 220, 220]));
+        let mut frame = generated_panel_frame(Rgb([230, 180, 65]), Rgb([220, 220, 220]));
+        paint_closed_padlock(&mut frame, layout.lock_button(InventoryKind::Gear));
         let mut cavern = PanelParser::new(gear_reader("过客的逢春木簪", "生命值", "705"));
         let cavern_result = cavern.parse_gear(&frame, layout, &references()).unwrap();
         assert_eq!(cavern_result.reference.category, GearCategory::Relic);
@@ -1565,7 +2109,7 @@ mod tests {
             );
             assert_eq!(
                 path_parser
-                    .parse_character_details(&frame, &character_refs, 0)
+                    .parse_character_details(&frame, &character_refs, None, 0)
                     .unwrap()
                     .observation
                     .character_id,
@@ -1580,7 +2124,7 @@ mod tests {
         );
         assert_eq!(
             character_parser
-                .parse_character_details(&frame, &character_refs, 0)
+                .parse_character_details(&frame, &character_refs, None, 0)
                 .unwrap_err()
                 .code(),
             "HSR-OCR-CHARACTER-AMBIGUOUS"
@@ -1608,11 +2152,59 @@ mod tests {
     }
 
     #[test]
+    fn equipped_path_badges_require_a_close_unique_glyph() {
+        let atlas = image::load_from_memory(include_bytes!("assets/equipped_path_badges.png"))
+            .unwrap()
+            .to_rgb8();
+        for (index, path) in ["Rogue", "Shaman", "Knight", "Memory", "Elation"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut strip = RgbImage::from_pixel(308, 60, Rgb([120, 95, 50]));
+            image::imageops::replace(
+                &mut strip,
+                &image::imageops::crop_imm(&atlas, index as u32 * 34, 0, 34, 34).to_image(),
+                55,
+                20,
+            );
+            assert_eq!(detect_equipped_path(&strip), Some(path));
+            let doubled =
+                image::imageops::resize(&strip, 616, 120, image::imageops::FilterType::Nearest);
+            assert_eq!(detect_equipped_path(&doubled), Some(path));
+        }
+        assert_eq!(
+            detect_equipped_path(&RgbImage::from_pixel(308, 60, Rgb([80, 80, 80]))),
+            None
+        );
+        assert_eq!(
+            detect_equipped_path(&RgbImage::from_pixel(308, 60, Rgb([255, 255, 255]))),
+            None
+        );
+    }
+
+    #[test]
     fn equipped_parser_is_localized_and_blank_evidence_fails_closed() {
         let refs = references();
         let blank = RgbImage::from_pixel(180, 60, Rgb([24, 28, 35]));
         assert_eq!(parse_equipped("", &blank, &refs), (None, None));
         assert_eq!(parse_equipped("Equip", &blank, &refs), (None, None));
+        let live_refs = crate::load_embedded_gilore_reference().unwrap();
+        assert_eq!(
+            parse_equipped("经装备中", &blank, &live_refs),
+            (Some(true), None)
+        );
+        assert_eq!(
+            parse_equipped("刃装备中", &blank, &live_refs),
+            (Some(true), Some("1205".into()))
+        );
+        assert_eq!(
+            parse_equipped("Equipped Blade", &blank, &live_refs),
+            (Some(true), Some("1205".into()))
+        );
+        assert_eq!(
+            parse_equipped("三月七装备中", &blank, &live_refs),
+            (Some(true), None)
+        );
 
         let mut visible = blank.clone();
         paint_text_evidence(&mut visible, NormRect::new(0.0, 0.0, 1.0, 1.0));

@@ -1,10 +1,10 @@
 //! Achievement name → id catalog from ggartifact `mapping_achievements.json`.
 //!
 //! Isolated from `MappingManager` (characters/weapons/sets). Cache path, TTL,
-//! and stale-cache fallback match `mappings.json`.
+//! and stale-cache fallback are independent of the shared inventory reference.
 //!
-//! Current file shape is `{categories:[{id,n:{zh},achievements:[{id,n:{zh}}]}]}`.
-//! The older flat `{achievements:[...]}` list is still accepted.
+//! Schema v3 uses localized `name` objects and ordered `stages` groups.
+//! Older `n` names and flat `{achievements:[...]}` caches are still accepted.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -20,6 +20,7 @@ use crate::scanner::common::fuzzy_match::fuzzy_match_map;
 const CATALOG_URL: &str = "https://ggartifact.com/good/mapping_achievements.json";
 const CATALOG_CACHE_PATH: &str = "data/mapping_achievements.json";
 const CATALOG_META_PATH: &str = "data/mapping_achievements_meta.json";
+
 const CATALOG_TTL_SECS: u64 = 24 * 3600;
 
 /// Punctuation stripped before matching, same set as cocogoat `filter`.
@@ -43,18 +44,37 @@ struct MappingAchievementsFile {
 struct MappingCategory {
     #[serde(default)]
     id: u32,
+    #[serde(alias = "name")]
     n: LocalizedNames,
     #[serde(default)]
     achievements: Vec<MappingAchievement>,
 }
 
 #[derive(Debug, Deserialize)]
-struct MappingAchievement {
-    id: u32,
-    n: LocalizedNames,
+#[serde(untagged)]
+enum MappingAchievement {
+    Single {
+        id: u32,
+        #[serde(alias = "name")]
+        n: LocalizedNames,
+        #[serde(default)]
+        desc: LocalizedNames,
+    },
+    Series {
+        #[serde(alias = "name")]
+        n: LocalizedNames,
+        stages: Vec<MappingStage>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
+struct MappingStage {
+    id: u32,
+    #[serde(default)]
+    desc: LocalizedNames,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct LocalizedNames {
     zh: Option<String>,
 }
@@ -63,6 +83,27 @@ struct CatalogEntry {
     id: u32,
     name: String,
     desc: String,
+}
+
+impl MappingAchievement {
+    fn into_entries(self) -> Vec<CatalogEntry> {
+        let (names, stages) = match self {
+            Self::Single { id, n, desc } => (n, vec![MappingStage { id, desc }]),
+            Self::Series { n, stages } => (n, stages),
+        };
+        let Some(name) = names.zh.filter(|name| !name.is_empty()) else {
+            return Vec::new();
+        };
+        // Schema v3 orders stages by progression, which need not follow ID order.
+        stages
+            .into_iter()
+            .map(|stage| CatalogEntry {
+                id: stage.id,
+                name: name.clone(),
+                desc: stage.desc.zh.unwrap_or_default(),
+            })
+            .collect()
+    }
 }
 
 /// One in-game left-list category and the titles it contains.
@@ -117,15 +158,21 @@ pub struct AchievementCatalog {
 }
 
 impl AchievementCatalog {
+    pub fn cache_updated_at() -> Option<u64> {
+        if !Path::new(CATALOG_CACHE_PATH).is_file() {
+            return None;
+        }
+        let fetched = load_meta().last_fetch_time;
+        (fetched > 0).then_some(fetched)
+    }
+
     pub fn new() -> Result<Self> {
-        fetch_if_needed()?;
+        fetch_if_needed(false)?;
         Self::load_from_cache()
     }
 
     pub fn force_refresh() -> Result<()> {
-        crate::fs_utils::remove_file_if_exists(CATALOG_META_PATH)?;
-        crate::fs_utils::remove_file_if_exists(CATALOG_CACHE_PATH)?;
-        fetch_if_needed()?;
+        fetch_if_needed(true)?;
         Ok(())
     }
 
@@ -142,9 +189,8 @@ impl AchievementCatalog {
     }
 
     fn load_from_cache() -> Result<Self> {
-        let raw = fs::read_to_string(CATALOG_CACHE_PATH).with_context(|| {
-            format!("achievement catalog cache missing: {CATALOG_CACHE_PATH}")
-        })?;
+        let raw = fs::read_to_string(CATALOG_CACHE_PATH)
+            .with_context(|| format!("achievement catalog cache missing: {CATALOG_CACHE_PATH}"))?;
         let data: MappingAchievementsFile = serde_json::from_str(&raw)
             .context("achievement catalog cache is not mapping_achievements.json")?;
         Self::from_mapping_file(data)
@@ -160,18 +206,11 @@ impl AchievementCatalog {
                 };
                 let mut titles: HashMap<String, Vec<u32>> = HashMap::new();
                 let mut entries = Vec::new();
-                for a in cat.achievements {
-                    let Some(title) = a.n.zh.filter(|s| !s.is_empty()) else {
-                        continue;
-                    };
-                    let key = normalize_text(&title);
-                    titles.entry(key).or_default().push(a.id);
-                    entries.push((a.id, title.clone()));
-                    flat.push(CatalogEntry {
-                        id: a.id,
-                        name: title,
-                        desc: String::new(),
-                    });
+                for entry in cat.achievements.into_iter().flat_map(|a| a.into_entries()) {
+                    let key = normalize_text(&entry.name);
+                    titles.entry(key).or_default().push(entry.id);
+                    entries.push((entry.id, entry.name.clone()));
+                    flat.push(entry);
                 }
                 categories.push(CatalogCategory {
                     id: cat.id,
@@ -195,18 +234,7 @@ impl AchievementCatalog {
         let entries: Vec<CatalogEntry> = data
             .achievements
             .into_iter()
-            .filter_map(|a| {
-                let name = a.n.zh?;
-                if name.is_empty() {
-                    None
-                } else {
-                    Some(CatalogEntry {
-                        id: a.id,
-                        name,
-                        desc: String::new(),
-                    })
-                }
-            })
+            .flat_map(|a| a.into_entries())
             .collect();
         if entries.is_empty() {
             bail!("achievement catalog cache has no Chinese names");
@@ -375,16 +403,12 @@ impl AchievementCatalog {
         }
         let table = category.map(|c| &c.titles).unwrap_or(&self.titles);
         if let Some(ids) = table.get(&title) {
-            let mut ids = ids.clone();
-            ids.sort_unstable();
-            return ids;
+            return ids.clone();
         }
         let title_as_map: HashMap<String, String> =
             table.keys().map(|k| (k.clone(), k.clone())).collect();
         if let Some(matched) = fuzzy_match_map(&title, &title_as_map) {
-            let mut ids = table.get(&matched).cloned().unwrap_or_default();
-            ids.sort_unstable();
-            return ids;
+            return table.get(&matched).cloned().unwrap_or_default();
         }
         Vec::new()
     }
@@ -496,7 +520,9 @@ fn as_first_stage(title: &str) -> Option<String> {
 
 fn stage_stem(title: &str) -> String {
     let chars: Vec<char> = normalize_text(title).chars().collect();
-    if chars.len() >= 2 && chars[chars.len() - 2] == '其' && stage_number(chars[chars.len() - 1]).is_some()
+    if chars.len() >= 2
+        && chars[chars.len() - 2] == '其'
+        && stage_number(chars[chars.len() - 1]).is_some()
     {
         return chars[..chars.len() - 2].iter().collect();
     }
@@ -504,7 +530,10 @@ fn stage_stem(title: &str) -> String {
 }
 
 fn stage_number(c: char) -> Option<usize> {
-    "一二三四五六七八九十".chars().position(|s| s == c).map(|i| i + 1)
+    "一二三四五六七八九十"
+        .chars()
+        .position(|s| s == c)
+        .map(|i| i + 1)
 }
 
 pub fn normalize_text(text: &str) -> String {
@@ -571,19 +600,16 @@ fn save_meta(meta: &CatalogMeta) -> Result<()> {
 }
 
 fn is_fresh(last_fetch_time: u64, ttl_secs: u64) -> bool {
-    last_fetch_time > 0 && (now_secs() - last_fetch_time) < ttl_secs
+    last_fetch_time > 0
+        && now_secs()
+            .checked_sub(last_fetch_time)
+            .is_some_and(|age| age < ttl_secs)
 }
 
-fn cache_has_categories() -> bool {
-    fs::read_to_string(CATALOG_CACHE_PATH)
-        .map(|raw| raw.contains("\"categories\""))
-        .unwrap_or(false)
-}
-
-fn fetch_if_needed() -> Result<()> {
+fn fetch_if_needed(force: bool) -> Result<()> {
     let meta = load_meta();
-    let cache_exists = Path::new(CATALOG_CACHE_PATH).exists();
-    if cache_exists && is_fresh(meta.last_fetch_time, CATALOG_TTL_SECS) && cache_has_categories() {
+    let cache_exists = AchievementCatalog::load_from_cache().is_ok();
+    if !force && cache_exists && is_fresh(meta.last_fetch_time, CATALOG_TTL_SECS) {
         return Ok(());
     }
 
@@ -598,7 +624,7 @@ fn fetch_if_needed() -> Result<()> {
         })?;
     }
 
-    match reqwest::blocking::get(CATALOG_URL) {
+    match crate::data_http::client().and_then(|client| client.get(CATALOG_URL).send()) {
         Ok(response) => {
             if response.status().is_success() {
                 let body = response
@@ -609,14 +635,17 @@ fn fetch_if_needed() -> Result<()> {
                 if parsed.categories.is_empty() && parsed.achievements.is_empty() {
                     bail!("downloaded mapping_achievements.json has no achievements");
                 }
-                fs::write(CATALOG_CACHE_PATH, &body).with_context(|| {
+                AchievementCatalog::from_mapping_file(parsed)?;
+                let temporary = Path::new(CATALOG_CACHE_PATH).with_extension("json.tmp");
+                fs::write(&temporary, &body).with_context(|| {
                     format!("achievement catalog cache could not be written: {CATALOG_CACHE_PATH}")
                 })?;
+                fs::rename(temporary, CATALOG_CACHE_PATH)?;
                 save_meta(&CatalogMeta {
                     last_fetch_time: now_secs(),
                 })?;
                 log_debug!("成就目录已更新", "Achievement catalog updated");
-            } else if cache_exists {
+            } else if cache_exists && !force {
                 log_warn!(
                     "获取数据失败 (HTTP {})，使用本地缓存",
                     "Fetch failed (HTTP {}), using local cache",
@@ -624,15 +653,15 @@ fn fetch_if_needed() -> Result<()> {
                 );
             } else {
                 bail!(
-                    "获取成就目录失败 (HTTP {})，且无本地缓存。请检查网络连接。\n\
-                     / Failed to fetch achievement catalog (HTTP {}), no local cache. Check your network connection.",
+                    "获取成就目录失败 (HTTP {})。请检查网络连接。\n\
+                     / Failed to fetch achievement catalog (HTTP {}). Check your network connection.",
                     response.status(),
                     response.status()
                 );
             }
         },
         Err(e) => {
-            if cache_exists {
+            if cache_exists && !force {
                 log_warn!(
                     "无法下载最新成就目录；将使用本地缓存。完整错误详情: {:#}",
                     "The latest achievement catalog could not be downloaded; the local cache will be used. Full error details: {:#}",
@@ -652,6 +681,15 @@ fn fetch_if_needed() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn achievement_cache_expires_after_a_day_and_rejects_future_timestamps() {
+        let now = now_secs();
+        assert!(is_fresh(now, CATALOG_TTL_SECS));
+        assert!(!is_fresh(now - CATALOG_TTL_SECS - 1, CATALOG_TTL_SECS));
+        assert!(!is_fresh(now + 3600, CATALOG_TTL_SECS));
+        assert!(!is_fresh(0, CATALOG_TTL_SECS));
+    }
 
     fn sample() -> AchievementCatalog {
         AchievementCatalog::from_entries(&[
@@ -711,8 +749,13 @@ mod tests {
     fn parses_ggartifact_mapping_shape() {
         let raw = r#"{"achievements":[{"id":81000,"n":{"zh":"俯瞰风景"}}]}"#;
         let data: MappingAchievementsFile = serde_json::from_str(raw).unwrap();
-        assert_eq!(data.achievements[0].id, 81000);
-        assert_eq!(data.achievements[0].n.zh.as_deref(), Some("俯瞰风景"));
+        let entries = data
+            .achievements
+            .into_iter()
+            .flat_map(|a| a.into_entries())
+            .collect::<Vec<_>>();
+        assert_eq!(entries[0].id, 81000);
+        assert_eq!(entries[0].name, "俯瞰风景");
     }
 
     #[test]
@@ -747,6 +790,44 @@ mod tests {
         assert_eq!(cov.expected, 2);
         assert_eq!(cov.matched, 1);
         assert_eq!(cov.missing, vec!["千风拂去".to_string()]);
+    }
+
+    #[test]
+    fn parses_published_v3_names_and_ordered_stages() {
+        let raw = r#"{"schemaVersion":3,"categories":[
+            {"id":0,"name":{"zh":"天地万象"},"achievements":[
+                {"id":81000,"name":{"zh":"俯瞰风景"},"hidden":true},
+                {"name":{"zh":"动物园大亨"},"stages":[
+                    {"id":80129,"total":1,"desc":{"zh":"捕获1只野外生物。"},"reward":5},
+                    {"id":80127,"total":30,"desc":{"zh":"捕获30只野外生物。"},"reward":10},
+                    {"id":80128,"total":100,"desc":{"zh":"捕获100只野外生物。"},"reward":20}
+                ]}
+            ]}
+        ]}"#;
+        let cat =
+            AchievementCatalog::from_mapping_file(serde_json::from_str(raw).unwrap()).unwrap();
+        assert_eq!(cat.len(), 4);
+        assert_eq!(
+            cat.resolve_category("天地万象")
+                .unwrap()
+                .expected_unique_titles(),
+            2
+        );
+        assert_eq!(cat.match_text("俯瞰风景", ""), Some(81000));
+        assert_eq!(cat.match_text("动物园大亨", ""), None);
+        assert_eq!(
+            cat.match_text("动物园大亨", "捕获30只野外生物"),
+            Some(80127)
+        );
+        assert_eq!(cat.ids_for_title("动物园大亨"), vec![80129, 80127, 80128]);
+        assert_eq!(
+            cat.ids_for_shown_title("动物园大亨", Some("天地万象")).0,
+            vec![80129, 80127, 80128]
+        );
+        assert_eq!(
+            cat.completed_ids_for_shown("动物园大亨", true),
+            vec![80129, 80127, 80128]
+        );
     }
 
     #[test]

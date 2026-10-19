@@ -11,7 +11,7 @@ license = "GPL-2.0-or-later"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-image = "0.24"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp", "rayon"] }
 enigo = "0.1"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -22,7 +22,7 @@ anyhow = "1.0"
 paste = "1.0"
 # System font discovery (family queries across platforms) for CJK text.
 fontdb = "0.24"
-ort = { version = "2.0.0-rc.10", optional = true, features = ["load-dynamic"] }
+ort = { version = "=2.0.0-rc.10", optional = true, features = ["load-dynamic"] }
 ndarray = { version = "0.16", optional = true }
 tract-onnx = { version = "0.21.5", optional = true }
 
@@ -55,7 +55,6 @@ features = [
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
-    "Win32_Storage_Xps",
 ]
 
 [target.'cfg(target_os = "windows")'.dependencies.windows]
@@ -67,6 +66,7 @@ features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_System_WinRT",

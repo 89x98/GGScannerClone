@@ -17,17 +17,13 @@ pub struct ManagerPreview {
 }
 
 pub struct StarRailState {
-    pub data_cache_refresh: super::state::RefreshState,
     pub scan_status: Arc<Mutex<TaskStatus>>,
+    pub scan_progress: Arc<Mutex<super::task_progress::TaskProgress>>,
     pub manager_status: Arc<Mutex<TaskStatus>>,
+    pub manager_progress: Arc<Mutex<super::task_progress::TaskProgress>>,
     pub scan_handle: Option<TaskHandle>,
     pub manager_handle: Option<TaskHandle>,
-    pub manager_preview: Arc<Mutex<Option<ManagerPreview>>>,
-    pub manager_reviewed: bool,
-    pub allow_lock: bool,
-    pub allow_unlock: bool,
-    pub allow_mark_discard: bool,
-    pub allow_unmark_discard: bool,
+    pub manager_job: Arc<Mutex<crate::hsr_server::JobState>>,
     #[cfg(feature = "capture")]
     pub capture: super::star_rail_capture_tab::StarRailCaptureState,
 }
@@ -37,17 +33,13 @@ impl StarRailState {
         #[cfg(not(feature = "capture"))]
         let _ = output_dir;
         Self {
-            data_cache_refresh: super::state::RefreshState::Idle,
             scan_status: Arc::new(Mutex::new(TaskStatus::Idle)),
+            scan_progress: Arc::new(Mutex::new(super::task_progress::TaskProgress::default())),
             manager_status: Arc::new(Mutex::new(TaskStatus::Idle)),
+            manager_progress: Arc::new(Mutex::new(super::task_progress::TaskProgress::default())),
             scan_handle: None,
             manager_handle: None,
-            manager_preview: Arc::new(Mutex::new(None)),
-            manager_reviewed: false,
-            allow_lock: false,
-            allow_unlock: false,
-            allow_mark_discard: false,
-            allow_unmark_discard: false,
+            manager_job: Arc::new(Mutex::new(Default::default())),
             #[cfg(feature = "capture")]
             capture: super::star_rail_capture_tab::StarRailCaptureState::new(output_dir),
         }
@@ -84,20 +76,5 @@ impl StarRailState {
         #[cfg(feature = "capture")]
         let required = required || self.capture.requires_restart();
         required
-    }
-
-    pub fn invalidate_manager_preview(&mut self) {
-        match self.manager_preview.lock() {
-            Ok(mut preview) => *preview = None,
-            Err(poisoned) => {
-                self.manager_preview.clear_poison();
-                *poisoned.into_inner() = None;
-            },
-        }
-        self.manager_reviewed = false;
-        self.allow_lock = false;
-        self.allow_unlock = false;
-        self.allow_mark_discard = false;
-        self.allow_unmark_discard = false;
     }
 }

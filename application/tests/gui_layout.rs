@@ -1,0 +1,1491 @@
+mod common;
+use common::HeadlessContext;
+use eframe::egui::{self, Event, Modifiers, PointerButton};
+use good_tools_app::gui::{
+    hsr_manager_progress::{plan_steps, TrackedJournal},
+    layout,
+    state::{TaskStatus, UiText},
+    task_progress::{StepState, TaskProgress},
+    theme,
+};
+use hsr_scanner::manager::{JournalEntry, JournalStatus, ManagerJournal, ManagerJournalStore};
+use std::sync::{Arc, Mutex};
+
+#[test]
+fn both_games_expose_and_toggle_the_same_scan_export_preferences() {
+    use good_tools_app::{
+        config::StarRailSettings,
+        gui::{
+            scanner_tab, star_rail_scanner_tab,
+            state::{AppState, Lang},
+        },
+    };
+    for lang in [Lang::Zh, Lang::En] {
+        for star_rail in [false, true] {
+            let ctx = egui::Context::default();
+            theme::setup(&ctx);
+            let mut genshin = AppState::new();
+            genshin.lang = lang;
+            genshin.scan_characters = false;
+            genshin.only_keep_latest_export = true;
+            genshin.save_on_cancel = false;
+            let mut settings = StarRailSettings {
+                scan_characters: false,
+                ..Default::default()
+            };
+            let mut hsr_state =
+                good_tools_app::gui::star_rail_state::StarRailState::new(String::new());
+            let mut scan_handle = None;
+            let mut draw = |events| {
+                ctx.run_headless(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            if star_rail {
+                                star_rail_scanner_tab::show_status(
+                                    ui,
+                                    lang,
+                                    &mut settings,
+                                    &mut hsr_state,
+                                    false,
+                                    false,
+                                );
+                            } else {
+                                scanner_tab::show_status(
+                                    ui,
+                                    &mut genshin,
+                                    &mut scan_handle,
+                                    false,
+                                    false,
+                                );
+                            }
+                        });
+                    },
+                )
+            };
+            draw(vec![]);
+            let initial = draw(vec![]);
+            assert!(!painted_text(&initial.shapes)
+                .iter()
+                .any(|(text, _)| text == lang.t("停止时保存已扫描结果", "Save results on stop")));
+            for caption in [lang.t("仅保留最新导出", "Keep latest export only")] {
+                let point = painted_text(&initial.shapes)
+                    .into_iter()
+                    .find(|(text, _)| text == caption)
+                    .unwrap()
+                    .1;
+                draw(vec![
+                    Event::PointerMoved(point),
+                    Event::PointerButton {
+                        pos: point,
+                        button: PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Modifiers::NONE,
+                    },
+                ]);
+                draw(vec![Event::PointerButton {
+                    pos: point,
+                    button: PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Modifiers::NONE,
+                }]);
+            }
+            if star_rail {
+                assert!(!settings.scan_only_keep_latest_export);
+                assert!(!settings.scan_save_on_cancel);
+            } else {
+                assert!(!genshin.only_keep_latest_export);
+                assert!(!genshin.save_on_cancel);
+            }
+        }
+    }
+}
+
+#[test]
+fn single_line_input_text_is_centered_at_every_control_height_and_scale() {
+    use good_tools_app::gui::widgets;
+    for scale in [1.0, 1.25, 1.5, 2.0] {
+        let ctx = egui::Context::default();
+        ctx.set_pixels_per_point(scale);
+        theme::setup(&ctx);
+        for height in [26.0, 40.0] {
+            for value in ["Traveler", "无星夜空", ""] {
+                let mut text = value.to_owned();
+                let _ = ctx.run_headless(Default::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        widgets::section(ui, "Character names", |ui| {
+                            let output = widgets::singleline_input(&mut text)
+                                .min_size(egui::vec2(0.0, height))
+                                .desired_width(180.0)
+                                .show(ui);
+                            let text_center = output.galley_pos.y + output.galley.size().y / 2.0;
+                            assert!((text_center - output.response.rect.center().y).abs() <= 1.0 / scale,
+                                "input text is not centered: {value:?}, height {height}, scale {scale}, text y {text_center}, box {:?}", output.response.rect);
+                        });
+                    });
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn progress_rows_keep_the_same_height_at_narrow_and_wide_widths() {
+    use good_tools_app::gui::{
+        state::Lang,
+        task_progress::{self, Step},
+    };
+    let ctx = egui::Context::default();
+    theme::setup(&ctx);
+    for width in [180.0, 220.0, 360.0] {
+        let _ = ctx.run_headless(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                layout::region(
+                    ui,
+                    egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(width, 400.0)),
+                    "progress-size",
+                    |ui| {
+                        let mut previous_row_top = None;
+                        for (key, label, count) in [
+                            ("characters", "Characters", 86),
+                            ("weapons", "Weapons", 247),
+                            ("artifacts", "Artifacts", 1342),
+                        ] {
+                            let mut step = Step::new(key, label, label);
+                            step.completed = count;
+                            step.state = StepState::Complete;
+                            if key != "characters" {
+                                step.total = Some(count);
+                            }
+                            let row_top = ui.cursor().top();
+                            task_progress::row(ui, Lang::En, &step);
+                            if let Some(previous) = previous_row_top {
+                                assert_eq!(row_top - previous, 24.0 + ui.spacing().item_spacing.y);
+                            }
+                            previous_row_top = Some(row_top);
+                        }
+                        assert!(ui.min_rect().width() <= width + 1.0);
+                        assert!(
+                            ui.min_rect().height() <= 100.0,
+                            "progress spacing consumed the pane: {}",
+                            ui.min_rect().height()
+                        );
+                    },
+                );
+            });
+        });
+    }
+}
+
+#[test]
+fn expanded_settings_fit_narrow_forms_in_both_languages() {
+    use good_tools_app::{
+        config::StarRailSettings,
+        gui::{
+            manager_tab, scanner_tab, star_rail_scanner_tab,
+            state::{AppState, Lang},
+        },
+    };
+    let ctx = egui::Context::default();
+    theme::setup(&ctx);
+    ctx.memory_mut(|memory| memory.set_everything_is_visible(true));
+    let mut genshin = AppState::new();
+    let mut settings = StarRailSettings::default();
+    for lang in [Lang::Zh, Lang::En] {
+        genshin.lang = lang;
+        for width in [250.0, 360.0] {
+            for tool in 0..3 {
+                let _ = ctx.run_headless(Default::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        layout::region(
+                            ui,
+                            egui::Rect::from_min_size(
+                                egui::pos2(20.0, 20.0),
+                                egui::vec2(width, 2000.0),
+                            ),
+                            "expanded-settings",
+                            |ui| {
+                                match tool {
+                                    0 => scanner_tab::show_settings(ui, &mut genshin, false),
+                                    1 => manager_tab::show_settings(ui, &mut genshin, false),
+                                    _ => star_rail_scanner_tab::show_settings(
+                                        ui,
+                                        lang,
+                                        &mut settings,
+                                        false,
+                                    ),
+                                }
+                                assert!(
+                                    ui.min_rect().width() <= width + 1.0,
+                                    "expanded settings exceeded {width}: {}",
+                                    ui.min_rect().width()
+                                );
+                            },
+                        );
+                    });
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn manager_connection_settings_fit_narrow_panels_with_legacy_paths_saved() {
+    use good_tools_app::{
+        config::StarRailSettings,
+        gui::{star_rail_manager_tab, star_rail_state::StarRailState, state::Lang},
+    };
+    let ctx = egui::Context::default();
+    theme::setup(&ctx);
+    let mut settings = StarRailSettings::default();
+    settings.manager_journal_path = format!(
+        r"C:\Users\Player\{}\recovery.jsonl",
+        "long-folder\\".repeat(12)
+    );
+    settings.manager_instructions_path = format!(
+        r"C:\Users\Player\{}\instructions.json",
+        "long-folder\\".repeat(12)
+    );
+    let mut state = StarRailState::new(String::new());
+    for lang in [Lang::Zh, Lang::En] {
+        let _ = ctx.run_headless(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                layout::region(
+                    ui,
+                    egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(360.0, 500.0)),
+                    "manager-file-test",
+                    |ui| {
+                        star_rail_manager_tab::show_settings(
+                            ui,
+                            lang,
+                            &mut settings,
+                            &mut state,
+                            false,
+                        );
+                        assert!(
+                            ui.min_rect().width() <= 361.0,
+                            "path controls expanded the settings pane: {}",
+                            ui.min_rect().width()
+                        );
+                        assert!(
+                            ui.min_rect().height() < 400.0,
+                            "path controls introduced a tall empty row"
+                        );
+                    },
+                );
+            });
+        });
+    }
+}
+
+fn draw_split(
+    ctx: &egui::Context,
+    fraction: &mut f32,
+    size: [f32; 2],
+    events: Vec<Event>,
+) -> [egui::Rect; 2] {
+    let mut panes = [egui::Rect::NOTHING; 2];
+    let _ = ctx.run_headless(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
+            events,
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new())
+                .show(ctx, |ui| {
+                    panes = layout::split(
+                        ui,
+                        ui.max_rect(),
+                        "sidebar",
+                        fraction,
+                        true,
+                        good_tools_app::gui::shell::SIDEBAR_MIN_WIDTH,
+                    );
+                });
+        },
+    );
+    panes
+}
+
+#[test]
+fn workspace_cards_use_the_same_inset_at_outer_edges_and_divider() {
+    for size in [egui::vec2(600.0, 400.0), egui::vec2(1000.0, 700.0)] {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let outer = egui::Rect::from_min_size(egui::pos2(20.0, 20.0), size);
+        let mut settings = egui::Rect::NOTHING;
+        let mut status = egui::Rect::NOTHING;
+        let _ = ctx.run_headless(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                layout::region(ui, layout::workspace_bounds(outer), "workspace", |ui| {
+                    let bounds = ui.max_rect();
+                    assert_eq!(bounds, outer.shrink(layout::PANE_GAP));
+                    layout::workspace(ui, &mut 0.5, |ui, pane| match pane {
+                        layout::Pane::Settings => settings = ui.max_rect(),
+                        // Frame bounds include 14px padding and the 1px border.
+                        layout::Pane::Status => status = ui.max_rect().expand(15.0),
+                    });
+                });
+            });
+        });
+        let divider = outer.center().x;
+        for gap in [
+            settings.left() - outer.left(),
+            divider - settings.right(),
+            status.left() - divider,
+            outer.right() - status.right(),
+        ] {
+            assert!(
+                (gap - layout::PANE_GAP).abs() < 0.1,
+                "unequal pane gap: {gap}"
+            );
+        }
+    }
+}
+
+#[test]
+fn splitter_drag_changes_ratio_and_resize_keeps_the_requested_ratio() {
+    let ctx = egui::Context::default();
+    theme::setup(&ctx);
+    let mut fraction = 0.10;
+    let panes = draw_split(&ctx, &mut fraction, [1040.0, 760.0], vec![]);
+    let minimum = good_tools_app::gui::shell::SIDEBAR_MIN_WIDTH;
+    assert_eq!(panes[0].right(), minimum);
+    let point = egui::pos2(minimum, 200.0);
+    draw_split(
+        &ctx,
+        &mut fraction,
+        [1040.0, 760.0],
+        vec![
+            Event::PointerMoved(point),
+            Event::PointerButton {
+                pos: point,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    draw_split(
+        &ctx,
+        &mut fraction,
+        [1040.0, 760.0],
+        vec![Event::PointerMoved(egui::pos2(230.0, 200.0))],
+    );
+    draw_split(
+        &ctx,
+        &mut fraction,
+        [1040.0, 760.0],
+        vec![Event::PointerButton {
+            pos: egui::pos2(230.0, 200.0),
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+    assert!((fraction - 230.0 / 1040.0).abs() < 0.001);
+    let requested = fraction;
+    let panes = draw_split(&ctx, &mut fraction, [760.0, 500.0], vec![]);
+    assert_eq!(fraction, requested);
+    assert!((panes[0].right() - 760.0 * requested).abs() < 0.1);
+    fraction = 0.10;
+    let small = draw_split(&ctx, &mut fraction, [760.0, 500.0], vec![]);
+    assert_eq!(
+        fraction, 0.10,
+        "minimum width must not overwrite the saved ratio"
+    );
+    assert_eq!(small[0].right(), minimum);
+}
+
+#[test]
+fn overflowing_pane_content_keeps_its_own_clip_rect() {
+    let ctx = egui::Context::default();
+    let _ = ctx.run_headless(Default::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let expected =
+                egui::Rect::from_min_size(egui::pos2(20.0, 30.0), egui::vec2(200.0, 100.0));
+            layout::region(ui, expected, "overflow", |ui| {
+                ui.add(egui::Label::new("Very long unwrapped content ".repeat(100)).extend());
+                ui.allocate_space(egui::vec2(1500.0, 900.0));
+                assert_eq!(ui.clip_rect(), expected);
+            });
+        });
+    });
+}
+
+#[test]
+fn titlebar_stays_fixed_and_window_buttons_remain_clickable() {
+    use good_tools_app::{
+        config::Game,
+        gui::{shell, state::Lang},
+    };
+    for (x, y, expected) in [(638.0, "minimize"), (684.0, "maximize"), (730.0, "close")]
+        .into_iter()
+        .flat_map(|(x, expected)| [1.0, 20.0, 39.0].map(|y| (x, y, expected)))
+    {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let logos = shell::Logos::load(&ctx);
+        let mut lang = Lang::Zh;
+        let mut game = Game::Genshin;
+        let mut draw = |events| {
+            ctx.run_headless(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(760.0, 500.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    shell::titlebar(ctx, &mut lang, &mut game, true, &logos);
+                    assert_eq!(
+                        ctx.available_rect_before_wrap().top(),
+                        shell::TITLEBAR_HEIGHT
+                    );
+                },
+            )
+        };
+        draw(vec![]);
+        let pos = egui::pos2(x, y);
+        draw(vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        let output = draw(vec![Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        drop(draw);
+        let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+        match expected {
+            "close" => assert!(commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::Close))),
+            "maximize" => assert!(commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::Maximized(true)))),
+            "minimize" => assert!(commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::Minimized(true)))),
+            _ => unreachable!(),
+        }
+    }
+}
+
+fn painted_text(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Pos2)> {
+    fn collect(shape: &egui::Shape, out: &mut Vec<(String, egui::Pos2)>) {
+        match shape {
+            egui::Shape::Text(text) => out.push((
+                text.galley.job.text.clone(),
+                text.pos + text.galley.size() / 2.0,
+            )),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, out)),
+            _ => {},
+        }
+    }
+    let mut texts = Vec::new();
+    for shape in shapes {
+        collect(&shape.shape, &mut texts);
+    }
+    texts
+}
+
+#[test]
+fn delay_fields_keep_two_columns_without_overflow_or_losing_warnings() {
+    use good_tools_app::gui::{state::Lang, widgets};
+    for width in [240.0, 300.0, 400.0, 600.0] {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let mut values = [100, 50, 100];
+        for _ in 0..2 {
+            let output = ctx.run_headless(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    layout::region(
+                        ui,
+                        egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(width, 300.0)),
+                        "delay-fields",
+                        |ui| {
+                            let [first, second, third] = &mut values;
+                            widgets::delay_group(
+                                ui,
+                                "delays",
+                                "Navigation",
+                                Lang::En,
+                                &mut [
+                                    ("First", first, 100, "First tooltip"),
+                                    ("Second", second, 100, "Second tooltip"),
+                                    ("Third", third, 100, "Third tooltip"),
+                                ],
+                            );
+                            assert!(ui.min_rect().width() <= width);
+                        },
+                    );
+                });
+            });
+            let texts = painted_text(&output.shapes);
+            let position = |label| texts.iter().find(|(text, _)| text == label).unwrap().1;
+            let first = position("First");
+            let second = position("Second*");
+            let third = position("Third");
+            assert!((first.y - second.y).abs() < 1.0);
+            assert!(second.x > first.x + width / 3.0);
+            assert!(third.y > second.y);
+            assert!(texts.iter().any(|(text, _)| text.contains("Below default")));
+        }
+        assert_eq!(values, [100, 50, 100]);
+    }
+}
+
+#[test]
+fn manager_port_is_above_the_start_action_and_absent_from_settings() {
+    use good_tools_app::{
+        config::StarRailSettings,
+        gui::{
+            manager_tab, star_rail_manager_tab,
+            star_rail_state::StarRailState,
+            state::{AppState, Lang},
+        },
+    };
+    for star_rail in [false, true] {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let mut genshin = AppState::new();
+        genshin.lang = Lang::En;
+        let mut settings = StarRailSettings::default();
+        let mut hsr = StarRailState::new(String::new());
+        let mut handle = None;
+        for status in [false, true] {
+            for _ in 0..2 {
+                let output = ctx.run_headless(Default::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.set_width(350.0);
+                        match (star_rail, status) {
+                            (true, true) => star_rail_manager_tab::show_status(
+                                ui,
+                                Lang::En,
+                                &mut settings,
+                                &mut hsr,
+                                false,
+                                false,
+                            ),
+                            (true, false) => star_rail_manager_tab::show_settings(
+                                ui,
+                                Lang::En,
+                                &mut settings,
+                                &mut hsr,
+                                false,
+                            ),
+                            (false, true) => manager_tab::show_status(
+                                ui,
+                                &mut genshin,
+                                &mut handle,
+                                false,
+                                false,
+                            ),
+                            (false, false) => manager_tab::show_settings(ui, &mut genshin, false),
+                        }
+                    });
+                });
+                let texts = painted_text(&output.shapes);
+                assert!(!texts
+                    .iter()
+                    .any(|(text, _)| text == "Character info" || text == "Server"));
+                let port = texts.iter().find(|(text, _)| text == "Local server port");
+                if status {
+                    let action = texts
+                        .iter()
+                        .find(|(text, _)| text == "Start server")
+                        .unwrap();
+                    assert!(port.unwrap().1.y < action.1.y);
+                } else {
+                    assert!(port.is_none());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn long_export_paths_do_not_change_pane_width_when_resized() {
+    use good_tools_app::gui::state::Lang;
+    let path = format!(
+        "C:/exports/含空格的文件夹/{}/scan.json",
+        "long-folder-name/".repeat(30)
+    );
+    for lang in [Lang::Zh, Lang::En] {
+        for partial in [false, true] {
+            let ctx = egui::Context::default();
+            theme::setup(&ctx);
+            let status = TaskStatus::Exported {
+                message: UiText::new("完成", "Done"),
+                path: path.clone(),
+                partial,
+            };
+            for width in [250.0, 500.0, 250.0] {
+                for _ in 0..3 {
+                    let output = ctx.run_headless(Default::default(), |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            layout::region(
+                                ui,
+                                egui::Rect::from_min_size(
+                                    egui::pos2(20.0, 20.0),
+                                    egui::vec2(width, 300.0),
+                                ),
+                                "export-result",
+                                |ui| {
+                                    theme::task_status(ui, lang, Some(&status), "Ready");
+                                    good_tools_app::gui::widgets::export_action(
+                                        ui,
+                                        lang,
+                                        Some(&status),
+                                    );
+                                    assert!(ui.min_rect().width() <= width);
+                                },
+                            );
+                        });
+                    });
+                    let texts = painted_text(&output.shapes);
+                    assert!(texts
+                        .iter()
+                        .any(|(text, _)| text == lang.t("打开文件夹", "Open folder")));
+                    assert!(texts.iter().any(|(text, _)| text == "scan.json"));
+                    assert!(!texts.iter().any(|(text, _)| text == &path));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn opening_a_missing_export_reports_a_visible_error() {
+    use good_tools_app::gui::{state::Lang, widgets};
+    let ctx = egui::Context::default();
+    theme::setup(&ctx);
+    let path =
+        std::env::temp_dir().join(format!("missing-good-export-{}.json", std::process::id()));
+    assert!(!path.exists());
+    let draw = |events| {
+        ctx.run_headless(
+            egui::RawInput {
+                events,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600.0, 400.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    widgets::export_file(ui, Lang::En, path.to_str().unwrap());
+                });
+            },
+        )
+    };
+    draw(vec![]);
+    let initial = draw(vec![]);
+    let button = painted_text(&initial.shapes)
+        .into_iter()
+        .find(|(text, _)| text == "Open folder")
+        .unwrap()
+        .1;
+    draw(vec![
+        Event::PointerMoved(button),
+        Event::PointerButton {
+            pos: button,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        },
+    ]);
+    let clicked = draw(vec![Event::PointerButton {
+        pos: button,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    }]);
+    assert!(painted_text(&clicked.shapes)
+        .iter()
+        .any(|(text, _)| text.contains("Could not open the export folder")));
+}
+
+#[test]
+fn sidebar_language_button_names_the_target_language_and_toggles_it() {
+    use good_tools_app::{
+        config::GameNavigation,
+        gui::{shell, state::Lang},
+    };
+    for initial in [Lang::Zh, Lang::En] {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let mut lang = initial;
+        let mut navigation = GameNavigation::default();
+        let mut draw = |events| {
+            ctx.run_headless(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(150.0, 500.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        shell::sidebar(ui, &mut lang, &mut navigation, &mut Default::default())
+                    });
+                },
+            )
+        };
+        draw(vec![]);
+        let frame = draw(vec![]);
+        let label = initial.t("English", "中文");
+        let point = painted_text(&frame.shapes)
+            .into_iter()
+            .find(|(text, _)| text == label)
+            .unwrap()
+            .1;
+        draw(vec![
+            Event::PointerMoved(point),
+            Event::PointerButton {
+                pos: point,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        let output = draw(vec![Event::PointerButton {
+            pos: point,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        drop(draw);
+        assert_eq!(
+            lang,
+            if initial == Lang::Zh {
+                Lang::En
+            } else {
+                Lang::Zh
+            }
+        );
+        assert_eq!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand
+        );
+    }
+}
+
+#[test]
+fn quiet_buttons_have_a_visible_hover_fill_and_hand_cursor() {
+    let ctx = egui::Context::default();
+    theme::setup(&ctx);
+    let draw = |events| {
+        ctx.run_headless(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    theme::text_button(ui, "About", egui::vec2(120.0, 30.0), false);
+                });
+            },
+        )
+    };
+    let initial = draw(vec![]);
+    let point = painted_text(&initial.shapes)
+        .into_iter()
+        .find(|(text, _)| text == "About")
+        .unwrap()
+        .1;
+    let hover = draw(vec![Event::PointerMoved(point)]);
+    assert_eq!(
+        hover.platform_output.cursor_icon,
+        egui::CursorIcon::PointingHand
+    );
+    assert!(hover.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(rect) if rect.fill == theme::HOVER && rect.stroke.width == 0.0)));
+}
+
+#[test]
+fn refresh_heading_borders_fit_the_pane_when_hovered_and_pressed() {
+    use good_tools_app::{
+        config::{Game, ToolTab},
+        gui::{data_refresh::DataRefresh, state::Lang},
+    };
+    for lang in [Lang::Zh, Lang::En] {
+        for (width, scale, game, tab) in [
+            (240.0, 1.0, Game::Genshin, ToolTab::Scanner),
+            (720.0, 1.0, Game::Genshin, ToolTab::Manager),
+            (240.0, 1.25, Game::StarRail, ToolTab::Scanner),
+            (720.0, 1.5, Game::StarRail, ToolTab::Manager),
+            (240.0, 2.0, Game::Genshin, ToolTab::Capture),
+        ] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(scale);
+            theme::setup(&ctx);
+            let mut refresh = DataRefresh::default();
+            let mut draw = |events| {
+                ctx.run_headless(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            layout::region(
+                                ui,
+                                egui::Rect::from_min_size(
+                                    egui::pos2(20.0, 30.0),
+                                    egui::vec2(width, 200.0),
+                                ),
+                                "heading",
+                                |ui| {
+                                    refresh.heading(ui, lang, game, tab, true, false);
+                                    assert!(
+                                        ui.min_rect().height() < 140.0,
+                                        "heading consumed workspace height"
+                                    );
+                                },
+                            );
+                        });
+                    },
+                )
+            };
+            draw(vec![]);
+            let initial = draw(vec![]);
+            let point = painted_text(&initial.shapes)
+                .into_iter()
+                .find(|(text, _)| text == lang.t("刷新数据", "Refresh data"))
+                .unwrap()
+                .1;
+            for events in [
+                vec![Event::PointerMoved(point)],
+                vec![Event::PointerButton {
+                    pos: point,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                }],
+            ] {
+                let frame = draw(events);
+                let mut borders = 0;
+                for clipped in frame.shapes {
+                    if let egui::Shape::Rect(rect) = clipped.shape {
+                        if rect.stroke.width > 0.0
+                            || rect.fill == theme::HOVER
+                            || rect.fill == theme::PRESSED
+                        {
+                            borders += 1;
+                            assert!(
+                                clipped
+                                    .clip_rect
+                                    .contains_rect(rect.rect.expand(rect.stroke.width / 2.0)),
+                                "heading border clipped ({lang:?}, width {width}): {:?} vs {:?}",
+                                rect.rect,
+                                clipped.clip_rect
+                            );
+                        }
+                    }
+                }
+                assert!(borders > 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn sidebar_tab_borders_stay_inside_the_scroll_clip_while_pressed() {
+    use good_tools_app::{
+        config::GameNavigation,
+        gui::{shell, state::Lang},
+    };
+    for width in [150.0, 220.0] {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let mut navigation = GameNavigation::default();
+        let mut lang = Lang::En;
+        let mut draw = |events| {
+            ctx.run_headless(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 500.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        shell::sidebar(ui, &mut lang, &mut navigation, &mut Default::default())
+                    });
+                },
+            )
+        };
+        draw(vec![]);
+        let initial = draw(vec![]);
+        let point = painted_text(&initial.shapes)
+            .into_iter()
+            .find(|(text, _)| text == "Manager")
+            .unwrap()
+            .1;
+        for events in [
+            vec![Event::PointerMoved(point)],
+            vec![Event::PointerButton {
+                pos: point,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+            vec![Event::PointerButton {
+                pos: point,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        ] {
+            let output = draw(events);
+            let mut borders = 0;
+            for clipped in output.shapes {
+                if let egui::Shape::Rect(rect) = clipped.shape {
+                    if rect.stroke.color == theme::ACCENT && rect.stroke.width > 0.0 {
+                        borders += 1;
+                        assert!(
+                            clipped
+                                .clip_rect
+                                .contains_rect(rect.rect.expand(rect.stroke.width / 2.0)),
+                            "tab border clipped: {:?} vs {:?}",
+                            rect.rect,
+                            clipped.clip_rect
+                        );
+                    }
+                }
+            }
+            assert!(borders > 0);
+        }
+    }
+}
+
+#[test]
+fn ordinary_controls_keep_their_borders_inside_pane_edges_in_every_state() {
+    for control in 0..4 {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let mut value = 8765;
+        let mut text = "Player".to_owned();
+        let point = std::cell::Cell::new(egui::Pos2::ZERO);
+        let mut draw = |events| {
+            ctx.run_headless(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        layout::region(
+                            ui,
+                            egui::Rect::from_min_size(
+                                egui::pos2(20.0, 30.0),
+                                egui::vec2(180.0, 200.0),
+                            ),
+                            "edge-controls",
+                            |ui| {
+                                let response = match control {
+                                    0 => ui.button("Refresh data"),
+                                    1 => theme::text_button(
+                                        ui,
+                                        "About",
+                                        egui::vec2(ui.available_width(), 30.0),
+                                        false,
+                                    ),
+                                    2 => ui.add(egui::DragValue::new(&mut value)),
+                                    _ => ui.add(
+                                        egui::TextEdit::singleline(&mut text)
+                                            .desired_width(ui.available_width()),
+                                    ),
+                                };
+                                point.set(response.rect.center());
+                            },
+                        );
+                    });
+                },
+            )
+        };
+        draw(vec![]);
+        draw(vec![]);
+        let point = point.get();
+        for events in [
+            vec![Event::PointerMoved(point)],
+            vec![Event::PointerButton {
+                pos: point,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+        ] {
+            let frame = draw(events);
+            let mut borders = 0;
+            for clipped in frame.shapes {
+                if let egui::Shape::Rect(rect) = clipped.shape {
+                    if rect.stroke.width > 0.0
+                        || rect.fill == theme::HOVER
+                        || rect.fill == theme::PRESSED
+                    {
+                        borders += 1;
+                        assert!(
+                            clipped
+                                .clip_rect
+                                .contains_rect(rect.rect.expand(rect.stroke.width / 2.0)),
+                            "control {control} border clipped: {:?} vs {:?}",
+                            rect.rect,
+                            clipped.clip_rect
+                        );
+                    }
+                }
+            }
+            assert!(borders > 0);
+        }
+    }
+}
+
+#[test]
+fn sidebar_footer_buttons_fit_their_clip_in_both_languages() {
+    use good_tools_app::{
+        config::GameNavigation,
+        gui::{shell, state::Lang},
+    };
+    for initial_lang in [Lang::Zh, Lang::En] {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let mut navigation = GameNavigation::default();
+        let mut lang = initial_lang;
+        let mut draw = |events| {
+            ctx.run_headless(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(150.0, 500.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        shell::sidebar(ui, &mut lang, &mut navigation, &mut Default::default())
+                    });
+                },
+            )
+        };
+        draw(vec![]);
+        let initial = draw(vec![]);
+        for label in [
+            initial_lang.t("English", "中文"),
+            initial_lang.t("关于", "About"),
+        ] {
+            let point = painted_text(&initial.shapes)
+                .into_iter()
+                .find(|(text, _)| text == label)
+                .unwrap()
+                .1;
+            for events in [
+                vec![Event::PointerMoved(point)],
+                vec![Event::PointerButton {
+                    pos: point,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                }],
+            ] {
+                let frame = draw(events);
+                let mut borders = 0;
+                for clipped in frame.shapes {
+                    if let egui::Shape::Rect(rect) = clipped.shape {
+                        if rect.stroke.width > 0.0 {
+                            borders += 1;
+                            assert!(
+                                clipped
+                                    .clip_rect
+                                    .contains_rect(rect.rect.expand(rect.stroke.width / 2.0)),
+                                "footer {label} border clipped: {:?} vs {:?}",
+                                rect.rect,
+                                clipped.clip_rect
+                            );
+                        }
+                    }
+                }
+                assert!(borders > 0);
+            }
+            draw(vec![
+                Event::PointerMoved(egui::Pos2::ZERO),
+                Event::PointerButton {
+                    pos: egui::Pos2::ZERO,
+                    button: PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Modifiers::NONE,
+                },
+            ]);
+        }
+    }
+}
+
+#[test]
+fn capture_count_rows_use_empty_meter_space_for_readable_labels() {
+    use good_tools_app::gui::{
+        state::Lang,
+        task_progress::{self, Step, StepState},
+    };
+    let ctx = egui::Context::default();
+    theme::setup(&ctx);
+    let mut step = Step::new("achievements", "成就", "Achievements");
+    step.state = StepState::Running;
+    let mut output = None;
+    for _ in 0..2 {
+        output = Some(ctx.run_headless(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(230.0, 100.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default()
+                    .show(ctx, |ui| task_progress::row(ui, Lang::En, &step));
+            },
+        ));
+    }
+    let frame = output.unwrap();
+    let label = frame
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "Achievements" => Some(text),
+            _ => None,
+        })
+        .unwrap();
+    assert!(!label
+        .galley
+        .rows
+        .iter()
+        .flat_map(|row| &row.glyphs)
+        .any(|glyph| glyph.chr == '…'));
+}
+
+#[test]
+fn about_retains_all_credits_and_card_edges_inside_the_scroll_clip() {
+    use good_tools_app::gui::{
+        credits::{self, CreditSet},
+        state::Lang,
+    };
+    for lang in [Lang::En, Lang::Zh] {
+        for width in [380.0, 860.0] {
+            let ctx = egui::Context::default();
+            theme::setup(&ctx);
+            let mut frame = None;
+            for _ in 0..2 {
+                frame = Some(ctx.run_headless(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 2000.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default()
+                            .show(ctx, |ui| credits::show(ui, lang, CreditSet::Full));
+                    },
+                ));
+            }
+            let frame = frame.unwrap();
+            let texts = painted_text(&frame.shapes);
+            for name in [
+                "yas",
+                "Irminsul",
+                "auto-artifactarium",
+                "Inventory Kamera",
+                "Reliquary Archiver",
+                "Fribbels Star Rail Optimizer",
+                "YAS Star Rail",
+                "wormtql",
+                "1803233552",
+                "Andrewthe13th",
+            ] {
+                assert!(
+                    texts.iter().any(|(text, _)| text == name),
+                    "missing credit: {name}"
+                );
+            }
+            if width >= 640.0 {
+                let genshin = texts
+                    .iter()
+                    .find(|(text, _)| text == lang.t("原神", "Genshin"))
+                    .unwrap()
+                    .1;
+                let hsr = texts
+                    .iter()
+                    .find(|(text, _)| text == lang.t("星穹铁道", "Star Rail"))
+                    .unwrap()
+                    .1;
+                assert!(hsr.x > genshin.x + 200.0);
+                assert!((hsr.y - genshin.y).abs() < 1.0);
+            }
+            for clipped in &frame.shapes {
+                if let egui::Shape::Rect(rect) = &clipped.shape {
+                    if rect.stroke.color == theme::BORDER && rect.stroke.width > 0.0 {
+                        assert!(
+                            clipped
+                                .clip_rect
+                                .contains_rect(rect.rect.expand(rect.stroke.width / 2.0)),
+                            "credit border was clipped at {width}: {:?} vs {:?}",
+                            rect.rect,
+                            clipped.clip_rect
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct Store {
+    saved: Option<ManagerJournal>,
+    fail: bool,
+    lease: bool,
+}
+impl ManagerJournalStore for Store {
+    fn load(&mut self) -> Result<Option<ManagerJournal>, String> {
+        Ok(self.saved.clone())
+    }
+    fn save(&mut self, journal: &ManagerJournal) -> Result<(), String> {
+        if self.fail {
+            return Err("disk-full".into());
+        }
+        self.saved = Some(journal.clone());
+        Ok(())
+    }
+    fn holds_exclusive_apply_lease(&self) -> bool {
+        self.lease
+    }
+}
+
+fn fixture_journal() -> ManagerJournal {
+    use hsr_scanner::manager::{
+        build_manager_plan, ManagedGearObservation, ManagedState, ManagerInstructionsEnvelope,
+    };
+    let envelope = ManagerInstructionsEnvelope::parse_json(include_str!(
+        "../../experimental/hsr/tests/fixtures/manager_instructions_v1.json"
+    ))
+    .unwrap();
+    let plan = build_manager_plan(
+        &envelope,
+        &[ManagedGearObservation {
+            matcher: envelope.instructions[0].matcher.clone(),
+            state: ManagedState {
+                lock: Some(false),
+                discard: Some(false),
+            },
+            equipped: Some(false),
+        }],
+    )
+    .unwrap();
+    let entries = plan
+        .entries
+        .iter()
+        .flat_map(|entry| {
+            entry.changes.iter().cloned().map(|change| JournalEntry {
+                instruction_id: entry.instruction_id.clone(),
+                change,
+                status: JournalStatus::Pending,
+                toggle_attempts: 0,
+                outcome_code: None,
+            })
+        })
+        .collect();
+    ManagerJournal {
+        schema: hsr_scanner::manager::MANAGER_JOURNAL_SCHEMA.into(),
+        schema_version: hsr_scanner::manager::MANAGER_JOURNAL_SCHEMA_VERSION,
+        request_id: plan.request_id.clone(),
+        idempotency_key: plan.idempotency_key.clone(),
+        plan_digest: plan.digest.clone(),
+        plan,
+        entries,
+    }
+}
+
+#[test]
+fn manager_progress_waits_for_durable_verification_and_preserves_lease_and_stop() {
+    let mut journal = fixture_journal();
+    assert!(!journal.entries.is_empty());
+    let mut initial = TaskProgress::default();
+    plan_steps(&mut initial, &journal.plan);
+    let progress = Arc::new(Mutex::new(initial));
+    let status = Arc::new(Mutex::new(TaskStatus::Idle));
+    let cancel = yas::cancel::CancelToken::new();
+    let mut store = TrackedJournal {
+        inner: Store {
+            lease: true,
+            ..Default::default()
+        },
+        progress: progress.clone(),
+        status: status.clone(),
+        cancel: cancel.clone(),
+    };
+    assert!(store.holds_exclusive_apply_lease());
+    journal.entries[0].status = JournalStatus::MutationStarted;
+    store.save(&journal).unwrap();
+    assert_eq!(
+        progress
+            .lock()
+            .unwrap()
+            .steps
+            .iter()
+            .map(|s| s.completed)
+            .sum::<usize>(),
+        0
+    );
+    journal.entries[0].status = JournalStatus::Verified;
+    store.inner.fail = true;
+    assert_eq!(store.save(&journal).unwrap_err(), "disk-full");
+    assert_eq!(
+        progress
+            .lock()
+            .unwrap()
+            .steps
+            .iter()
+            .map(|s| s.completed)
+            .sum::<usize>(),
+        0
+    );
+    store.inner.fail = false;
+    store.save(&journal).unwrap();
+    assert_eq!(
+        progress
+            .lock()
+            .unwrap()
+            .steps
+            .iter()
+            .map(|s| s.completed)
+            .sum::<usize>(),
+        1
+    );
+    cancel.cancel(yas::cancel::StopReason::UserAbort);
+    *status.lock().unwrap() = TaskStatus::Running(UiText::new("正在停止", "Stopping"));
+    journal.entries[0].status = JournalStatus::MutationStarted;
+    store.save(&journal).unwrap();
+    assert!(
+        matches!(&*status.lock().unwrap(), TaskStatus::Running(text) if text.text(good_tools_app::gui::state::Lang::En) == "Stopping")
+    );
+    journal.entries[0].status = JournalStatus::NeedsReview;
+    store.save(&journal).unwrap();
+    assert!(progress
+        .lock()
+        .unwrap()
+        .steps
+        .iter()
+        .any(|s| s.state == StepState::Interrupted));
+    store.load().unwrap();
+}
+
+#[test]
+fn scanner_actions_stay_visible_when_task_details_exceed_a_small_window() {
+    use good_tools_app::{
+        config::StarRailSettings,
+        gui::{
+            scanner_tab, star_rail_scanner_tab,
+            star_rail_state::StarRailState,
+            state::{AppState, Lang, UiError},
+        },
+    };
+    for star_rail in [false, true] {
+        let ctx = egui::Context::default();
+        theme::setup(&ctx);
+        let mut genshin = AppState::new();
+        genshin.lang = Lang::En;
+        genshin.user_config.traveler_name = "Traveler".into();
+        let mut settings = StarRailSettings::default();
+        settings.trailblazer_name = "Trailblazer".into();
+        settings.trailblazer_gender = Some(hsr_scanner::TrailblazerGender::Stelle);
+        let mut hsr = StarRailState::new(String::new());
+        let mut handle = None;
+        let error = TaskStatus::Failed(UiError::from_message(
+            UiText::new("错误", "A long localized error. ".repeat(30)),
+            "technical details\n".repeat(30),
+        ));
+        *genshin.scan_status.lock().unwrap() = error.clone();
+        *hsr.scan_status.lock().unwrap() = error;
+        for _ in 0..2 {
+            let output = ctx.run_headless(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(760.0, 500.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(140.0, 100.0),
+                            egui::vec2(600.0, 235.0),
+                        );
+                        layout::region(ui, rect, "small-workspace", |ui| {
+                            let mut split = 0.5;
+                            layout::workspace(ui, &mut split, |ui, pane| {
+                                if matches!(pane, layout::Pane::Status) {
+                                    if star_rail {
+                                        star_rail_scanner_tab::show_status(
+                                            ui,
+                                            Lang::En,
+                                            &mut settings,
+                                            &mut hsr,
+                                            false,
+                                            false,
+                                        );
+                                    } else {
+                                        scanner_tab::show_status(
+                                            ui,
+                                            &mut genshin,
+                                            &mut handle,
+                                            false,
+                                            false,
+                                        );
+                                    }
+                                }
+                            });
+                        });
+                    });
+                },
+            );
+            let retry = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == "Retry" => Some((
+                        clipped.clip_rect,
+                        egui::Rect::from_min_size(text.pos, text.galley.size()),
+                    )),
+                    _ => None,
+                })
+                .expect("retry action remains rendered");
+            assert!(
+                retry.0.contains_rect(retry.1),
+                "retry action was clipped: {retry:?}"
+            );
+        }
+    }
+}

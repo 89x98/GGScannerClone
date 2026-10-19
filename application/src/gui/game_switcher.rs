@@ -1,4 +1,4 @@
-use eframe::egui;
+use eframe::egui::{self, AtomExt};
 
 use crate::config::Game;
 
@@ -18,6 +18,7 @@ pub fn show(
     lang: Lang,
     active_game: &mut Game,
     enabled: bool,
+    logos: Option<&super::shell::Logos>,
 ) -> GameSwitcherLayout {
     let gap = ui.spacing().item_spacing.x;
     let button_width = ((ui.available_width() - gap) / 2.0).max(1.0);
@@ -25,10 +26,11 @@ pub fn show(
 
     let mut genshin_width = 0.0;
     let mut star_rail_width = 0.0;
-    ui.horizontal(|ui| {
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
         let genshin = ui.add_enabled(
             enabled,
-            egui::Button::new(egui::RichText::new(lang.t("原神", "Genshin")).size(17.0))
+            game_button(lang.t("原神", "Genshin"), logos.map(|v| &v.genshin))
                 .selected(*active_game == Game::Genshin)
                 .min_size(egui::vec2(button_width, button_height)),
         );
@@ -39,7 +41,7 @@ pub fn show(
 
         let star_rail = ui.add_enabled(
             enabled,
-            egui::Button::new(egui::RichText::new(lang.t("星穹铁道", "Star Rail")).size(17.0))
+            game_button(lang.t("星穹铁道", "Star Rail"), logos.map(|v| &v.star_rail))
                 .selected(*active_game == Game::StarRail)
                 .min_size(egui::vec2(button_width, button_height)),
         );
@@ -53,4 +55,21 @@ pub fn show(
         genshin_width,
         star_rail_width,
     }
+}
+
+fn game_button<'a>(label: &'a str, logo: Option<&egui::TextureHandle>) -> egui::Button<'a> {
+    let text = egui::RichText::new(label)
+        .size(16.0)
+        .atom_align(egui::Align2::LEFT_CENTER);
+    match logo {
+        Some(logo) => egui::Button::new((
+            egui::Image::new((logo.id(), egui::vec2(24.0, 24.0)))
+                .atom_align(egui::Align2::LEFT_CENTER),
+            text,
+            egui::Atom::grow(),
+        )),
+        None => egui::Button::new((text, egui::Atom::grow())),
+    }
+    .corner_radius(7.0)
+    .wrap_mode(egui::TextWrapMode::Extend)
 }

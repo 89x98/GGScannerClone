@@ -6,8 +6,6 @@ use image::RgbImage;
 use yas::{log_debug, log_info, log_warn};
 
 use yas::cancel::CancelToken;
-#[cfg(target_os = "windows")]
-use yas::capture::PrintWindowCapturer;
 #[cfg(all(target_os = "windows", feature = "capturer_wgc"))]
 use yas::capture::WgcCapturer;
 use yas::capture::{CaptureMethod, Capturer, GenericCapturer};
@@ -99,8 +97,8 @@ impl GenshinGameController {
                 "Capture method: BitBlt (non-HDR mode; using low-overhead GDI capture)"
             ),
             (CaptureMethod::Wgc, true) => log_info!(
-                "截图方式: WGC（HDR模式，使用Windows色调映射后的截图）",
-                "Capture method: WGC (HDR mode; using Windows tone-mapped capture)"
+                "截图方式: WGC（HDR模式，使用色调映射后的截图）",
+                "Capture method: WGC (HDR mode; using tone-mapped capture)"
             ),
             (method, true) => log_info!(
                 "截图方式: {:?}（HDR模式，显式使用该截图方式）",
@@ -136,7 +134,6 @@ impl GenshinGameController {
             let hwnd = game_info.hwnd;
             return match method {
                 CaptureMethod::BitBlt => Ok(Rc::new(GenericCapturer::new()?)),
-                CaptureMethod::PrintWindow => Ok(Rc::new(PrintWindowCapturer::new(hwnd)?)),
                 CaptureMethod::Wgc => {
                     #[cfg(feature = "capturer_wgc")]
                     {
@@ -236,11 +233,7 @@ impl GenshinGameController {
     }
 
     #[cfg(target_os = "windows")]
-    fn focus_hwnd(
-        &mut self,
-        hwnd: windows_sys::Win32::Foundation::HWND,
-        settle_ms: u32,
-    ) -> bool {
+    fn focus_hwnd(&mut self, hwnd: windows_sys::Win32::Foundation::HWND, settle_ms: u32) -> bool {
         if !utils::is_window_handle_valid(hwnd) {
             return false;
         }
@@ -400,6 +393,12 @@ impl GenshinGameController {
             Err(_) => return false,
         };
 
+        super::annotator::record_region(
+            "main_world",
+            &image,
+            (30.0, 20.0, 60.0, 70.0),
+            &self.scaler,
+        );
         // The Paimon icon at 1920x1080 is a bright white/cream circular button
         // centered around (58, 50) with radius ~25px.
         // Sample several points across the icon face area.
@@ -530,9 +529,7 @@ impl GenshinGameController {
     pub fn mouse_scroll_wheel_delta(&mut self, delta: i32) {
         #[cfg(target_os = "windows")]
         self.post_wheel_to_game(delta);
-        self.system_control
-            .mouse_scroll_wheel_delta(delta)
-            .unwrap();
+        self.system_control.mouse_scroll_wheel_delta(delta).unwrap();
     }
 
     /// Genshin's UI often ignores injected `SendInput` wheel. `WM_MOUSEWHEEL`
@@ -540,7 +537,9 @@ impl GenshinGameController {
     #[cfg(target_os = "windows")]
     fn post_wheel_to_game(&self, delta: i32) {
         use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, PostMessageW, WM_MOUSEWHEEL};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetCursorPos, PostMessageW, WM_MOUSEWHEEL,
+        };
 
         let hwnd = self.game_info.hwnd as HWND;
         if hwnd.is_null() {
@@ -684,6 +683,7 @@ impl GenshinGameController {
                 .capturer
                 .capture_relative_to(rect, self.game_info.window.origin())?;
             capture_count += 1;
+            super::annotator::record_input("panel_stability", &im, "panel comparison input", false);
             let raw = im.into_raw();
 
             if panel_frames_similar(&raw, &last_capture) && capture_count > 1 {
@@ -767,6 +767,7 @@ impl GenshinGameController {
                 .capturer
                 .capture_relative_to(rect, self.game_info.window.origin())?;
             capture_count += 1;
+            super::annotator::record_input("panel_change", &im, "panel comparison input", false);
             let raw = im.into_raw();
 
             if !panel_frames_similar(&raw, &self.panel_snapshot) {
@@ -818,7 +819,18 @@ impl GenshinGameController {
             x: self.game_info.window.left + self.scaler.scale_x(flag_x) as i32,
             y: self.game_info.window.top + self.scaler.scale_y(flag_y) as i32,
         };
-        self.capturer.capture_color(pos)
+        let result = self.capturer.capture_color(pos);
+        if super::annotator::is_enabled() {
+            if let Ok(color) = &result {
+                super::annotator::record_input(
+                    "scroll_flag",
+                    &RgbImage::from_pixel(1, 1, *color),
+                    &format!("({flag_x}, {flag_y}): {color:?}"),
+                    false,
+                );
+            }
+        }
+        result
     }
 }
 

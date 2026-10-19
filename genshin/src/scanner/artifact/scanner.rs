@@ -24,7 +24,7 @@ use crate::scanner::common::grid_icon_detector::{GridIconResult, GridMode};
 use crate::scanner::common::grid_voter::{GridVoteSchedule, PagedGridVoter, ReadyItem};
 use crate::scanner::common::mappings::MappingManager;
 use crate::scanner::common::models::{DebugOcrField, DebugScanResult, GoodArtifact, GoodSubStat};
-use crate::scanner::common::ocr_factory;
+use crate::scanner::common::ocr_factory::{self, same_model};
 use crate::scanner::common::ocr_pool::SharedOcrPools;
 use crate::scanner::common::pixel_utils;
 use crate::scanner::common::roll_solver::{self, OcrCandidate, SolverInput};
@@ -390,6 +390,12 @@ impl GoodArtifactScanner {
     /// Checks 3 positions in the solid right-side region of the banner to avoid
     /// false positives from decorative text patterns or transient overlays.
     fn detect_elixir_crafted(frame: &CaptureFrame, scaler: &CoordScaler) -> bool {
+        annotator::record_region(
+            "elixir_banner",
+            &frame.image,
+            (1500.0 - frame.origin.0, 413.0 - frame.origin.1, 41.0, 21.0),
+            scaler,
+        );
         let positions: [(f64, f64); 3] = [(1510.0, 423.0), (1520.0, 423.0), (1530.0, 423.0)];
         let mut purple_count = 0;
         for &(bx, by) in &positions {
@@ -635,9 +641,12 @@ impl GoodArtifactScanner {
                 .unwrap_or_default();
         let lv1 = parse_level(&level_text1);
 
-        let level_text2 =
+        let level_text2 = if same_model(ocr, substat_ocr) {
+            level_text1.clone()
+        } else {
             Self::ocr_image_region_shifted(substat_ocr, image, ocr_regions.level, y_shift, scaler)
-                .unwrap_or_default();
+                .unwrap_or_default()
+        };
         let lv2 = parse_level(&level_text2);
 
         let level = if lv1 >= 0 && lv2 >= 0 {
@@ -737,6 +746,9 @@ impl GoodArtifactScanner {
         // Track which physical line index each solver_candidates entry came from,
         // so we can map solver outputs back to the correct OCR region for dump.
         let mut candidate_line_indices: Vec<usize> = Vec::new();
+        // Substat-engine text per physical line from phase 1, so later passes
+        // don't re-run the same model on the same crop.
+        let mut phase1_texts: [Option<String>; 4] = Default::default();
 
         // Phase 1: OCR at original width
         for i in 0..max_scan_lines {
@@ -749,6 +761,7 @@ impl GoodArtifactScanner {
                 y_shift,
                 scaler,
             );
+            phase1_texts[i] = Some(raw_texts[0].clone());
 
             // Record raw OCR text for this line immediately
             {
@@ -901,6 +914,7 @@ impl GoodArtifactScanner {
                 (0.0, -10.0),
             ];
 
+            let engines_share_model = same_model(ocr, substat_ocr);
             for i in 0..min_required {
                 if !solver_candidates[i].is_empty() {
                     continue; // Already have candidates for this line
@@ -913,10 +927,11 @@ impl GoodArtifactScanner {
 
                     // Step 0: v5 at original rect
                     // Other steps: v4 shifted first, then v5 shifted
-                    let engines: &[&dyn ImageToText<RgbImage>] = if step == 0 {
-                        &[ocr]
-                    } else {
-                        &[substat_ocr, ocr]
+                    let engines: &[&dyn ImageToText<RgbImage>] = match (step, engines_share_model) {
+                        (0, true) if phase1_texts[i].is_some() => &[],
+                        (0, _) => &[ocr],
+                        (_, true) => &[substat_ocr],
+                        (_, false) => &[substat_ocr, ocr],
                     };
 
                     for &engine in engines {
@@ -955,15 +970,18 @@ impl GoodArtifactScanner {
                 }
 
                 if !found {
-                    // Log what the fallback engines actually saw on this line
-                    let fallback_text = Self::ocr_image_region_shifted(
-                        substat_ocr,
-                        image,
-                        ocr_regions.substat_lines[i],
-                        y_shift,
-                        scaler,
-                    )
-                    .unwrap_or_default();
+                    // Log what the substat engine saw on this line
+                    let fallback_text = match &phase1_texts[i] {
+                        Some(text) => text.clone(),
+                        None => Self::ocr_image_region_shifted(
+                            substat_ocr,
+                            image,
+                            ocr_regions.substat_lines[i],
+                            y_shift,
+                            scaler,
+                        )
+                        .unwrap_or_default(),
+                    };
                     log_warn!("[artifact] idx={} sub[{}] 备选重试后仍为空（{}星 lv{}），OCR「{}」",
                         "[artifact] idx={} sub[{}] STILL EMPTY after fallback ({}* lv{}), OCR 「{}」",
                         item_index, i, rarity, level, fallback_text.trim());
@@ -1400,7 +1418,7 @@ impl GoodArtifactScanner {
         // Try v4 first, fall back to v5 if no match (v4 dict lacks some rare chars like 魈/Xiao)
         let equip_text = Self::ocr_image_region(substat_ocr, image, ocr_regions.equip, scaler)?;
         let mut location = Self::parse_equip_location(&equip_text, mappings);
-        if location.is_empty() && equip_text.trim().len() >= 2 {
+        if location.is_empty() && equip_text.trim().len() >= 2 && !same_model(ocr, substat_ocr) {
             let equip_text_v5 = Self::ocr_image_region(ocr, image, ocr_regions.equip, scaler)?;
             location = Self::parse_equip_location(&equip_text_v5, mappings);
             if !location.is_empty() {
@@ -1628,7 +1646,7 @@ impl GoodArtifactScanner {
 
         let mut bp = BackpackScanner::new(ctrl);
 
-        if total_count == 0 {
+        if total_count == 0 && !self.config.keep_five_star_filter {
             log_info!(
                 "[artifact] 背包中没有圣遗物",
                 "[artifact] no artifacts in backpack"
@@ -1636,16 +1654,32 @@ impl GoodArtifactScanner {
             return Ok(Vec::new());
         }
 
+        // The header's count describes the unfiltered inventory. When the
+        // recent-five-star filter is retained, use it only as a diagnostic;
+        // traverse a bounded budget and stop on visually confirmed empty cells.
+        let filtered_scan = self.config.keep_five_star_filter;
+        let scan_budget = if filtered_scan {
+            backpack_scanner::FILTERED_BACKPACK_SCAN_BUDGET
+        } else {
+            total_count.max(0) as usize
+        };
         let total_count = if self.config.max_count > 0 {
-            let capped = (total_count as usize).min(self.config.max_count + start_at) as i32;
+            let capped = scan_budget.min(self.config.max_count.saturating_add(start_at)) as i32;
             log_debug!(
-                "[artifact] 总计: {}（限制为{}，max_count={}）",
-                "[artifact] total: {} (capped to {} by max_count={})",
+                "[artifact] 扫描上限: {}（限制为{}，max_count={}）",
+                "[artifact] scan limit: {} (capped to {} by max_count={})",
                 total_count,
                 capped,
                 self.config.max_count
             );
             capped
+        } else if filtered_scan {
+            log_debug!(
+                "[artifact] 近期五星筛选已保留；标题数量仅作参考，使用有界视觉扫描上限 {}",
+                "[artifact] Recent-five-star filter retained; header count is informational, using bounded visual scan limit {}",
+                scan_budget
+            );
+            scan_budget as i32
         } else {
             log_debug!("[artifact] 总计: {}", "[artifact] total: {}", total_count);
             total_count
@@ -1676,6 +1710,7 @@ impl GoodArtifactScanner {
         // Metadata carries grid-based icon detection results (lock/astral/elixir).
         let (item_tx, worker_handle) =
             scan_worker::start_worker::<Option<GridIconResult>, GoodArtifact, _>(
+                !self.config.continue_on_failure,
                 move |work_item: WorkItem<Option<GridIconResult>>| {
                     // Skip queued work if the run was cancelled mid-scan.
                     if worker_cancel.is_cancelled() {
@@ -1741,16 +1776,23 @@ impl GoodArtifactScanner {
             grid_vote_schedule: GridVoteSchedule::for_page,
             probe_last_cell_per_page: false,
             detect_grid_duplicates: false,
-            detect_empty_cells: false,
+            detect_empty_cells: filtered_scan,
             min_items_before_visual_end: 0,
         };
 
         // Per-page 3-pass voting state (shared across artifact / weapon / manager).
         let total = total_count as usize;
+        // A filtered scan's traversal budget is not an item-count estimate.
+        let progress_total = if filtered_scan && self.config.max_count == 0 {
+            0
+        } else {
+            total
+        };
         if let Some(pf) = progress_fn {
-            pf(0, total, "", "");
+            pf(0, progress_total, "", "");
         }
         let mut voter: PagedGridVoter<()> = PagedGridVoter::new(total, GridMode::Artifact);
+        let mut visible_layout = None;
 
         // Helper to emit a batch of ready items to the worker channel.
         // Returns Err(()) on channel close (caller should Stop).
@@ -1781,19 +1823,29 @@ impl GoodArtifactScanner {
         bp.scan_grid(total, &scan_config, start_at, |ctrl, event| {
             match event {
                 GridEvent::PageStarted { .. } => ScanAction::Continue,
-                GridEvent::PageCompleted { .. } => ScanAction::Continue,
+                GridEvent::PageCompleted { .. } => {
+                    if worker_handle.stop_requested() {
+                        ScanAction::Stop
+                    } else {
+                        ScanAction::Continue
+                    }
+                },
                 GridEvent::PageScrolled => {
+                    visible_layout = None;
                     voter.reset_page();
                     ScanAction::Continue
                 },
-                GridEvent::Item { idx, frame, .. } => {
+                GridEvent::Item {
+                    idx, frame, layout, ..
+                } => {
+                    visible_layout = Some(layout);
                     // Check if worker has signaled stop (e.g., too many errors)
                     if worker_handle.stop_requested() {
                         return ScanAction::Stop;
                     }
 
                     if let Some(pf) = progress_fn {
-                        pf(idx + 1, total, "", "");
+                        pf(idx + 1, progress_total, "", "");
                     }
 
                     // Quick rarity check on main thread to stop early.
@@ -1808,7 +1860,15 @@ impl GoodArtifactScanner {
                         return ScanAction::Stop;
                     }
 
-                    let ready = voter.record(idx, frame, (), &scaler);
+                    let ready = voter.record_with_layout(
+                        idx,
+                        frame,
+                        (),
+                        &scaler,
+                        layout.page_start_idx,
+                        layout.page_items,
+                        layout.screen_start_row,
+                    );
                     if emit_ready(ready, &item_tx).is_err() {
                         return ScanAction::Stop;
                     }
@@ -1826,33 +1886,41 @@ impl GoodArtifactScanner {
         drop(item_tx);
 
         // Wait for all OCR work to complete and collect results
-        let (artifacts, index_map, worker_aborted) = worker_handle.join_with_status();
+        let outcome = worker_handle.join(|index| {
+            crate::scanner::common::backpack_scanner::focus_failed_item(
+                ctrl,
+                visible_layout,
+                index + start_at,
+                self.config.panel_timeout + self.config.extra_delay,
+            );
+        })?;
+        let artifacts = outcome.items;
+        let index_map = outcome.index_map;
 
         // A worker stop means items kept failing until the scan gave up. Its
         // partial results are not publishable: reporting them as a completed
         // scan would overwrite the cached inventory with a truncated list, and
         // an empty one looks exactly like "this account has no artifacts".
-        if worker_aborted && !ctrl.cancel_token().is_cancelled() {
+        if outcome.stopped && !ctrl.cancel_token().is_cancelled() {
             let elapsed = now.elapsed().unwrap_or_default().as_secs_f64();
             log_error!(
                 "[artifact] 连续失败后中止：仅识别 {} / {} 个，耗时{:.3}s。\
-                 常见原因：点击未生效（游戏窗口未置顶，或 Wayland 下 ydotool 绝对定位失准），\
+                 常见原因：点击未生效（游戏窗口未置顶，或输入注入失准），\
                  导致背包页签或详情面板没有切换。",
                 "[artifact] aborted after repeated item failures: only {} / {} recognized in {:.3}s. \
                  The usual cause is that clicks never reached the game (window not raised, or inaccurate \
-                 ydotool absolute positioning on Wayland), so the inventory tab or detail panel never changed.",
+                 input injection), so the inventory tab or detail panel never changed.",
                 artifacts.len(),
                 total_count,
                 elapsed
             );
             bail!(
                 "圣遗物扫描连续失败后中止（识别 {} / {}）。\
-                 常见原因：点击未生效——游戏窗口未置顶，或 Wayland 会话下 ydotool 绝对定位失准，\
+                 常见原因：点击未生效——游戏窗口未置顶，或输入注入绝对定位失准，\
                  导致背包页签/详情面板未切换。\n\
                  / Artifact scan aborted after repeated item failures ({} / {} recognized). The usual \
-                 cause is that clicks never reached the game: the window was not raised, or ydotool \
-                 absolute positioning is inaccurate on a Wayland session, so the inventory tab or \
-                 detail panel never changed.",
+                 cause is that clicks never reached the game: the window was not raised, or absolute \
+                 input positioning is inaccurate, so the inventory tab or detail panel never changed.",
                 artifacts.len(),
                 total_count,
                 artifacts.len(),
@@ -1862,9 +1930,12 @@ impl GoodArtifactScanner {
 
         // Write index map for debug image correlation (output position → folder name)
         if self.config.dump_images {
-            let map_path = std::path::Path::new("debug_images")
-                .join("artifacts")
-                .join("index_map.json");
+            let map_path = crate::scanner::common::dump_paths::category_dir(
+                "debug_images",
+                "genshin",
+                "artifacts",
+            )
+            .join("index_map.json");
             let _ = std::fs::write(
                 &map_path,
                 serde_json::to_string(&index_map).unwrap_or_default(),
@@ -2504,5 +2575,97 @@ mod tests {
                 std::mem::discriminant(&other)
             ),
         }
+    }
+
+    /// Scan a 5-star flower whose 4th substat line only parses on a shifted crop.
+    fn scan_flower_with_shifted_substat(
+        level_ocr: &FakeOcr,
+        general_ocr: &FakeOcr,
+    ) -> GoodArtifact {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 5);
+        paint_artifact_lock(&mut image, true, 0.0);
+        paint_artifact_astral(&mut image, false, 0.0);
+        paint_elixir_banner(&mut image, false);
+        let mut config = default_config();
+        config.continue_on_failure = true;
+
+        let result = GoodArtifactScanner::scan_single_artifact(
+            level_ocr,
+            general_ocr,
+            &CaptureFrame::full(image),
+            &make_1080p_scaler(),
+            &ArtifactOcrRegions::new(),
+            &make_test_mappings(),
+            &config,
+            0,
+            None,
+        )
+        .unwrap();
+        match result {
+            ArtifactScanResult::Artifact(a) => a,
+            other => panic!(
+                "Expected Artifact, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn test_artifact_same_model_skips_duplicate_crops_only() {
+        let level_ocr = FakeOcr::new(vec!["+20"]).with_model_id("ppocrv6tiny");
+        let general_ocr = FakeOcr::new(vec![
+            "生之花",
+            "生命值",
+            "暴击率+10.5%",
+            "暴击伤害+21.0%",
+            "攻击力+9.3%",
+            "乱码无法识别",      // sub3 direct
+            "乱码无法识别",      // sub3 icon-masked
+            "元素充能效率+6.5%", // sub3 shifted crop (dy=-2)
+            "角斗士的终幕礼",
+            "口口口已装备", // equip: unmatched, no same-model retry
+        ])
+        .with_model_id("ppocrv6tiny");
+
+        let a = scan_flower_with_shifted_substat(&level_ocr, &general_ocr);
+
+        assert_eq!(a.level, 20);
+        assert_eq!(a.substats.len(), 4);
+        assert!(a.location.is_empty());
+        assert_eq!(level_ocr.call_count(), 1);
+        assert_eq!(general_ocr.call_count(), 10);
+    }
+
+    #[test]
+    fn test_artifact_different_models_keep_second_engine_reads() {
+        let level_ocr = FakeOcr::new(vec![
+            "+20",
+            "",             // sub3 original rect retry
+            "纳西妲已装备", // equip retry
+        ])
+        .with_model_id("ppocrv5");
+        let general_ocr = FakeOcr::new(vec![
+            "生之花",
+            "生命值",
+            "+20", // level cross-read
+            "暴击率+10.5%",
+            "暴击伤害+21.0%",
+            "攻击力+9.3%",
+            "乱码无法识别",
+            "乱码无法识别",
+            "元素充能效率+6.5%",
+            "角斗士的终幕礼",
+            "口口口已装备",
+        ])
+        .with_model_id("ppocrv4");
+
+        let a = scan_flower_with_shifted_substat(&level_ocr, &general_ocr);
+
+        assert_eq!(a.level, 20);
+        assert_eq!(a.substats.len(), 4);
+        assert_eq!(a.location, "Nahida");
+        assert_eq!(level_ocr.call_count(), 3);
+        assert_eq!(general_ocr.call_count(), 11);
     }
 }

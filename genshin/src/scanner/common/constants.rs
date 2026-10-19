@@ -121,6 +121,8 @@ pub const CHAR_TALENT_LEVEL_RECT: (f64, f64, f64, f64) = (255.0, 168.0, 68.0, 26
 
 /// Next character button position
 pub const CHAR_NEXT_POS: (f64, f64) = (1850.0, 530.0);
+/// Previous character button, mirrored across the character screen.
+pub const CHAR_PREV_POS: (f64, f64) = (70.0, 530.0);
 
 // ================================================================
 // Weapon scanner coordinates (at 1920x1080 base resolution)

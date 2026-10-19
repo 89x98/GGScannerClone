@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
@@ -18,9 +19,14 @@ pub fn set_thread_log_source(src: LogSource) {
     LOG_SOURCE_OVERRIDE.with(|c| c.set(Some(src)));
 }
 
-/// Update the global log level filter (call when verbose checkbox toggles).
-pub fn set_verbose(verbose: bool) {
-    let level = if verbose {
+static GENSHIN_VERBOSE: AtomicBool = AtomicBool::new(false);
+static HSR_VERBOSE: AtomicBool = AtomicBool::new(false);
+
+/// Enable field-level debug logs independently for each game's modules.
+pub fn set_game_verbose(genshin: bool, star_rail: bool) {
+    GENSHIN_VERBOSE.store(genshin, Ordering::Relaxed);
+    HSR_VERBOSE.store(star_rail, Ordering::Relaxed);
+    let level = if genshin || star_rail {
         LevelFilter::Debug
     } else {
         LevelFilter::Info
@@ -200,6 +206,18 @@ impl Log for GuiLogger {
         if metadata.level() > max {
             return false;
         }
+        if metadata.level() == Level::Debug {
+            let verbose = if metadata.target().starts_with("hsr_scanner") {
+                HSR_VERBOSE.load(Ordering::Relaxed)
+            } else if metadata.target().starts_with("genshin_scanner") {
+                GENSHIN_VERBOSE.load(Ordering::Relaxed)
+            } else {
+                GENSHIN_VERBOSE.load(Ordering::Relaxed) || HSR_VERBOSE.load(Ordering::Relaxed)
+            };
+            if !verbose {
+                return false;
+            }
+        }
         // Our crates pass through at Info+ (and Debug when verbose).
         // Third-party crates: only Warn and Error.
         match metadata.level() {
@@ -208,6 +226,7 @@ impl Log for GuiLogger {
                 matches!(metadata.target(),
                     t if t.starts_with("yas")
                         || t.starts_with("genshin_scanner")
+                        || t.starts_with("hsr_scanner")
                         || t.starts_with("good_tools_app")
                         || t.starts_with("yas_core"))
             },
@@ -291,4 +310,49 @@ fn format_timestamp() -> String {
     let minutes = (secs_of_day % 3600) / 60;
     let seconds = secs_of_day % 60;
     format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hsr_progress_is_retained_as_application_logging() {
+        let logger = GuiLogger {
+            scanner: Arc::new(LogStore::new(20)),
+            manager: Arc::new(LogStore::new(20)),
+            file_sink: None,
+        };
+        log::set_max_level(LevelFilter::Info);
+        let hsr = Metadata::builder()
+            .level(Level::Info)
+            .target("hsr_scanner::scanner")
+            .build();
+        assert!(logger.enabled(&hsr));
+        let external = Metadata::builder()
+            .level(Level::Info)
+            .target("reqwest")
+            .build();
+        assert!(!logger.enabled(&external));
+        let hsr_debug = Metadata::builder()
+            .level(Level::Debug)
+            .target("hsr_scanner::ocr::localized")
+            .build();
+        let genshin_debug = Metadata::builder()
+            .level(Level::Debug)
+            .target("genshin_scanner::scanner::localized")
+            .build();
+        let error = Metadata::builder()
+            .level(Level::Error)
+            .target("hsr_scanner::ocr::localized")
+            .build();
+        set_game_verbose(false, true);
+        assert!(logger.enabled(&hsr_debug));
+        assert!(!logger.enabled(&genshin_debug));
+        set_game_verbose(true, false);
+        assert!(!logger.enabled(&hsr_debug));
+        assert!(logger.enabled(&genshin_debug));
+        set_game_verbose(false, false);
+        assert!(logger.enabled(&error));
+    }
 }

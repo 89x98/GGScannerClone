@@ -1,7 +1,8 @@
 //! HSR-Scanner v4 interchange, as consumed by Fribbels and Reliquary clients.
 //! `source` is the importer's required format discriminator; `generator` records
-//! the actual producer. Account and server-instance identifiers are not exported.
-//! See `docs/HSR_EXPORT.md`.
+//! the actual producer. The only account identifier exported is the UID the
+//! screenshot scanner reads from the on-screen watermark (`metadata.uid`, as
+//! HSR-Scanner does); server item ids are never exported. See `docs/HSR_EXPORT.md`.
 //!
 //! Screenshot OCR and packet capture both write this shape. OCR omits fields it
 //! cannot observe rather than emitting a second schema.
@@ -20,6 +21,8 @@ pub struct CharacterDetails {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ability_version: Option<u32>,
     pub skills: BTreeMap<String, u32>,
+    /// Capture-only one-time unlock flags. Screenshot scans leave these empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub traces: BTreeMap<String, bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memosprite: Option<BTreeMap<String, u32>>,
@@ -30,6 +33,8 @@ pub struct CaptureExportDetails {
     pub characters: BTreeMap<u32, CharacterDetails>,
     pub trailblazer: Option<String>,
     pub current_trailblazer_path: Option<String>,
+    /// Screenshot scans read the on-screen UID watermark; capture leaves it unset.
+    pub uid: Option<u64>,
 }
 
 pub fn build_scanner_export(
@@ -61,7 +66,8 @@ pub fn build_scanner_export(
         let r = refs
             .light_cone(c.light_cone_id)
             .ok_or_else(|| invalid("unknown Light Cone"))?;
-        // TODO(ocr): Chinese 「装备中」 has no character name; location stays "".
+        // The live walker follows the Equipped link when the strip has no name.
+        // If no owner was observed, v4 represents that location as an empty string.
         // v4 requires a lock boolean; an unread lock icon serializes as false.
         cones.push(json!({"id": c.light_cone_id.to_string(), "name": r.name.en,
             "level": c.level, "ascension": c.ascension, "superimposition": c.superimposition,
@@ -84,7 +90,7 @@ pub fn build_scanner_export(
             "value": s.value}))
             })
             .collect::<HsrResult<Vec<_>>>()?;
-        // TODO(ocr): equipped character is often unknown from the portrait row.
+        // The live walker resolves nameless equipped strips through the owner page.
         // v4 requires lock/discard booleans; unread icons serialize as false.
         relics.push(json!({"set_id": r.set_key, "name": r.set_name.en,
             "slot": match r.slot { GearSlot::Head => "Head", GearSlot::Hands => "Hands",
@@ -102,7 +108,7 @@ pub fn build_scanner_export(
             .find_map(|c| trailblazer_gender(c.character_id))
     });
     let mut metadata = Map::new();
-    metadata.insert("uid".into(), Value::Null);
+    metadata.insert("uid".into(), json!(details.uid));
     metadata.insert("trailblazer".into(), json!(trailblazer));
     if let Some(path) = &details.current_trailblazer_path {
         metadata.insert("current_trailblazer_path".into(), json!(path));
@@ -146,13 +152,7 @@ fn location(id: Option<u32>) -> String {
 }
 
 pub(crate) fn trailblazer_gender(avatar_id: u32) -> Option<&'static str> {
-    (8001..9000)
-        .contains(&avatar_id)
-        .then_some(if avatar_id % 2 == 0 {
-            "Stelle"
-        } else {
-            "Caelus"
-        })
+    TrailblazerGender::of(avatar_id).map(TrailblazerGender::name)
 }
 
 pub(crate) fn path_name(path: &str) -> HsrResult<&str> {

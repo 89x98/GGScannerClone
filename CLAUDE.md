@@ -37,6 +37,8 @@ src/
 ├── cli.rs                     # CLI entry point, orchestrates all scanning + run_server_core()
 ├── server.rs                  # HTTP server (tiny_http): /manage, /equip, /status, /result, /artifacts
 ├── updater.rs                 # Auto-update: GitHub release check + self-replace
+├── game_data.rs               # Shared non-achievement OCR/capture reference and cache
+├── game_data/                 # Capture types and OCR mapping document types
 ├── manager/                   # Artifact lock/equip manager (server-driven)
 │   ├── orchestrator.rs        # ArtifactManager: top-level execute() and execute_equip()
 │   ├── lock_manager.rs        # LockManager: single-pass backpack scan + per-page lock toggle
@@ -90,7 +92,6 @@ src/capture/
 ├── mod.rs
 ├── packet_capture.rs          # UDP capture via pktmon on ports 22101–22102
 ├── monitor.rs                 # CaptureMonitor: orchestrates capture, decryption, data accumulation
-├── data_cache.rs              # Downloads/caches data_cache.json from ggartifact.com
 ├── data_types.rs              # DataCache types (irminsul/anime-game-data format)
 ├── player_data.rs             # PlayerData: converts captured packets → GOOD v3 export
 └── testdata/                  # Binary test fixtures (items.bin, avatars.bin, noise.bin)
@@ -284,6 +285,8 @@ In `OCR_CONFUSIONS` array. Rules:
 
 Level uses dual-engine (tries both, takes max valid). Substats use only the general engine. Results are collected as `OcrCandidate` lists per line, then validated by the roll solver.
 
+Second-engine reads (level cross-read, equip retry, substat same-rect retry, character name cross-check, weapon equip fallback) are skipped when both engines run the same model (`ocr_factory::same_model`, via `ImageToText::model_id`) — re-running identical weights on an identical crop cannot change the result. Retries on a different crop (shifted/narrowed substat rects, icon-masked, grayscale set name, other Y probes) always run.
+
 ### Roll Solver (`roll_solver.rs`)
 
 Validates substat combinations against game mechanics:
@@ -350,7 +353,6 @@ cargo build --release --features capture --bin GOODCapture
 
 - `HashMap<u16, String>` mapping game version → base64-encoded key
 - External key file (`keys/gi.json` next to exe) overrides embedded keys, allowing updates without recompiling
-- Keys are per game version, NOT per server channel — same keys work for official (官服) and Bilibili (B服) servers
 
 ### Dependencies (capture-only)
 

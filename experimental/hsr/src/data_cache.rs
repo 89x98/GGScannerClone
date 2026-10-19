@@ -3,7 +3,7 @@ use crate::{
     model::ReferenceSnapshot, packet_reference::PacketReferences, reference::ReferenceCache,
     HsrError, HsrResult, LocalizedText,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     fs,
     io::Read,
@@ -12,25 +12,28 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub const DATA_CACHE_URL: &str = "https://hsr.ggartifact.com/good/hsr_data_cache.json";
+pub const DATA_CACHE_URL: &str = "https://hsr.ggartifact.com/good/hsr_scanner_data.json";
 pub const DATA_CACHE_DIRECTORY: &str = "data/hsr";
+const DATA_FILE: &str = "hsr_scanner_data.json";
+// Old combined and briefly separated caches are removed at the new boundary.
 const TTL: u64 = 2 * 3600;
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
 static CACHE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CaptureDataDocument {
+pub struct SharedDataDocument {
     pub format_version: u32,
     pub snapshot: ReferenceSnapshot,
     pub packet: PacketReferences,
 }
 
-impl CaptureDataDocument {
+impl SharedDataDocument {
     pub fn validate(&self) -> HsrResult<ReferenceCache> {
-        if self.format_version != 1
+        if self.format_version != 2
             || self.snapshot.provider != "gilore.ggstarrail-reference"
             || self.snapshot.revision != self.packet.source_revision
+            || !self.snapshot.achievement_ids.is_empty()
         {
             return Err(error(
                 "HSR-REF-FORMAT",
@@ -53,21 +56,15 @@ impl CaptureDataDocument {
         }
         let cache = ReferenceCache::from_snapshot(self.snapshot.clone())?;
         cache.validate_live_complete_profile()?;
-        if cache.achievement_count() == 0 {
-            return Err(error(
-                "HSR-REF-INCOMPLETE",
-                "achievement reference is empty",
-            ));
-        }
         cache.with_packet_references(self.packet.clone())
     }
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DiskCache {
+struct DiskCache<T> {
     fetched_at: u64,
-    data: CaptureDataDocument,
+    data: T,
 }
 
 fn error(code: &'static str, detail: impl Into<String>) -> HsrError {
@@ -79,6 +76,7 @@ fn error(code: &'static str, detail: impl Into<String>) -> HsrError {
 pub fn load_data_cache() -> HsrResult<ReferenceCache> {
     match load_from_url(Path::new(DATA_CACHE_DIRECTORY), DATA_CACHE_URL, false) {
         Ok(cache) => Ok(cache),
+        Err(error) if error.code() == "HSR-REF-CACHE-CLEANUP" => Err(error),
         Err(error) => match crate::load_embedded_gilore_reference() {
             Ok(cache) => {
                 yas::log_warn!(
@@ -86,7 +84,7 @@ pub fn load_data_cache() -> HsrResult<ReferenceCache> {
                     "Star Rail game data could not be downloaded; using the built-in reference. Full error details: {}",
                     error
                 );
-                Ok(cache)
+                Ok(cache.without_achievements())
             },
             Err(_) => Err(error),
         },
@@ -97,37 +95,107 @@ pub fn force_refresh() -> HsrResult<()> {
     load_from_url(Path::new(DATA_CACHE_DIRECTORY), DATA_CACHE_URL, true).map(|_| ())
 }
 
+/// Metadata for the UI. Reading it does not load or refresh the reference data.
+pub fn cache_updated_at() -> Option<u64> {
+    document_updated_at(DATA_FILE)
+}
+
+fn document_updated_at(filename: &str) -> Option<u64> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Metadata {
+        fetched_at: u64,
+    }
+    let file = fs::File::open(Path::new(DATA_CACHE_DIRECTORY).join(filename)).ok()?;
+    let metadata: Metadata = serde_json::from_reader(std::io::BufReader::new(file)).ok()?;
+    (metadata.fetched_at > 0).then_some(metadata.fetched_at)
+}
+
 /// Also used by the offline HTTP integration harness. App callers always use the fixed HSR host.
 pub fn load_from_url(root: &Path, url: &str, force: bool) -> HsrResult<ReferenceCache> {
+    load_document::<SharedDataDocument, _>(
+        root,
+        DATA_FILE,
+        url,
+        force,
+        SharedDataDocument::validate,
+    )
+}
+
+fn load_document<T: DeserializeOwned + Serialize, R>(
+    root: &Path,
+    filename: &str,
+    url: &str,
+    force: bool,
+    validate: impl Fn(&T) -> HsrResult<R>,
+) -> HsrResult<R> {
     let _guard = CACHE_LOCK
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    let obsolete_ids = root.join("hsr_achievement_ids.json");
+    if let Err(failure) = fs::remove_file(&obsolete_ids) {
+        if failure.kind() != std::io::ErrorKind::NotFound {
+            return Err(error(
+                "HSR-REF-CACHE-CLEANUP",
+                format!("{}: {failure}", obsolete_ids.display()),
+            ));
+        }
+    }
+    for directory in [root.to_path_buf(), root.join("ocr"), root.join("capture")] {
+        let old = directory.join("hsr_data_cache.json");
+        match fs::remove_file(&old) {
+            Ok(()) => {},
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {},
+            Err(failure) => {
+                return Err(error(
+                    "HSR-REF-CACHE-CLEANUP",
+                    format!("{}: {failure}", old.display()),
+                ))
+            },
+        }
+    }
+    for directory in [root.join("ocr"), root.join("capture")] {
+        match fs::remove_dir(&directory) {
+            Ok(()) => {},
+            Err(failure)
+                if matches!(
+                    failure.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                ) => {},
+            Err(failure) => {
+                return Err(error(
+                    "HSR-REF-CACHE-CLEANUP",
+                    format!("{}: {failure}", directory.display()),
+                ))
+            },
+        }
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let path = root.join("hsr_data_cache.json");
+    let path = root.join(filename);
     let cached = fs::read(&path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<DiskCache>(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice::<DiskCache<T>>(&bytes).ok())
         .and_then(|disk| {
-            disk.data
-                .validate()
+            validate(&disk.data)
                 .ok()
                 .map(|cache| (disk.fetched_at, cache))
         });
     if !force {
-        if let Some((fetched, cache)) = &cached {
-            if *fetched > 0 && *fetched <= now && now - fetched < TTL {
-                return Ok(cache.clone());
-            }
+        if cached
+            .as_ref()
+            .is_some_and(|(fetched, _)| *fetched > 0 && *fetched <= now && now - fetched < TTL)
+        {
+            return Ok(cached.unwrap().1);
         }
     }
     yas::log_info!(
         "正在下载星穹铁道游戏数据...",
         "Downloading Star Rail game data..."
     );
-    let fetched = fetch(url).and_then(|data| data.validate().map(|cache| (data, cache)));
+    let fetched = fetch::<T>(url).and_then(|data| validate(&data).map(|cache| (data, cache)));
     let (data, cache) = match fetched {
         Ok(result) => result,
         Err(failure) => {
@@ -151,7 +219,7 @@ pub fn load_from_url(root: &Path, url: &str, force: bool) -> HsrResult<Reference
         data,
     })
     .map_err(|e| error("HSR-REF-CACHE-WRITE", e.to_string()))?;
-    let temp = root.join(format!("hsr_data_cache.{}.tmp", std::process::id()));
+    let temp = root.join(format!("{filename}.{}.tmp", std::process::id()));
     fs::write(&temp, bytes)
         .and_then(|_| fs::rename(&temp, &path))
         .map_err(|e| error("HSR-REF-CACHE-WRITE", format!("{}: {e}", path.display())))?;
@@ -159,7 +227,7 @@ pub fn load_from_url(root: &Path, url: &str, force: bool) -> HsrResult<Reference
     Ok(cache)
 }
 
-fn fetch(url: &str) -> HsrResult<CaptureDataDocument> {
+fn fetch<T: DeserializeOwned>(url: &str) -> HsrResult<T> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -189,16 +257,20 @@ mod tests {
     use std::{io::Write, net::TcpListener, thread};
 
     fn document() -> serde_json::Value {
-        let embedded: serde_json::Value =
+        let mut embedded: serde_json::Value =
             serde_json::from_slice(include_bytes!("../assets/gilore_reference_v1.json")).unwrap();
-        serde_json::json!({"formatVersion": 1, "snapshot": embedded["snapshot"],
+        embedded["snapshot"]
+            .as_object_mut()
+            .unwrap()
+            .remove("achievementIds");
+        serde_json::json!({"formatVersion": 2, "snapshot": embedded["snapshot"],
             "packet": serde_json::from_slice::<serde_json::Value>(include_bytes!("../assets/packet_affixes.json")).unwrap()})
     }
 
     fn server(status: u16, body: Vec<u8>) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!(
-            "http://{}/good/hsr_data_cache.json",
+            "http://{}/good/hsr_scanner_data.json",
             listener.local_addr().unwrap()
         );
         let handle = thread::spawn(move || {
@@ -217,6 +289,43 @@ mod tests {
     }
 
     #[test]
+    fn inventory_cache_is_shared_and_obsolete_achievement_ids_are_removed() {
+        let root = std::env::temp_dir().join(format!(
+            "hsr-mode-cache-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let initial = document();
+        // Only known obsolete cache files are removed; other files are preserved.
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("hsr_data_cache.json"), b"legacy cache").unwrap();
+        fs::write(root.join("hsr_achievement_ids.json"), b"legacy IDs").unwrap();
+        for directory in ["ocr", "capture"] {
+            fs::create_dir_all(root.join(directory)).unwrap();
+            fs::write(
+                root.join(directory).join("hsr_data_cache.json"),
+                b"legacy cache",
+            )
+            .unwrap();
+        }
+        fs::write(root.join("capture/keep.txt"), b"unrelated file").unwrap();
+        let (url, task) = server(200, serde_json::to_vec(&initial).unwrap());
+        let references = load_from_url(&root, &url, false).unwrap();
+        task.join().unwrap();
+        assert!(!root.join("hsr_data_cache.json").exists());
+        assert!(!root.join("ocr").exists());
+        assert!(!root.join("capture/hsr_data_cache.json").exists());
+        assert!(root.join("capture/keep.txt").exists());
+        assert_eq!(references.achievement_count(), 0);
+        assert!(!root.join("hsr_achievement_ids.json").exists());
+        // Scanner, manager and capture all reuse this file without another request.
+        assert!(load_from_url(&root, &url, false).is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn http_cache_refresh_updates_without_a_build_and_preserves_last_good_data() {
         let root = std::env::temp_dir().join(format!(
             "hsr-remote-{}",
@@ -225,7 +334,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let path = root.join("hsr_data_cache.json");
+        let path = root.join(DATA_FILE);
         let mut next = document();
         let (url, task) = server(200, serde_json::to_vec(&next).unwrap());
         assert!(load_from_url(&root, &url, false)
@@ -247,17 +356,40 @@ mod tests {
             .push(character);
         // A packet table change must come from the same download too.
         next["packet"]["sub"][0]["base"] = 9.5.into();
+        let mut expired: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        expired["fetchedAt"] = (SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - TTL
+            - 1)
+        .into();
+        fs::write(&path, serde_json::to_vec(&expired).unwrap()).unwrap();
         let (url, task) = server(200, serde_json::to_vec(&next).unwrap());
-        let updated = load_from_url(&root, &url, true).unwrap();
+        let updated = load_from_url(&root, &url, false).unwrap();
         assert!(updated.character(1999).is_some());
         assert_eq!(updated.packet_references().unwrap().sub[0].base, 9.5);
         task.join().unwrap();
         let good_bytes = fs::read(&path).unwrap();
-        for payload in [b"<html>not data</html>".to_vec(), {
-            let mut incomplete = next.clone();
-            incomplete["packet"]["sub"] = serde_json::json!([]);
-            serde_json::to_vec(&incomplete).unwrap()
-        }] {
+        for payload in [
+            b"<html>not data</html>".to_vec(),
+            {
+                let mut incomplete = next.clone();
+                incomplete["packet"]["sub"] = serde_json::json!([]);
+                serde_json::to_vec(&incomplete).unwrap()
+            },
+            {
+                let mut legacy = next.clone();
+                legacy["formatVersion"] = 1.into();
+                serde_json::to_vec(&legacy).unwrap()
+            },
+            {
+                let mut combined = next.clone();
+                combined["snapshot"]["achievementIds"] = serde_json::json!([4010101]);
+                serde_json::to_vec(&combined).unwrap()
+            },
+        ] {
             let (url, task) = server(200, payload);
             assert!(load_from_url(&root, &url, true).is_err());
             task.join().unwrap();

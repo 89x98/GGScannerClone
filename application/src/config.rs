@@ -5,9 +5,11 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use hsr_scanner::scan_timing::ScanTimings;
+use hsr_scanner::{TrailblazerGender, TrailblazerIdentity};
 use serde::{Deserialize, Serialize};
 
-pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 2;
+pub const APPLICATION_CONFIG_SCHEMA_VERSION: u32 = 7;
 pub const APPLICATION_CONFIG_FILE_REL: &str = "data/good_app_config.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,6 +17,15 @@ pub const APPLICATION_CONFIG_FILE_REL: &str = "data/good_app_config.json";
 pub enum Game {
     Genshin,
     StarRail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 impl Default for Game {
@@ -56,67 +67,47 @@ impl Default for ToolTab {
     }
 }
 
-/// Navigation is stored independently for each game. Switching games changes
-/// only `active_game`; returning to a game restores the tab the user left.
+/// Both games share the selected tool page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameNavigation {
     #[serde(default)]
     pub active_game: Game,
     #[serde(default)]
-    pub genshin_tab: ToolTab,
-    #[serde(default)]
-    pub star_rail_tab: ToolTab,
+    pub selected_tab: ToolTab,
 }
-
 impl Default for GameNavigation {
     fn default() -> Self {
         Self {
             active_game: Game::Genshin,
-            genshin_tab: ToolTab::default_for_build(),
-            star_rail_tab: ToolTab::default_for_build(),
+            selected_tab: ToolTab::default_for_build(),
         }
     }
 }
-
 impl GameNavigation {
     pub fn active_tab(&self) -> ToolTab {
-        match self.active_game {
-            Game::Genshin => self.genshin_tab,
-            Game::StarRail => self.star_rail_tab,
-        }
-        .available_for_build()
+        self.selected_tab.available_for_build()
     }
-
     pub fn select_tab(&mut self, tab: ToolTab) {
-        let tab = tab.available_for_build();
-        match self.active_game {
-            Game::Genshin => self.genshin_tab = tab,
-            Game::StarRail => self.star_rail_tab = tab,
-        }
+        self.selected_tab = tab.available_for_build();
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StarRailCaptureMethod {
-    Wgc,
+    #[default]
+    Auto,
     BitBlt,
-    PrintWindow,
-}
-
-impl Default for StarRailCaptureMethod {
-    fn default() -> Self {
-        Self::Wgc
-    }
+    Wgc,
 }
 
 impl StarRailCaptureMethod {
-    pub fn to_yas(self) -> yas::capture::CaptureMethod {
+    pub fn to_yas(self) -> Option<yas::capture::CaptureMethod> {
         match self {
-            Self::Wgc => yas::capture::CaptureMethod::Wgc,
-            Self::BitBlt => yas::capture::CaptureMethod::BitBlt,
-            Self::PrintWindow => yas::capture::CaptureMethod::PrintWindow,
+            Self::Auto => None,
+            Self::Wgc => Some(yas::capture::CaptureMethod::Wgc),
+            Self::BitBlt => Some(yas::capture::CaptureMethod::BitBlt),
         }
     }
 }
@@ -125,24 +116,8 @@ fn default_true() -> bool {
     true
 }
 
-fn default_navigation_delay_ms() -> u64 {
-    250
-}
-
-fn default_panel_timeout_ms() -> u64 {
-    900
-}
-
-fn default_max_inventory_items() -> usize {
-    4_000
-}
-
-fn default_max_characters() -> usize {
-    200
-}
-
-fn default_next_character_key() -> String {
-    "e".to_owned()
+fn default_manager_port() -> u16 {
+    8765
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,28 +131,42 @@ pub struct StarRailSettings {
     pub scan_light_cones: bool,
     #[serde(default = "default_true")]
     pub scan_relics_and_ornaments: bool,
-    /// Zero means that the total is unknown, so Character coverage cannot be
-    /// claimed complete even if every visible entry was scanned.
+    /// Zero scans the whole category. Reaching a cap gives partial coverage.
     #[serde(default)]
-    pub expected_characters: usize,
-    #[serde(default = "default_max_characters")]
     pub max_characters: usize,
-    #[serde(default = "default_max_inventory_items")]
-    pub max_inventory_items: usize,
     #[serde(default)]
+    pub max_light_cones: usize,
+    #[serde(default)]
+    pub max_gear: usize,
+    /// Transient diagnostic CLI override. The GUI derives capture from HDR;
+    /// v1-v4 serialized captureMethod, which is discarded on load/save in v5.
+    #[serde(skip)]
     pub capture_method: StarRailCaptureMethod,
-    #[serde(default = "default_navigation_delay_ms")]
-    pub navigation_delay_ms: u64,
-    #[serde(default = "default_panel_timeout_ms")]
-    pub panel_timeout_ms: u64,
-    #[serde(default = "default_next_character_key")]
-    pub next_character_key: String,
+    #[serde(default)]
+    pub hdr_mode: bool,
+    #[serde(default)]
+    pub timings: ScanTimings,
+    /// The Trailblazer's in-game nickname. Required for Character scans.
+    #[serde(default)]
+    pub trailblazer_name: String,
+    #[serde(default)]
+    pub trailblazer_gender: Option<TrailblazerGender>,
     #[serde(default)]
     pub dump_images: bool,
     #[serde(default)]
-    pub offline_import_path: String,
+    pub verbose: bool,
+    #[serde(default)]
+    pub stop_on_failure: bool,
+    #[serde(default)]
+    pub dump_job_data: bool,
+    #[serde(default = "default_true")]
+    pub scan_only_keep_latest_export: bool,
+    #[serde(default)]
+    pub scan_save_on_cancel: bool,
     #[serde(default)]
     pub manager_instructions_path: String,
+    #[serde(default = "default_manager_port")]
+    pub manager_port: u16,
     #[serde(default)]
     pub manager_journal_path: String,
     #[serde(default = "default_true")]
@@ -190,7 +179,7 @@ pub struct StarRailSettings {
     pub capture_include_relics: bool,
     #[serde(default)]
     pub capture_dump_packets: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub capture_only_keep_latest_export: bool,
 }
 
@@ -201,28 +190,66 @@ impl Default for StarRailSettings {
             scan_characters: true,
             scan_light_cones: true,
             scan_relics_and_ornaments: true,
-            expected_characters: 0,
-            max_characters: default_max_characters(),
-            max_inventory_items: default_max_inventory_items(),
+            max_characters: 0,
+            max_light_cones: 0,
+            max_gear: 0,
             capture_method: StarRailCaptureMethod::default(),
-            navigation_delay_ms: default_navigation_delay_ms(),
-            panel_timeout_ms: default_panel_timeout_ms(),
-            next_character_key: default_next_character_key(),
+            hdr_mode: false,
+            timings: ScanTimings::default(),
+            trailblazer_name: String::new(),
+            trailblazer_gender: None,
             dump_images: false,
-            offline_import_path: String::new(),
+            verbose: false,
+            stop_on_failure: false,
+            dump_job_data: false,
+            scan_only_keep_latest_export: true,
+            scan_save_on_cancel: false,
             manager_instructions_path: String::new(),
+            manager_port: default_manager_port(),
             manager_journal_path: String::new(),
             capture_include_achievements: true,
             capture_include_characters: true,
             capture_include_light_cones: true,
             capture_include_relics: true,
             capture_dump_packets: false,
-            capture_only_keep_latest_export: false,
+            capture_only_keep_latest_export: true,
         }
     }
 }
 
 impl StarRailSettings {
+    /// GUI exports need no folder selection. Keep existing saved destinations working.
+    pub fn export_directory(&self) -> PathBuf {
+        if self.output_dir.trim().is_empty() {
+            genshin_scanner::cli::exe_dir()
+        } else {
+            PathBuf::from(self.output_dir.trim())
+        }
+    }
+
+    /// Changing HDR restores the automatic capture policy, including in the CLI.
+    pub fn set_hdr_mode(&mut self, enabled: bool) {
+        self.hdr_mode = enabled;
+        self.capture_method = StarRailCaptureMethod::Auto;
+    }
+
+    /// `None` until both the nickname and the gender are filled in.
+    pub fn trailblazer(&self) -> Option<TrailblazerIdentity> {
+        let nickname = self.trailblazer_name.trim();
+        if nickname.is_empty() {
+            return None;
+        }
+        Some(TrailblazerIdentity {
+            nickname: nickname.to_owned(),
+            gender: self.trailblazer_gender?,
+        })
+    }
+
+    pub fn missing_trailblazer(&self) -> bool {
+        (self.scan_characters || self.scan_light_cones || self.scan_relics_and_ornaments)
+            && self.trailblazer().is_none()
+    }
+
     fn populate_default_paths(&mut self, executable_dir: &Path) {
         if self.output_dir.trim().is_empty() {
             self.output_dir = executable_dir.display().to_string();
@@ -241,6 +268,64 @@ fn current_schema_version() -> u32 {
     APPLICATION_CONFIG_SCHEMA_VERSION
 }
 
+fn migrate_star_rail_scan_settings(value: &mut serde_json::Value) -> Result<()> {
+    use serde_json::Value;
+    if !matches!(
+        value.get("schemaVersion").and_then(Value::as_u64),
+        Some(1..=3) | None
+    ) {
+        return Ok(());
+    }
+    let Some(settings) = value.get_mut("starRail").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    if settings.contains_key("timings") {
+        return Ok(());
+    }
+    // v1/v2 used navigationDelayMs (default 250) plus hidden per-path waits,
+    // panelTimeoutMs, maxInventoryItems (an OCR rejection guard, default 4000),
+    // maxCharacters (default 200), expectedCharacters, and nextCharacterKey.
+    // Merge this transform into the existing v3 removal of archive imports.
+    // Preserve total configured waits and intentional Character sample caps;
+    // never reinterpret an inventory rejection guard as a sample size.
+    let navigation = settings
+        .remove("navigationDelayMs")
+        .map(|value| {
+            value
+                .as_u64()
+                .context("invalid Star Rail navigationDelayMs")
+        })
+        .transpose()?
+        .unwrap_or(250);
+    let timeout = settings
+        .remove("panelTimeoutMs")
+        .map(|value| value.as_u64().context("invalid Star Rail panelTimeoutMs"))
+        .transpose()?
+        .unwrap_or(900);
+    let timings = ScanTimings {
+        menu_open_ms: navigation.saturating_add(1_500),
+        menu_close_ms: navigation.saturating_add(1_000),
+        inventory_tab_ms: navigation.saturating_add(1_500),
+        panel_switch_ms: navigation.saturating_add(500),
+        traces_open_ms: navigation.saturating_add(2_000),
+        panel_timeout_ms: timeout,
+        status_toggle_ms: navigation,
+        ..ScanTimings::default()
+    };
+    settings.insert("timings".to_owned(), serde_json::to_value(timings)?);
+    if settings.get("maxCharacters").and_then(Value::as_u64) == Some(200) {
+        settings.insert("maxCharacters".to_owned(), Value::from(0));
+    }
+    for key in [
+        "maxInventoryItems",
+        "expectedCharacters",
+        "nextCharacterKey",
+    ] {
+        settings.remove(key);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationUiConfig {
@@ -248,6 +333,8 @@ pub struct ApplicationUiConfig {
     pub schema_version: u32,
     #[serde(default)]
     pub navigation: GameNavigation,
+    #[serde(default)]
+    pub appearance: Appearance,
     #[serde(default)]
     pub star_rail: StarRailSettings,
 }
@@ -257,6 +344,7 @@ impl Default for ApplicationUiConfig {
         Self {
             schema_version: APPLICATION_CONFIG_SCHEMA_VERSION,
             navigation: GameNavigation::default(),
+            appearance: Appearance::System,
             star_rail: StarRailSettings::default(),
         }
     }
@@ -314,15 +402,55 @@ impl ApplicationConfigStore {
         let mut config = if path.exists() {
             let json = fs::read_to_string(&path)
                 .with_context(|| format!("could not read {}", path.display()))?;
-            serde_json::from_str::<ApplicationUiConfig>(&json)
+            let mut value: serde_json::Value = serde_json::from_str(&json)
+                .with_context(|| format!("could not parse {}", path.display()))?;
+            migrate_star_rail_scan_settings(&mut value)?;
+            // v1-v6 saved genshinTab and starRailTab separately. Keep the page
+            // of the last active game when merging them into selectedTab.
+            if matches!(
+                value
+                    .get("schemaVersion")
+                    .and_then(serde_json::Value::as_u64),
+                Some(1..=6) | None
+            ) {
+                if let Some(nav) = value
+                    .get_mut("navigation")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    let key = if nav.get("activeGame").and_then(serde_json::Value::as_str)
+                        == Some("starRail")
+                    {
+                        "starRailTab"
+                    } else {
+                        "genshinTab"
+                    };
+                    if let Some(tab) = nav.get(key).cloned() {
+                        nav.entry("selectedTab").or_insert(tab);
+                    }
+                    nav.remove("genshinTab");
+                    nav.remove("starRailTab");
+                }
+            }
+            serde_json::from_value::<ApplicationUiConfig>(value)
                 .with_context(|| format!("could not parse {}", path.display()))?
         } else {
             ApplicationUiConfig::default()
         };
         // v1 had starRail.referenceBundle: an optional developer-owned folder
-        // path. App flows now load hosted data with a local cache. Serde discards that
-        // obsolete key while retaining all scan, navigation and output settings.
-        if config.schema_version == 1 {
+        // path. v1/v2 had starRail.offlineImportPath: the JSON converter's input
+        // path. Serde discards those obsolete string keys while retaining all
+        // scan, capture, manager, navigation and output settings.
+        // v1-v4 stored captureMethod (auto/bitBlt/wgc; old files also used
+        // printWindow). v5 skips this persisted field so all GUI tasks use
+        // BitBlt for SDR and WGC for HDR. Preserve the existing hdrMode flag.
+        // v3 added HDR. v4 adds the loopback manager port and scan export
+        // preferences. Earlier files lacked both export preferences: serde
+        // supplies the shared defaults (keep latest, discard on user stop).
+        // Existing values remain intact, including the manager's saved port.
+        // v1-v5 had no appearance preference and always rendered dark. v6 adds
+        // System/Light/Dark; older files default to following the system while
+        // preserving every saved game, task and navigation setting.
+        if matches!(config.schema_version, 1..=6) {
             config.schema_version = APPLICATION_CONFIG_SCHEMA_VERSION;
         }
         config.validate_version()?;

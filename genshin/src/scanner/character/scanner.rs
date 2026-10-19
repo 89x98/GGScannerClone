@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use anyhow::{bail, Result};
@@ -21,7 +21,7 @@ use crate::scanner::common::fuzzy_match::fuzzy_match_map_pair;
 use crate::scanner::common::game_controller::GenshinGameController;
 use crate::scanner::common::mappings::MappingManager;
 use crate::scanner::common::models::{DebugOcrField, DebugScanResult, GoodCharacter, GoodTalent};
-use crate::scanner::common::ocr_factory;
+use crate::scanner::common::ocr_factory::{self, same_model};
 use crate::scanner::common::ocr_pool::{OcrPool, SharedOcrPools};
 use crate::scanner::common::scan_worker;
 use crate::scanner::common::stat_parser::level_to_ascension;
@@ -93,6 +93,7 @@ enum CharacterWork {
 
 /// Worker output.
 enum CharacterResult {
+    Failed(String),
     Scanned {
         viewed_index: usize,
         character: Option<GoodCharacter>,
@@ -129,6 +130,7 @@ impl GoodCharacterScanner {
 mod tests {
     use super::*;
     use crate::scanner::common::mappings::ConstBonus;
+    use crate::scanner::common::test_utils::{make_1080p_image, make_1080p_scaler, FakeOcr};
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -153,6 +155,35 @@ mod tests {
                 artifact_set_max_rarity: HashMap::new(),
             }),
         }
+    }
+
+    #[test]
+    fn read_name_skips_second_read_when_both_engines_share_a_model() {
+        let scanner = scanner_with_names(&[("\u{7231}\u{8BFA}", "Aino", "hydro")]); // 爱诺
+        let v5 = FakeOcr::new(vec![]).with_model_id("ppocrv4");
+        let v4 = FakeOcr::new(vec!["乱码无法识别"]).with_model_id("ppocrv4");
+
+        let (key, _, raw) =
+            scanner.read_name_from_image(Some(&v5), &v4, &make_1080p_image(), &make_1080p_scaler());
+
+        assert_eq!(key, None);
+        assert_eq!(raw, "乱码无法识别");
+        assert_eq!(v5.call_count(), 0);
+        assert_eq!(v4.call_count(), 1);
+    }
+
+    #[test]
+    fn read_name_cross_checks_with_a_different_model() {
+        let scanner = scanner_with_names(&[("\u{7231}\u{8BFA}", "Aino", "hydro")]); // 爱诺
+        let v5 = FakeOcr::new(vec!["乱码无法识别"]).with_model_id("ppocrv5");
+        let v4 = FakeOcr::new(vec!["\u{6C34}/\u{7231}\u{8BFA}"]).with_model_id("ppocrv4");
+
+        let (key, _, _) =
+            scanner.read_name_from_image(Some(&v5), &v4, &make_1080p_image(), &make_1080p_scaler());
+
+        assert_eq!(key.as_deref(), Some("Aino"));
+        assert_eq!(v5.call_count(), 1);
+        assert_eq!(v4.call_count(), 1);
     }
 
     #[test]
@@ -229,6 +260,29 @@ mod tests {
         assert_eq!(key.as_deref(), Some("Xianyun"));
         assert_eq!(element.as_deref(), Some("风"));
         assert_eq!(entity.as_deref(), Some("闲云"));
+    }
+
+    #[test]
+    fn parse_name_recognizes_citlali_ocr_variants() {
+        let scanner = scanner_with_names(&[
+            ("茜特菈莉", "Citlali", "cryo"),
+            ("莱依拉", "Layla", "cryo"),
+            ("莱欧斯利", "Wriothesley", "cryo"),
+            ("可莉", "Klee", "pyro"),
+        ]);
+        for text in [
+            "冰/西特拉莉",
+            "冰/西特莱莉",
+            "冰/茜特莱莉",
+            "西特拉莉",
+            // Observed v4/v5 outputs from the user's 417x76 screenshot.
+            "冰元素/茜特莉",
+            "冰元素／ 茜特菈莉",
+        ] {
+            let (key, _, entity) = scanner.parse_name_and_element(text);
+            assert_eq!(key.as_deref(), Some("Citlali"), "{text}");
+            assert_eq!(entity.as_deref(), Some("茜特菈莉"), "{text}");
+        }
     }
 
     #[test]
@@ -325,7 +379,15 @@ impl GoodCharacterScanner {
         }
 
         let sub = image.view(x, y, w, h).to_image();
-        let text = ocr.image_to_text(&sub, false)?;
+        let text = ocr.image_to_text(&sub, false).map_err(|error| {
+            log_error!(
+                "角色 OCR 区域 {:?} 识别失败：{:#}",
+                "Character OCR region {:?} failed: {:#}",
+                rect,
+                error
+            );
+            error
+        })?;
         Ok(text.trim().to_string())
     }
 
@@ -710,7 +772,7 @@ impl GoodCharacterScanner {
         image: &RgbImage,
         scaler: &CoordScaler,
     ) -> (Option<String>, Option<String>, String) {
-        if let Some(v5) = v5_ocr {
+        if let Some(v5) = v5_ocr.filter(|v5| !same_model(*v5, v4_ocr)) {
             if let Ok(text) = Self::ocr_image_region(v5, image, CHAR_NAME_RECT, scaler) {
                 let (name, element, entity) = self.parse_name_and_element(&text);
                 if name.is_some() {
@@ -752,7 +814,12 @@ impl GoodCharacterScanner {
     ) -> (i32, bool, String) {
         let text = match Self::ocr_image_region(ocr, image, CHAR_LEVEL_RECT, scaler) {
             Ok(t) => t,
-            Err(_) => {
+            Err(error) => {
+                log_error!(
+                    "角色等级 OCR 失败：{:#}",
+                    "Character level OCR failed: {:#}",
+                    error
+                );
                 annotator::record_ocr("level", CHAR_LEVEL_RECT, "(ocr error)");
                 annotator::set_final("level", "1");
                 return (1, false, String::new());
@@ -1017,7 +1084,13 @@ impl GoodCharacterScanner {
         annotator::add_image(label, image);
         let text = match Self::ocr_image_region(ocr, image, CHAR_TALENT_LEVEL_RECT, scaler) {
             Ok(t) => t,
-            Err(_) => {
+            Err(error) => {
+                log_error!(
+                    "角色天赋详情 OCR 失败（{}）：{:#}",
+                    "Character talent-detail OCR failed ({}): {:#}",
+                    label,
+                    error
+                );
                 annotator::record_ocr(label, CHAR_TALENT_LEVEL_RECT, "(ocr error)");
                 annotator::set_final(label, "0");
                 return 0;
@@ -1096,6 +1169,19 @@ impl GoodCharacterScanner {
         let ocr = ocr_pool.get();
         let (level, ascended, raw_level) = Self::read_level_from_image(&ocr, &attrs_image, scaler);
         let level_ocr_failed = raw_level.trim().is_empty();
+        if level_ocr_failed {
+            log_warn!(
+                "[character] {} 等级无法识别，将重读。原始文字：{}",
+                "[character] {} level unreadable; will retry. Raw text: {}",
+                name,
+                raw_level
+            );
+            if !self.config.continue_on_failure {
+                return CharacterResult::Failed(format!(
+                    "{name}: level OCR failed; raw={raw_level:?}"
+                ));
+            }
+        }
 
         if Self::is_level_suspicious(level, ascended) {
             log_debug!(
@@ -1149,11 +1235,14 @@ impl GoodCharacterScanner {
             if burst_lv == 0 {
                 missing.push("burst");
             }
-            log_debug!(
+            log_warn!(
                 "[character] 天赋概览失败: {}，将在第二轮使用点击回退",
                 "[character] talent overview failed for: {}, will use click fallback in phase 2",
                 missing.join("/")
             );
+            if !self.config.continue_on_failure {
+                return CharacterResult::Failed(format!("{name}: talent overview failed; auto={raw_auto:?}, skill={raw_skill:?}, burst={raw_burst:?}"));
+            }
         }
 
         // Record talent annotations with raw OCR text
@@ -1255,7 +1344,11 @@ impl GoodCharacterScanner {
         let ocr = ocr_pool.get();
 
         // -- Level --
-        let (new_level, new_ascended, _) = Self::read_level_from_image(&ocr, &attrs_image, scaler);
+        let (new_level, new_ascended, raw_level) =
+            Self::read_level_from_image(&ocr, &attrs_image, scaler);
+        if raw_level.trim().is_empty() && !self.config.continue_on_failure {
+            return CharacterResult::Failed(format!("{name}: level reread failed"));
+        }
         let new_ascension = level_to_ascension(new_level, new_ascended);
 
         // -- Constellation: click tree if phase 1 pixels were invalid;
@@ -1559,6 +1652,8 @@ impl GoodCharacterScanner {
         let worker_mappings = self.mappings.clone();
         let worker_scaler = ctrl.scaler.clone();
         let worker_config = self.config.clone();
+        let ocr_failure = Arc::new(Mutex::new(None::<(usize, String)>));
+        let worker_failure = ocr_failure.clone();
 
         let worker_handle = std::thread::spawn(move || {
             let _native_crash_context = yas::native_crash::inherit_current_task();
@@ -1568,22 +1663,46 @@ impl GoodCharacterScanner {
                 mappings: worker_mappings,
             };
             for work in work_rx {
+                if worker_failure.lock().unwrap().is_some() && !matches!(&work, CharacterWork::Done)
+                {
+                    continue;
+                }
                 match work {
                     CharacterWork::Scan(captures) => {
+                        let viewed_index = captures.viewed_index;
                         let result = scanner.process_scan_captures(
                             captures,
                             &worker_ocr_pool,
                             &worker_scaler,
                         );
-                        let _ = result_tx.send(result);
+                        if let CharacterResult::Failed(error) = result {
+                            log_error!(
+                                "角色识别失败时停止：{}",
+                                "Stopped on Character OCR error: {}",
+                                error
+                            );
+                            *worker_failure.lock().unwrap() = Some((viewed_index, error));
+                        } else {
+                            let _ = result_tx.send(result);
+                        }
                     },
                     CharacterWork::Rescan(captures) => {
+                        let viewed_index = captures.viewed_index;
                         let result = scanner.process_rescan_captures(
                             captures,
                             &worker_ocr_pool,
                             &worker_scaler,
                         );
-                        let _ = result_tx.send(result);
+                        if let CharacterResult::Failed(error) = result {
+                            log_error!(
+                                "角色重读失败时停止：{}",
+                                "Stopped on Character reread error: {}",
+                                error
+                            );
+                            *worker_failure.lock().unwrap() = Some((viewed_index, error));
+                        } else {
+                            let _ = result_tx.send(result);
+                        }
                     },
                     CharacterWork::Done => {
                         let _ = result_tx.send(CharacterResult::PhaseDone);
@@ -1614,6 +1733,9 @@ impl GoodCharacterScanner {
         pb.set_message("0 characters scanned");
 
         loop {
+            if ocr_failure.lock().unwrap().is_some() {
+                break;
+            }
             if ctrl.check_rmb() {
                 log_info!(
                     "[character] 用户中断扫描",
@@ -1875,12 +1997,19 @@ impl GoodCharacterScanner {
 
         pb.finish_with_message(format!("{} characters scanned", characters.len()));
 
+        let phase1_failure = ocr_failure.lock().unwrap().clone();
+        if let Some((index, error)) = phase1_failure {
+            self.focus_failed_character(ctrl, viewed_count, index);
+            drop(work_tx);
+            let _ = worker_handle.join();
+            bail!("识别失败时停止 / Stopped on OCR error: {error}");
+        }
+
         // Close character screen
         ctrl.key_press(enigo::Key::Escape);
         utils::sleep(self.config.close_delay as u32);
 
         // ── Phase 2: Rescan suspicious characters ───────────────────────────
-
         let suspicious: Vec<(usize, usize)> = characters
             .iter()
             .enumerate()
@@ -1919,12 +2048,16 @@ impl GoodCharacterScanner {
                 &mut characters,
                 &scan_metas,
                 &suspicious,
+                &ocr_failure,
             );
         }
 
         // Signal worker to exit
         drop(work_tx);
         let _ = worker_handle.join();
+        if let Some((_, error)) = ocr_failure.lock().unwrap().as_ref() {
+            bail!("识别失败时停止 / Stopped on OCR error: {error}");
+        }
 
         // Final sanitize: snap impossible levels
         let mut had_impossible_level = false;
@@ -2029,6 +2162,7 @@ impl GoodCharacterScanner {
         progress_total: Option<usize>,
     ) -> bool {
         match result {
+            CharacterResult::Failed(_) => false,
             CharacterResult::Rescanned {
                 char_index,
                 character,
@@ -2057,6 +2191,7 @@ impl GoodCharacterScanner {
         characters: &mut Vec<GoodCharacter>,
         scan_metas: &[ScanMeta],
         suspicious: &[(usize, usize)], // (char_index, viewed_index)
+        ocr_failure: &Mutex<Option<(usize, String)>>,
     ) {
         // Return to main world and reopen character screen
         ctrl.return_to_main_ui(4);
@@ -2093,6 +2228,9 @@ impl GoodCharacterScanner {
         let td = self.config.tab_delay;
 
         for &(char_idx, viewed_idx) in suspicious {
+            if ocr_failure.lock().unwrap().is_some() {
+                break;
+            }
             if ctrl.check_rmb() {
                 log_info!(
                     "[character] 第二轮: 用户中断",
@@ -2326,9 +2464,39 @@ impl GoodCharacterScanner {
             }
         }
 
+        if let Some((index, _)) = ocr_failure.lock().unwrap().as_ref() {
+            self.focus_failed_character(ctrl, current_index, *index);
+            return;
+        }
+
         // Close character screen
         ctrl.key_press(enigo::Key::Escape);
         utils::sleep(self.config.close_delay as u32);
+    }
+
+    fn focus_failed_character(
+        &self,
+        ctrl: &mut GenshinGameController,
+        current_index: usize,
+        failed_index: usize,
+    ) {
+        let Some(steps) = current_index.checked_sub(failed_index) else {
+            return;
+        };
+        for _ in 0..steps {
+            if ctrl.check_rmb() {
+                return;
+            }
+            click_character_ui(ctrl, CHAR_PREV_POS, self.config.next_delay);
+        }
+        if !ctrl.check_rmb() {
+            click_character_ui(ctrl, CHAR_TAB_ATTRIBUTES, self.config.tab_delay);
+            log_info!(
+                "[OCR] 已选中识别失败的角色（索引{}），请截图反馈",
+                "[OCR] Selected the failed character (index {}); please attach a screenshot to your report",
+                failed_index
+            );
+        }
     }
 }
 

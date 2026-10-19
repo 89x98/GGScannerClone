@@ -405,6 +405,28 @@ impl UiError {
         }
     }
 
+    /// Log the diagnostic details behind the concise UI hint. The hint is
+    /// already visible in the status card, so logs should add the cause users
+    /// need when they share the log window for support.
+    pub fn log_diagnostics(&self) {
+        let lang = if yas::lang::is_en() {
+            Lang::En
+        } else {
+            Lang::Zh
+        };
+        let details = match self {
+            Self::Detailed {
+                technical_details, ..
+            } => yas::lang::localize(technical_details),
+            Self::NativeException(_) => self.technical_details(lang),
+        };
+        yas::log_error!(
+            "任务失败。诊断详情：{}",
+            "Task failed. Diagnostic details: {}",
+            details
+        );
+    }
+
     pub fn copy_text(&self, lang: Lang) -> String {
         format!(
             "{}\n\n{}\n{}",
@@ -431,7 +453,20 @@ pub enum TaskStatus {
     Idle,
     Running(UiText),
     Completed(UiText),
+    Stopped(UiText),
+    AwaitingInput(UiText),
+    Exported {
+        message: UiText,
+        path: String,
+        partial: bool,
+    },
     Failed(UiError),
+}
+
+impl From<UiText> for TaskStatus {
+    fn from(message: UiText) -> Self {
+        Self::Completed(message)
+    }
 }
 
 /// Which tab a log entry belongs to.
@@ -516,6 +551,8 @@ pub enum UpdateState {
     Downloading,
     /// Update downloaded and applied — showing restart dialog.
     ShowingDialog,
+    /// User accepted the restart; the GUI performs the shutdown and handoff.
+    RestartRequested(std::path::PathBuf),
     /// Update downloaded, user chose to restart later.
     Ready,
     /// Already on the latest version (or dev build).
@@ -541,15 +578,20 @@ impl RefreshState {
             if let RefreshState::Running(h) = old {
                 match h.join() {
                     Ok(Ok(())) => *self = RefreshState::Ok,
-                    Ok(Err(msg)) => *self = RefreshState::Failed(msg),
+                    Ok(Err(msg)) => {
+                        msg.log_diagnostics();
+                        *self = RefreshState::Failed(msg);
+                    },
                     Err(panic_info) => {
-                        *self = RefreshState::Failed(UiError::from_panic(
+                        let error = UiError::from_panic(
                             UiText::new(
                                 "无法刷新游戏数据，因为后台任务意外停止。",
                                 "Game data could not be refreshed because the background task stopped unexpectedly.",
                             ),
                             panic_info.as_ref(),
-                        ))
+                        );
+                        error.log_diagnostics();
+                        *self = RefreshState::Failed(error)
                     },
                 }
             }
@@ -561,7 +603,7 @@ impl RefreshState {
     }
 }
 
-/// Debounced user-config persistence shared by GOODScanner and GOODCapture.
+/// Debounced user-config persistence shared by GGScannerOCR and GGScanner.
 pub fn save_config_debounced(
     user_config: &GoodUserConfig,
     config_snapshot: &mut String,
@@ -631,10 +673,11 @@ pub struct AppState {
     pub scan_artifacts: bool,
     pub scan_achievements: bool,
     pub verbose: bool,
-    pub continue_on_failure: bool,
+    pub stop_on_failure: bool,
     pub dump_images: bool,
     pub hdr_mode: bool,
     pub dump_job_data: bool,
+    // Retained for old saved preferences and previews; scans always save on stop.
     pub save_on_cancel: bool,
     pub only_keep_latest_export: bool,
     pub output_dir: String,
@@ -654,24 +697,18 @@ pub struct AppState {
 
     // --- Scanner task ---
     pub scan_status: Arc<Mutex<TaskStatus>>,
+    pub scan_progress: Arc<Mutex<super::task_progress::TaskProgress>>,
 
     // --- Manager tab config ---
     pub server_port: u16,
     /// Controls whether POST /manage requests are executed or rejected (503).
     /// Shared with the server thread via Arc.
     pub server_enabled: Arc<AtomicBool>,
-    /// If true, continue scanning the full inventory after all targets are matched,
-    /// providing a complete artifact snapshot via GET /artifacts (slower).
-    pub update_inventory: bool,
-    /// If true, narrow lock/unlock management to the artifact sets involved in the request.
-    pub filter_involved_sets: bool,
     pub server_status: Arc<Mutex<TaskStatus>>,
+    pub server_job: Arc<Mutex<genshin_scanner::manager::models::JobState>>,
     // --- Per-tab log buffers ---
     pub scanner_log_lines: Arc<LogStore>,
     pub manager_log_lines: Arc<LogStore>,
-
-    // --- Data refresh ---
-    pub mappings_refresh: RefreshState,
 }
 
 impl Default for AppState {
@@ -682,10 +719,7 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        let mut user_config = genshin_scanner::cli::load_config_or_default();
-        if user_config.filter_involved_sets {
-            user_config.update_inventory = false;
-        }
+        let user_config = genshin_scanner::cli::load_config_or_default();
         let lang = Lang::from_config_str(&user_config.lang);
         let config_snapshot = serde_json::to_string(&user_config).unwrap_or_default();
         Self {
@@ -695,7 +729,7 @@ impl AppState {
             scan_artifacts: user_config.scan_artifacts,
             scan_achievements: user_config.scan_achievements,
             verbose: user_config.verbose,
-            continue_on_failure: user_config.continue_on_failure,
+            stop_on_failure: user_config.stop_on_failure,
             dump_images: user_config.dump_images,
             hdr_mode: user_config.hdr_mode,
             dump_job_data: user_config.dump_job_data,
@@ -706,8 +740,6 @@ impl AppState {
             artifact_max_count: user_config.artifact_max_count,
             achievement_max_count: user_config.achievement_max_count,
             server_port: user_config.server_port,
-            update_inventory: user_config.update_inventory,
-            filter_involved_sets: user_config.filter_involved_sets,
             user_config,
             update_state: Arc::new(Mutex::new(UpdateState::Checking)),
             output_dir: genshin_scanner::cli::exe_dir().display().to_string(),
@@ -715,11 +747,14 @@ impl AppState {
             config_snapshot,
             config_dirty_since: None,
             scan_status: Arc::new(Mutex::new(TaskStatus::Idle)),
+            scan_progress: Arc::new(Mutex::new(super::task_progress::TaskProgress::default())),
             server_enabled: Arc::new(AtomicBool::new(true)),
             server_status: Arc::new(Mutex::new(TaskStatus::Idle)),
+            server_job: Arc::new(Mutex::new(
+                genshin_scanner::manager::models::JobState::idle(),
+            )),
             scanner_log_lines: Arc::new(LogStore::new(2000)),
             manager_log_lines: Arc::new(LogStore::new(2000)),
-            mappings_refresh: RefreshState::Idle,
         }
     }
 
@@ -730,7 +765,12 @@ impl AppState {
 
     /// Character-name fields that must be filled before starting a scan.
     pub fn missing_required_character_names(&self) -> bool {
-        self.user_config.traveler_name.trim().is_empty()
+        self.needs_character_names() && self.user_config.traveler_name.trim().is_empty()
+    }
+
+    /// Inventory OCR also resolves equipped owners through renamed characters.
+    pub fn needs_character_names(&self) -> bool {
+        self.scan_characters || self.scan_weapons || self.scan_artifacts
     }
 
     /// Sync GUI fields back into user_config so they get serialized on save.
@@ -741,13 +781,11 @@ impl AppState {
         self.user_config.scan_artifacts = self.scan_artifacts;
         self.user_config.scan_achievements = self.scan_achievements;
         self.user_config.verbose = self.verbose;
-        super::log_bridge::set_verbose(self.verbose);
-        self.user_config.continue_on_failure = self.continue_on_failure;
+        self.user_config.stop_on_failure = self.stop_on_failure;
         self.user_config.dump_images = self.dump_images;
         self.user_config.hdr_mode = self.hdr_mode;
-        self.user_config.hdr_white_point = genshin_scanner::cli::DEFAULT_HDR_WHITE_POINT;
-        self.user_config.capture_method =
-            genshin_scanner::cli::capture_method_for_hdr_mode(self.hdr_mode);
+        self.user_config.hdr_white_point = yas::capture::constants::DEFAULT_HDR_WHITE_POINT;
+        self.user_config.capture_method = yas::capture::CaptureMethod::for_hdr_mode(self.hdr_mode);
         self.user_config.dump_job_data = self.dump_job_data;
         self.user_config.save_on_cancel = self.save_on_cancel;
         self.user_config.only_keep_latest_export = self.only_keep_latest_export;
@@ -756,11 +794,6 @@ impl AppState {
         self.user_config.artifact_max_count = self.artifact_max_count;
         self.user_config.achievement_max_count = self.achievement_max_count;
         self.user_config.server_port = self.server_port;
-        if self.filter_involved_sets {
-            self.update_inventory = false;
-        }
-        self.user_config.update_inventory = self.update_inventory;
-        self.user_config.filter_involved_sets = self.filter_involved_sets;
     }
 
     /// Check if user_config changed, and if so, schedule a debounced save.
@@ -794,13 +827,13 @@ impl AppState {
             weapon_min_rarity: 3,
             artifact_min_rarity: 4,
             verbose: self.verbose,
-            continue_on_failure: self.continue_on_failure,
-            log_progress: true,
+            stop_on_failure: self.stop_on_failure,
+            log_progress: false,
             dump_images: self.dump_images,
             hdr_mode: self.hdr_mode,
-            hdr_white_point: genshin_scanner::cli::DEFAULT_HDR_WHITE_POINT,
-            capture_method: genshin_scanner::cli::capture_method_for_hdr_mode(self.hdr_mode),
-            save_on_cancel: self.save_on_cancel,
+            hdr_white_point: yas::capture::constants::DEFAULT_HDR_WHITE_POINT,
+            capture_method: yas::capture::CaptureMethod::for_hdr_mode(self.hdr_mode),
+            save_on_cancel: true,
             output_dir: self.output_dir.clone(),
             ocr: OcrEngineArgs::default(),
             char_max_count: self.char_max_count,

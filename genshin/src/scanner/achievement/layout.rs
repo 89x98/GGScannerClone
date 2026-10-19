@@ -32,12 +32,13 @@ pub const CATEGORY_VISIBLE: usize = 8;
 /// Safety cap on category clicks (including left-list scrolls).
 pub const MAX_CATEGORIES: usize = 128;
 
-/// Physical mouse-wheel notches to advance one achievement card.
+/// Physical mouse-wheel notches per achievement list capture.
 ///
-/// Hand-counted: 8 distinct notches just pass one entry. Cocogoat's 11-tick
-/// burst was sent with no delay, so Windows coalesced it and the list jumped
-/// unpredictably (sometimes ~2 cards, sometimes a few pixels).
-pub const LIST_WHEEL_TICKS: i32 = 8;
+/// Pixel registration across 42 consecutive capture pairs measured 288px per
+/// 8 delayed notches in a 1712px-high list with 249–250px card pitch. Advancing
+/// 40 notches moves 1440px, leaving 272px (one full card) of overlap so clipped
+/// edge cards can be read in the next capture. Keep the per-notch delay below.
+pub const LIST_WHEEL_TICKS: i32 = 40;
 
 /// One Windows wheel detent. `MOUSEEVENTF_WHEEL` dwData is this value, not 1.
 #[allow(dead_code)]
@@ -70,8 +71,8 @@ pub const LIST_SCROLLBAR_INSET: u32 = 16;
 pub const IDLE_FRAMES_BEFORE_STOP: u32 = 6;
 
 /// Safety cap so a flickering OCR key cannot scroll a category forever.
-/// 天地万象 is hundreds of cards; 8 delayed notches ≈ 1 card, so a full pass
-/// is a few hundred frames. Pixel-identical title regions stop earlier.
+/// 天地万象 is hundreds of cards; each capture advances almost six cards.
+/// Keep this generous fallback; pixel-identical title regions stop earlier.
 pub const MAX_LIST_FRAMES: u32 = 1200;
 
 /// Mean per-sample RGB delta below which two list captures are the same view.

@@ -6,7 +6,7 @@
 //! decrypted-command fixtures.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     future::Future,
     panic::{catch_unwind, AssertUnwindSafe},
     pin::Pin,
@@ -16,14 +16,10 @@ use std::{
 use crate::network::{GamePacket, GameSniffer};
 use crate::{
     model::{
-        CoverageLevel, EvidenceKind, HsrInventoryExport, InventoryCoverage, ObservationEvidence,
-        ObservationSnapshot, OBSERVATION_SCHEMA_VERSION,
+        CoverageLevel, EvidenceKind, InventoryCoverage, ObservationEvidence, ObservationSnapshot,
+        OBSERVATION_SCHEMA_VERSION,
     },
-    observation::ValidatedObservationSnapshot,
-    pipeline::{
-        build_achievement_snapshot, build_export, build_export_with_achievements,
-        write_json_create_new,
-    },
+    pipeline::write_json_create_new,
     reference::ReferenceCache,
 };
 use base64::prelude::*;
@@ -49,7 +45,7 @@ pub mod proto;
 pub mod protocol;
 
 /// Decoder revision written into HSR exports.
-pub const HSR_CAPTURE_REVISION: &str = "reliquary-shape-4.5-v1";
+pub const HSR_CAPTURE_REVISION: &str = "reliquary-quest-4.6-v2";
 
 /// HSR's two UDP gateway ports. Kept public for build-time regression tests.
 pub const HSR_PACKET_PORTS: [u16; 2] = [23301, 23302];
@@ -60,8 +56,8 @@ const CAPTURE_HINT: LocalizedText = LocalizedText::new(
     "HSR network data could not be read. Make sure the application is running as administrator, then capture again.",
 );
 const KEYS_HINT: LocalizedText = LocalizedText::new(
-    "内置的 HSR 协议数据无法加载。请重新下载当前版本的 GOODCapture。",
-    "The bundled HSR protocol data could not be loaded. Download the current GOODCapture build again.",
+    "内置的 HSR 协议数据无法加载。请重新下载当前版本的 GGScanner。",
+    "The bundled HSR protocol data could not be loaded. Download the current GGScanner build again.",
 );
 const WORKER_HINT: LocalizedText = LocalizedText::new(
     "HSR 抓包任务意外停止。请重新抓包；若问题再次出现，请复制完整错误。",
@@ -71,30 +67,6 @@ const PLATFORM_HINT: LocalizedText = LocalizedText::new(
     "抓包功能目前仅支持 Windows（pktmon）。Linux 后端尚未实现。",
     "Packet capture is currently Windows-only (pktmon). A Linux backend is not implemented yet.",
 );
-
-/// A successfully recognized complete achievement response.
-///
-/// The vector contains only public definition IDs whose raw status was 2 or
-/// 3. It is sorted and deduplicated. An empty vector is still a present,
-/// complete response and must not be confused with `None` from the decoder.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DecodedAchievementSnapshot {
-    completed_ids: Vec<u32>,
-}
-
-impl DecodedAchievementSnapshot {
-    pub(crate) fn new(completed_ids: Vec<u32>) -> Self {
-        Self { completed_ids }
-    }
-
-    pub fn completed_ids(&self) -> &[u32] {
-        &self.completed_ids
-    }
-
-    pub fn into_completed_ids(self) -> Vec<u32> {
-        self.completed_ids
-    }
-}
 
 /// Categories selected before starting a capture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,7 +97,6 @@ impl CaptureTargets {
 /// Stateful Ethernet/IP/UDP/KCP/session-key decoder used by both native
 /// capture and deterministic packet replay.
 pub struct HsrPacketDecoder {
-    known_ids: BTreeSet<u32>,
     dispatch_keys: HashMap<u32, Vec<u8>>,
     sniffer: GameSniffer,
     inventory: InventoryDecoder,
@@ -147,11 +118,9 @@ impl HsrPacketDecoder {
                 "capture requires at least one selected category",
             ));
         }
-        let known_ids = protocol::collect_known_ids(references.achievement_ids())?;
         let dispatch_keys = load_embedded_dispatch_keys()?;
         let sniffer = GameSniffer::new().set_initial_keys(dispatch_keys.clone());
         Ok(Self {
-            known_ids,
             dispatch_keys,
             sniffer,
             inventory: InventoryDecoder::new(references, targets)?,
@@ -164,6 +133,11 @@ impl HsrPacketDecoder {
 
     pub fn state(&self) -> &HsrCaptureState {
         &self.state
+    }
+
+    /// Save exact raw frames and decrypted messages during offline replay too.
+    pub fn set_packet_dump(&mut self, root: std::path::PathBuf) {
+        self.packet_dump = Some(dump::PacketDump::new(root));
     }
 
     /// Full packet replay and live capture use exactly the same transport.
@@ -204,6 +178,11 @@ impl HsrPacketDecoder {
                 GamePacket::Commands {
                     result: Err(error), ..
                 } => {
+                    if let crate::network::GameCommandError::DecryptionKeyMissing { version } =
+                        &error
+                    {
+                        self.state.missing_dispatch_key = Some(*version);
+                    }
                     self.state.last_transport_error = Some(error.to_string());
                 },
                 GamePacket::Connection(connection) => {
@@ -213,6 +192,11 @@ impl HsrPacketDecoder {
                 },
             }
         }
+        let captured = self.sniffer.key_exchange_captured(self.conversation);
+        if captured && !self.state.has_key_exchange {
+            yas::log_info!("已捕获登录握手", "Login handshake captured");
+        }
+        self.state.has_key_exchange = captured;
         Ok(())
     }
 
@@ -224,11 +208,9 @@ impl HsrPacketDecoder {
         self.inventory.receive(bytes)?;
         if self.targets.achievements && !self.state.has_achievements {
             for container in protocol::containers(bytes) {
-                if let Some(snapshot) =
-                    protocol::decode_achievement_command(container, &self.known_ids)?
-                {
-                    self.state.completed_ids = snapshot.into_completed_ids();
-                    self.state.achievement_count = self.state.completed_ids.len();
+                if let Some(snapshot) = protocol::decode_quest_command(container)? {
+                    self.state.achievement_count = snapshot.len();
+                    self.state.quests = snapshot;
                     self.state.has_achievements = true;
                     break;
                 }
@@ -271,12 +253,18 @@ pub enum HsrCaptureCommand {
 /// Privacy-safe state shared with the UI.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HsrCaptureState {
+    pub listener_ready: bool,
+    pub elapsed_secs: u64,
     pub capturing: bool,
     /// True only after all selected categories arrive.
     pub complete: bool,
+    /// Actual token/session-seed capture, independent of decoded command counts.
+    pub has_key_exchange: bool,
     pub packet_count: usize,
     pub command_count: usize,
     pub last_transport_error: Option<String>,
+    /// Public dispatch-key identifier, retained when later unrelated frames fail.
+    pub missing_dispatch_key: Option<u32>,
     pub has_characters: bool,
     pub has_items: bool,
     pub has_light_cones: bool,
@@ -288,46 +276,14 @@ pub struct HsrCaptureState {
     pub inventory: Option<ObservationSnapshot>,
     pub export_details: crate::scanner_export::CaptureExportDetails,
     pub achievement_count: usize,
-    pub completed_ids: Vec<u32>,
+    pub quests: Vec<crate::model::ObservedQuest>,
     pub error: Option<HsrError>,
 }
 
 impl HsrCaptureState {
-    /// Build the internal GGStarRail v3 export. Capture GUI writes HSR-Scanner v4 instead.
-    pub fn build_export(&self, references: &ReferenceCache) -> HsrResult<HsrInventoryExport> {
-        if !self.complete {
-            return Err(HsrError::new(
-                "HSR-CAPTURE-EXPORT-INCOMPLETE",
-                LocalizedText::new(
-                    "抓包尚未完成，无法导出。",
-                    "Capture is not complete, so nothing can be exported.",
-                ),
-                "build_export requires a complete capture",
-            ));
-        }
-        let inventory = self.inventory.clone().ok_or_else(|| {
-            HsrError::new(
-                "HSR-CAPTURE-EXPORT-EMPTY",
-                LocalizedText::new(
-                    "库存数据缺失，请重新抓包。",
-                    "Inventory data is missing. Capture again.",
-                ),
-                "completed capture has no inventory snapshot",
-            )
-        })?;
-        let observations = ValidatedObservationSnapshot::from_packet_capture(inventory)?;
-        if self.has_achievements {
-            let achievements = build_achievement_snapshot(
-                self.completed_ids.iter().copied(),
-                HSR_CAPTURE_REVISION,
-                references,
-            )?;
-            build_export_with_achievements(observations, achievements, references)
-        } else {
-            build_export(observations, references)
-        }
+    pub fn diagnostics(&self) -> String {
+        format!("listenerReady={}; elapsed={}s; packets={}; decryptedCommands={}; keyExchange={}; characters={}; lightCones={}; relics={}; achievements={}; missingDispatchKey={:?}; lastTransportError={}", self.listener_ready, self.elapsed_secs, self.packet_count, self.command_count, self.has_key_exchange, self.character_count, self.light_cone_count, self.relic_count, self.achievement_count, self.missing_dispatch_key, self.last_transport_error.as_deref().unwrap_or("none"))
     }
-
     /// Single HSR-Scanner v4 JSON, including optional achievement and Trailblazer extensions.
     pub fn build_scanner_export(
         &self,
@@ -351,13 +307,21 @@ impl HsrCaptureState {
                 &owned
             },
         };
-        crate::scanner_export::build_scanner_export(
+        let mut export = crate::scanner_export::build_scanner_export(
             inventory,
             references,
             &self.export_details,
-            self.has_achievements
-                .then_some(self.completed_ids.as_slice()),
-        )
+            None,
+        )?;
+        if self.has_achievements {
+            export.as_object_mut().unwrap().insert(
+                "quests".into(),
+                serde_json::json!({
+                    "schemaVersion": 1, "coverage": "complete", "records": self.quests,
+                }),
+            );
+        }
+        Ok(export)
     }
 
     /// Write one HSR-Scanner v4 JSON. Returns that path.
@@ -432,7 +396,7 @@ impl HsrCaptureMonitor {
 
     /// Enabling diagnostics performs no I/O until a decrypted command arrives.
     pub fn with_packet_dump(mut self, root: std::path::PathBuf) -> Self {
-        self.decoder.packet_dump = Some(dump::PacketDump::new(root));
+        self.decoder.set_packet_dump(root);
         self
     }
 
@@ -496,6 +460,7 @@ impl HsrCaptureMonitor {
         self.capture_task = Some(tokio::spawn(capture_task(
             cancel_token.clone(),
             self.packet_tx.clone(),
+            self.state.clone(),
         )));
         self.capture_cancel_token = Some(cancel_token);
     }
@@ -522,6 +487,8 @@ impl HsrCaptureMonitor {
                     self.stop_capture();
                 }
                 if let Ok(mut state) = self.state.lock() {
+                    snapshot.listener_ready = state.listener_ready;
+                    snapshot.elapsed_secs = state.elapsed_secs;
                     *state = snapshot;
                 }
             },
@@ -535,20 +502,45 @@ impl HsrCaptureMonitor {
     }
 
     fn check_timeout(&mut self) {
+        if let Some(start) = self.started {
+            let mut state = self.state.lock().expect("capture state poisoned");
+            state.elapsed_secs = start.elapsed().as_secs();
+            if state.elapsed_secs % 15 == 0 {
+                yas::log_info!(
+                    "星铁抓包诊断：{}",
+                    "HSR capture diagnostics: {}",
+                    state.diagnostics()
+                );
+            }
+        }
         if self
             .started
             .is_some_and(|start| start.elapsed().as_secs() >= CAPTURE_TIMEOUT_SECS)
         {
-            let state = self.decoder.state();
-            let detail = format!("capture timed out after {CAPTURE_TIMEOUT_SECS} seconds; packets={}; decryptedCommands={}; characters={}; lightCones={}; relics={}; achievements={}; lastTransportError={}",
-                state.packet_count, state.command_count, state.character_count, state.light_cone_count,
-                state.relic_count, state.achievement_count, state.last_transport_error.as_deref().unwrap_or("none"));
-            let hint = if state.packet_count == 0 {
+            let shared = self.state.lock().expect("capture state poisoned").clone();
+            let mut snapshot = self.decoder.state().clone();
+            snapshot.listener_ready = shared.listener_ready;
+            snapshot.elapsed_secs = shared.elapsed_secs;
+            let state = &snapshot;
+            let detail = format!("capture timed out after {CAPTURE_TIMEOUT_SECS} seconds; packets={}; decryptedCommands={}; keyExchangeCaptured={}; characters={}; lightCones={}; relics={}; achievements={}; missingDispatchKey={:?}; lastTransportError={}",
+                state.packet_count, state.command_count, state.has_key_exchange, state.character_count, state.light_cone_count,
+                state.relic_count, state.achievement_count, state.missing_dispatch_key, state.last_transport_error.as_deref().unwrap_or("none"));
+            let hint = if !state.listener_ready {
+                LocalizedText::new(
+                    "Windows 监听器未能完成启动，请复制完整错误。",
+                    "The Windows listener did not finish starting. Copy the full error.",
+                )
+            } else if state.packet_count == 0 {
                 LocalizedText::new("未收到星穹铁道流量。请确认游戏正在本机运行，重新抓包后再登录。",
                     "No Star Rail traffic was received. Check that the game is running on this PC, then start capture before logging in.")
+            } else if state.missing_dispatch_key.is_some() && !state.has_key_exchange {
+                LocalizedText::new("当前游戏使用的登录密钥尚未收录，无法解密数据。请更新 GGScanner；若最新版仍失败，请复制完整错误。",
+                    "The current game's login key is missing, so its data cannot be decrypted. Update GGScanner; if the latest build still fails, copy the full error.")
             } else if state.command_count == 0 {
-                LocalizedText::new("已收到网络流量，但未能解密登录数据。请更新 GOODCapture，并在登录前开始抓包。",
-                    "Traffic was received, but login data could not be decrypted. Update GOODCapture and start capture before logging in.")
+                LocalizedText::new("已收到流量，但未成功解码游戏消息。请重新登录并更新抓包器；若仍失败，请复制完整错误。", "Traffic arrived but no game messages decoded. Capture a new login and update the scanner; if this persists, copy the full error.")
+            } else if !state.has_key_exchange {
+                LocalizedText::new("已收到网络流量，但未捕获登录握手。请在启动游戏前开始抓包，再重新登录；若仍失败，请更新 GGScanner。",
+                    "Traffic was received, but the login handshake was not captured. Start capture before launching the game, then log in again. If it still fails, update GGScanner.")
             } else {
                 LocalizedText::new("已读取游戏流量，但数据尚不完整。请重新登录抓包；若仍失败，请复制完整错误。",
                     "Game traffic was decoded, but some data is missing. Capture a new login; if it fails again, copy the full error.")
@@ -584,6 +576,7 @@ impl HsrCaptureMonitor {
     }
 
     fn fail(&mut self, error: HsrError) {
+        yas::log_error!("星铁抓包失败：{}", "HSR capture failed: {}", error);
         self.stop_capture();
         if let Ok(mut state) = self.state.lock() {
             state.complete = false;
@@ -612,10 +605,16 @@ async fn wait_for_capture_task(
 async fn capture_task(
     cancel_token: CancellationToken,
     packet_tx: mpsc::UnboundedSender<Vec<u8>>,
+    state: Arc<Mutex<HsrCaptureState>>,
 ) -> HsrResult<()> {
     #[cfg(target_os = "windows")]
     {
         let mut source = NativePacketSource::new()?;
+        state.lock().expect("capture state poisoned").listener_ready = true;
+        yas::log_info!(
+            "星铁监听已启动：UDP 23301、23302",
+            "HSR listener started: UDP 23301, 23302"
+        );
         pump_packets(&mut source, &cancel_token, &packet_tx).await
     }
     #[cfg(not(target_os = "windows"))]
@@ -669,10 +668,16 @@ impl NativePacketSource {
         })?;
 
         let mut capture = Capture::new().map_err(|error| {
+            let hint = yas::utils::packet_capture::initialization_hint(&error)
+                .map(|(zh, en)| LocalizedText::new(zh, en))
+                .unwrap_or(CAPTURE_HINT);
             HsrError::new(
                 "HSR-CAPTURE-OPEN",
-                CAPTURE_HINT,
-                format!("pktmon capture could not be created; cause={error}"),
+                hint,
+                format!(
+                    "pktmon capture could not be created; cause={:#}",
+                    yas::utils::packet_capture::initialization_error(error)
+                ),
             )
         })?;
         for (index, port) in HSR_PACKET_PORTS.into_iter().enumerate() {
@@ -761,6 +766,19 @@ mod tests {
 
     struct PendingPacketSource;
 
+    #[test]
+    fn inventory_capture_does_not_require_achievement_references() {
+        let references = crate::load_embedded_gilore_reference()
+            .unwrap()
+            .without_achievements();
+        let targets = CaptureTargets {
+            achievements: false,
+            ..CaptureTargets::default()
+        };
+        assert!(HsrPacketDecoder::new(references.clone(), targets).is_ok());
+        assert!(HsrPacketDecoder::new(references, CaptureTargets::default()).is_ok());
+    }
+
     impl PacketSource for PendingPacketSource {
         fn next_packet(&mut self) -> Pin<Box<dyn Future<Output = HsrResult<Vec<u8>>> + Send + '_>> {
             Box::pin(std::future::pending())
@@ -826,9 +844,72 @@ mod tests {
     #[test]
     fn embedded_dispatch_keys_are_pinned_and_decodable() {
         let keys = load_embedded_dispatch_keys().unwrap();
-        assert_eq!(keys.len(), 30);
+        assert_eq!(keys.len(), 31);
+        assert!(keys.contains_key(&2920436228));
         assert!(keys.values().all(|key| key.len() >= 4_096));
         assert_eq!(HSR_PACKET_PORTS, [23301, 23302]);
+    }
+
+    #[test]
+    fn current_inventory_wire_tags_decode_without_using_generated_writers() {
+        use protobuf::Message;
+        // HSR 4.6 wire records, independent of the generated serializers.
+        let cone = proto::Equipment::Equipment::parse_from_bytes(&[
+            8, 80, 24, 1, 56, 6, 64, 1, 72, 0xe9, 7, 112, 5, 120, 0xa1, 0x9c, 1,
+        ])
+        .unwrap();
+        assert_eq!(
+            (
+                cone.tid,
+                cone.unique_id,
+                cone.level,
+                cone.promotion,
+                cone.rank,
+                cone.equip_avatar_id
+            ),
+            (20001, 1, 80, 6, 5, 1001)
+        );
+        assert!(cone.is_protected);
+        let relic = proto::Relic::Relic::parse_from_bytes(&[
+            8, 1, 16, 0xe9, 7, 32, 15, 56, 1, 88, 0xd3, 0xdc, 3, 112, 1, 120, 6,
+        ])
+        .unwrap();
+        assert_eq!(
+            (
+                relic.tid,
+                relic.unique_id,
+                relic.level,
+                relic.main_affix_id,
+                relic.equip_avatar_id
+            ),
+            (61011, 1, 15, 6, 1001)
+        );
+        assert!(relic.is_protected && relic.is_discarded);
+    }
+
+    #[test]
+    fn missing_dispatch_key_survives_later_transport_noise_and_resets() {
+        let mut decoder = HsrPacketDecoder::new(
+            crate::load_embedded_gilore_reference().unwrap(),
+            CaptureTargets::default(),
+        )
+        .unwrap();
+        decoder.sniffer = GameSniffer::new();
+        decoder
+            .receive_packet(crate::network::tests::frame(77, 0, &[8, 42], &[0; 4096]))
+            .unwrap();
+        assert_eq!(decoder.state.missing_dispatch_key, Some(0));
+        assert!(decoder
+            .state
+            .last_transport_error
+            .as_deref()
+            .unwrap()
+            .contains("decryption key 0"));
+        decoder.receive_packet(vec![0; 14]).unwrap();
+        assert_eq!(decoder.state.missing_dispatch_key, Some(0));
+        assert!(!decoder.state.has_key_exchange);
+        decoder.reset();
+        assert_eq!(decoder.state.missing_dispatch_key, None);
     }
 
     #[test]
@@ -841,6 +922,7 @@ mod tests {
         )
         .unwrap();
         monitor.decoder.state.packet_count = 12;
+        monitor.decoder.state.missing_dispatch_key = Some(2920436228);
         monitor.decoder.state.last_transport_error =
             Some("decryption key is missing for command".to_owned());
         monitor.started = Some(
@@ -855,5 +937,33 @@ mod tests {
         let message = error.localized_message(crate::Language::En);
         assert!(message.contains("packets=12"));
         assert!(message.contains("decryptedCommands=0"));
+        assert!(message.contains("missingDispatchKey=Some(2920436228)"));
+    }
+
+    #[test]
+    fn key_exchange_state_tracks_transport_and_resets_without_inventory() {
+        use crate::network::tests::{frame, token};
+        let keys = HashMap::from([(0, vec![0; 4096])]);
+        let mut decoder = HsrPacketDecoder::new(
+            crate::load_embedded_gilore_reference().unwrap(),
+            CaptureTargets::default(),
+        )
+        .unwrap();
+        decoder.dispatch_keys = keys.clone();
+        decoder.sniffer = GameSniffer::new().set_initial_keys(keys);
+        decoder
+            .receive_packet(frame(77, 0, &[8, 42], &[0; 4096]))
+            .unwrap();
+        assert!(decoder.state.command_count > 0);
+        assert!(!decoder.state.has_key_exchange);
+        decoder
+            .receive_packet(frame(77, 1, &token(0x1234567890, 993), &[0; 4096]))
+            .unwrap();
+        assert!(decoder.state.has_key_exchange);
+        assert!(!decoder.state.has_characters);
+        assert!(!decoder.state.has_items);
+        assert!(!decoder.state.complete);
+        decoder.reset();
+        assert!(!decoder.state.has_key_exchange);
     }
 }

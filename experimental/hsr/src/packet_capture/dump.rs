@@ -141,9 +141,21 @@ mod tests {
 
     #[test]
     fn unwritable_dump_is_a_reported_error() {
-        let mut dump = PacketDump::new(PathBuf::from("NUL/invalid"));
+        // A regular file is not a directory, so the dump root below it can never
+        // be created. This behaves the same on every platform, unlike a Windows
+        // device name such as "NUL" which is an ordinary file name on Unix.
+        let blocker = std::env::temp_dir().join(format!(
+            "hsr-dump-blocked-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&blocker, b"not a directory").unwrap();
+        let mut dump = PacketDump::new(blocker.join("invalid"));
         assert!(dump.write(&[1]).is_err());
         assert!(dump.write_raw(&[1]).is_err());
         assert!(dump.ensure_session().is_err());
+        fs::remove_file(&blocker).unwrap();
     }
 }

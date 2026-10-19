@@ -1,19 +1,21 @@
 # Star Rail export format / 《星穹铁道》导出格式
 
-GOODCapture writes **one** JSON file: `star_rail_capture_<timestamp>.json`.
+GGScanner writes **one** JSON file: `star_rail_capture_<timestamp>.json`.
 The screenshot scanner writes the same v4 shape to `star_rail_scan_<timestamp>.json`.
 
 The file is **HSR-Scanner format v4**, the same interchange used by
 [HSR-Scanner](https://github.com/kel-z/HSR-Scanner) (`source: "HSR-Scanner"`)
 and [Reliquary Archiver](https://github.com/IceDynamix/reliquary-archiver)
 (`source: "reliquary_archiver"`). Fribbels Optimizer imports either source.
-GOODCapture uses `source: "HSR-Scanner"` because Fribbels allowlists that
-string; `generator` records the actual producer.
+GGScanner uses `source: "HSR-Scanner"` because Fribbels allowlists that
+string; `generator` retains the historical producer name `GOODScanner` for
+compatibility with existing exports.
 
 抓包与截图扫描写同一套 v4 JSON，但文件名前缀不同（`star_rail_capture_` /
-`star_rail_scan_`），避免互相覆盖。GOODScanner 的 `source` 固定为 `HSR-Scanner`，
+`star_rail_scan_`），避免互相覆盖。GGScanner 的 `source` 固定为 `HSR-Scanner`，
 真正的生成器写在 `generator` 里。截图扫描会读取画面上能看到的技能/行迹文字；
 无法从画面读出的字段（成就数据包、`ability_version` 等）省略，不另起一套 schema。
+截图扫描把左下角水印里的 UID 写入 `metadata.uid`（整数；需两个画面读数一致才采用，否则为 `null`）；抓包导出始终为 `null`。
 
 ## Required v4 fields / 必填 v4 字段
 
@@ -22,9 +24,9 @@ string; `generator` records the actual producer.
 | `source` | `"HSR-Scanner"` (format discriminator, not the binary name) |
 | `build` | `"v1.2.0"` (Fribbels compatibility identifier) |
 | `version` | `4` |
-| `metadata.uid` | always `null` (account IDs are not exported) |
+| `metadata.uid` | Screenshot scans: the account UID (integer) read from the bottom-left on-screen watermark, accepted once two panels read the same value, else `null`. Packet capture: always `null`. Importers discard this field; it is never read back. |
 | `metadata.trailblazer` | `"Stelle"` or `"Caelus"`, else `null` |
-| `characters[]` | `id` (string), `name`, `path`, `level`, `ascension`, `eidolon`. Packet captures also include `ability_version`. Screenshot OCR fills `skills`, `traces`, and optional `memosprite` from the traces screen when readable; `ability_version` is omitted because it is not on-screen text. |
+| `characters[]` | `id` (string), `name`, `path`, `level`, `ascension`, `eidolon`. Packet captures also include `ability_version` and single-unlock `traces` flags. Screenshot OCR fills upgradeable `skills` (Basic, Skill, Ultimate, Talent, plus `elation` on Elation characters) and optional `memosprite` levels. Screenshot scans do not read or export one-time trace-node flags; `traces.special` is such a flag, separate from the upgradeable `skills.elation` level. `ability_version` is omitted because it is not on-screen text. |
 | `light_cones[]` | `id` (string), `name`, `level`, `ascension`, `superimposition`, `location`, `lock`, `_uid` |
 | `relics[]` | all six slots; `set_id`, `name`, `slot`, `rarity`, `level`, `mainstat`, `substats[{key,value}]`, `location`, `lock`, `discard`, `_uid` |
 
@@ -36,7 +38,7 @@ Preservation, Abundance, Remembrance, Elation.
 
 Percent substats use a trailing `_` (`CRIT Rate_`, `HP_`). Flat stats do not.
 
-## GOODScanner extensions / 扩展（省略 = 未观察）
+## GGScanner extensions / 扩展（省略 = 未观察）
 
 Unknown fields must be ignored by consumers. Omit a field when that data was
 not captured; do not invent empty coverage.
@@ -48,13 +50,16 @@ not captured; do not invent empty coverage.
 | `generator` | `{name:"GOODScanner", version, captureRevision, compatibility}` |
 | `coverage` | `{characters, lightCones, relics}` each `complete` / `unknown` / … |
 | `metadata.current_trailblazer_path` | current Trailblazer path, same names as `characters[].path` |
-| `achievements` | sorted unique completed achievement IDs. `[]` means zero completed. **Omitted** means achievements were not observed |
+| `quests` | `{schemaVersion:1, coverage:"complete", records:[{id,status,progress,counters}]}`; records sorted by unique positive ID. Omitted means no Quest snapshot was captured |
 
-Same rule as Genshin GOOD: a missing `achievements` array leaves consumer
-achievement state untouched; a present array (including empty) replaces it.
+The complete Quest snapshot contains achievements and other objectives together.
+Status values are 0 (None), 1 (Doing), 2 (Finish), 3 (Close), 4 (Delete).
+GGStarRail derives completed achievements from catalog membership and statuses
+2/3, and retains every record for the Objectives archive. Missing `quests`
+leaves existing progress untouched. Legacy `achievements` exports remain importable.
 
-与原神 GOOD 相同：没有 `achievements` 时消费者应保留原成就数据；有该数组
-（包括 `[]`）时以文件为准。
+`quests` 保留成就与其他目标的完整列表、状态、进度和计数，网站负责分类。
+没有该字段时保留已有进度；出现完整快照时替换。完成时间不写入导出。
 
 ## Minimal example / 最小示例
 
@@ -66,7 +71,7 @@ achievement state untouched; a present array (including empty) replaces it.
   "generator": {
     "name": "GOODScanner",
     "version": "0.0.0",
-    "captureRevision": "reliquary-shape-4.5-v1",
+    "captureRevision": "reliquary-quest-4.6-v2",
     "compatibility": "HSR-Scanner v1.2.0 / format v4"
   },
   "metadata": {
@@ -82,7 +87,11 @@ achievement state untouched; a present array (including empty) replaces it.
   "characters": [],
   "light_cones": [],
   "relics": [],
-  "achievements": [4010101]
+  "quests": {
+    "schemaVersion": 1,
+    "coverage": "complete",
+    "records": [{"id": 4010101, "status": 3, "progress": 1, "counters": []}]
+  }
 }
 ```
 

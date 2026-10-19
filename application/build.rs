@@ -1,4 +1,8 @@
+#[path = "../build-support/version.rs"]
+mod version;
+
 fn main() {
+    let version = version::configure();
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap().as_str() == "windows" {
         let mut res = winres::WindowsResource::new();
         // https://github.com/mxre/winres/pull/24
@@ -23,25 +27,24 @@ fn main() {
 
         // VS_VERSION_INFO — legitimate apps carry version metadata; its absence
         // is a negative signal for AV heuristics.
-        let version = env!("CARGO_PKG_VERSION");
         let is_capture_scanner = std::env::var_os("CARGO_FEATURE_CAPTURE").is_some();
         let product_name = if is_capture_scanner {
-            "GOODCapture - Genshin & Star Rail"
+            "GGScanner - Genshin & Star Rail"
         } else {
-            "GOODScanner - Genshin & Star Rail"
+            "GGScannerOCR - Genshin & Star Rail"
         };
         let original_filename = if is_capture_scanner {
-            "GOODCapture.exe"
+            "GGScanner.exe"
         } else {
-            "GOODScanner.exe"
+            "GGScannerOCR.exe"
         };
         res.set("ProductName", product_name);
         res.set(
             "FileDescription",
             "Genshin Impact and Honkai: Star Rail data scanner",
         );
-        res.set("ProductVersion", version);
-        res.set("FileVersion", version);
+        res.set("ProductVersion", &version);
+        res.set("FileVersion", &version);
         res.set("LegalCopyright", "GPL-2.0-or-later");
         res.set("OriginalFilename", original_filename);
 

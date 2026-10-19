@@ -36,6 +36,8 @@ impl CaptureFrame {
 
     /// Read a pixel at window base coordinates.
     pub fn pixel(&self, scaler: &CoordScaler, bx: f64, by: f64) -> [u8; 3] {
+        // Inner sampling loops must remain reads only. Their semantic detector
+        // records its input region once, rather than dumping every sampled pixel.
         let x = (scaler.x(bx) - scaler.x(self.origin.0)) as u32;
         let y = (scaler.y(by) - scaler.y(self.origin.1)) as u32;
         if x < self.image.width() && y < self.image.height() {

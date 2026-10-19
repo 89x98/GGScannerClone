@@ -2,32 +2,37 @@
 
 Select **Star Rail → Capture**, start capture as administrator, then log in
 from the game's title screen. Characters, Light Cones, and Relics (including
-Planar Ornaments), and Achievements each have a checkbox, matching the Genshin
+Planar Ornaments), and Achievements & objectives each have a checkbox, matching the Genshin
 export settings. All four default to selected; selections persist independently
 of OCR settings. Unchecked categories are excluded from the export and completion
 requirements. Capture stops and saves one export file after the requested data arrives. The default destination is beside the
 executable; existing saved output destinations are retained. The result shows
 the actual file path.
 
-All HSR app flows download the current reference from
-`https://hsr.ggartifact.com/good/hsr_data_cache.json`. Like Genshin, the app
-checks again after two hours and keeps a validated local cache, separately at
-`data/hsr/hsr_data_cache.json`. A network failure uses the last valid cache;
-a first download failure reports an error. No installed game-reference bundle
-is used as a fallback. There is no reference-folder or domain setting.
+All HSR inventory flows download the shared reference from
+`https://hsr.ggartifact.com/good/hsr_scanner_data.json` (formatVersion 2), cached
+at `data/hsr/hsr_scanner_data.json`. It contains OCR names, inventory definitions,
+affix values and packet/form mappings, with no achievement data. Scanner, capture
+and manager reuse this one cache. The old combined filename and the briefly
+separated OCR/capture caches are deleted on load, along with empty obsolete directories.
 
-**Refresh game data** bypasses the two-hour cache in Capture's Advanced section,
-and is also available in the HSR Scanner and Manager. Failed or malformed refreshes
-preserve the previous cache and report the error. Character, Light Cone, Relic,
-achievement, affix, and character-form mapping updates all arrive together.
+Capture exports the complete Quest response when Achievements & objectives is
+selected, retaining IDs, statuses, progress and counters. It requires no
+achievement-ID download. GGStarRail classifies achievements with its own catalog
+and displays the remaining records in the Objectives archive. The obsolete
+`hsr_achievement_ids.json` cache and hosted file are removed. The full achievement
+OCR mapping remains a separate product.
 
-GIlore's normal `hsr_data reference` command generates `capture_data_cache.json`
-from the same validated source and normalized bundle. GGStarRail's normal
-`npm run data:update` copies it to `public/good/hsr_data_cache.json`; the website
-build checks its revision and catalog coverage against the website data. Publishing
-that file updates installed clients without rebuilding GOODCapture. Protocol code
-changes can still require an application update. The old embedded reference API
-remains only for deterministic offline fixtures and historical build tooling.
+The base download uses the two-hour cache policy, with its own refresh button
+and download age. Failed or malformed replacements preserve the previous cache and report
+the error. Normal loads can use a last valid cache; a cold offline load can use
+the bundled reference.
+
+HoyoData's `uv run hoyodata ggstarrail` generates the base file from the same
+source and publishes them into GGStarRail's `public/good/` directory and its local
+archive. The website build checks revision and field coverage against its catalog.
+Publishing the files updates clients without rebuilding GGScanner. Protocol code
+changes can still require an application update.
 
 Application config v1 migrates to v2 by dropping the obsolete developer
 reference path while preserving scan preferences, output path, and navigation.
@@ -42,8 +47,12 @@ with numbered `.bin` protobuf bodies. Each capture gets its own folder. This is
 an explicit diagnostic dump, separate from sanitized exports; it is not a PCAP
 or ETL transport recording. A write failure is surfaced with its full path.
 
+Replay a raw dump through the live transport and current hosted references with
+`cargo run -p hsr_scanner --features capture --example analyze_dump -- <session> --raw`.
+The tool reports distinct transport errors and exports only a complete snapshot.
+
 Each completed capture writes one file: `star_rail_capture_<timestamp>.json`.
-That file is HSR-Scanner format v4 plus GOODScanner extensions (achievements,
+That file is HSR-Scanner format v4 plus GGScanner extensions (complete Quests,
 Trailblazer gender and current path). See [`HSR_EXPORT.md`](HSR_EXPORT.md).
 Screenshot scans write `star_rail_scan_<timestamp>.json` instead, so the two
 flows cannot overwrite each other. Unchecked categories are omitted rather
@@ -55,7 +64,7 @@ files, packet dumps, directories, or symlinks.
 
 Fribbels currently allowlists `HSR-Scanner` as a source string. The interchange
 file uses that required v4 compatibility discriminator and its compatible
-build identifier; a separate `generator` object identifies GOODScanner and
+build identifier; a separate `generator` object keeps the historical GOODScanner name and
 its capture revision. It does not claim to have been captured by Kel-Z's tool.
 Server item IDs are replaced with local synthetic identifiers; account UID is
 null. The primary format references are
@@ -100,7 +109,7 @@ The replacement uses:
   distinguishes a full avatar response from a normal avatar update.
 - Equipment and Relic normalization, retaining equipped character, lock and
   discard states; affix IDs/roll counts become the existing semantic stat units.
-- Separate achievement readiness. All records in a candidate group must parse;
+- Separate Quest readiness. All records in a candidate group must parse;
   an invalid member cannot silently disappear from an authoritative snapshot.
 - A 120-second deadline with readable errors distinguishing absent traffic,
   unsuccessful decryption, and missing categories. Full errors include packet,
@@ -112,7 +121,24 @@ distinction between unknown outer protobuf containers and validated inner types.
 
 ## Compatibility limits
 
-The inner inventory schemas are the reviewed HSR 4.5 protobuf types. Command
+A local login-frame replay confirmed that `GetQuestDataScRsp` carries achievement
+and non-achievement Quest records in the same repeated field 10. Quest ID is
+field 12, status is field 1, completion time is field 3 and progress is field 14
+in that inspected layout. Both categories share record shapes; those fields
+do not include a category discriminator. GGScanner preserves the complete list;
+classification happens in GGStarRail using AchievementData and QuestData.
+The inner Quest schema is the reviewed HSR 4.6 layout, including packed or
+unpacked counters in field 10. Incremental Quest notifications are not accepted
+as complete snapshots.
+
+For offline investigation, `analyze_dump <session> --raw --dump-dir <diagnostics>
+--output-dir <exports>` replays raw frames through the production decoder and
+retains the unfiltered decrypted messages in the diagnostic directory. Separate
+output directories keep the original capture session intact. This diagnostic
+material must remain local and must not be committed as a test fixture.
+
+The inner inventory schemas are the reviewed HSR 4.6 protobuf types from
+Reliquary revision `0b8c1d4f8eb5ae9722b5c3273e36a464b7188a38`. Command
 and outer-field rotation are handled, but arbitrary inner-field or encryption
 changes can still require an update. Scalar fields with identical shapes
 cannot always be inferred unambiguously from values alone.

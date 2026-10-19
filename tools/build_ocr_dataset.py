@@ -10,7 +10,7 @@ Label sources:
   gt-corrected  identity matches groundtruth but this field differed; label from GT
   ocr-only      no groundtruth alignment; label is the raw OCR text (review before use)
 
-Characters rescanned in phase 2 (debug_images/characters_rescan/<index>) are
+Characters rescanned in phase 2 (debug_images/gi_characters_rescan/<index>) are
 aligned via the rescan's object; their crops are stored as item "<index>_rescan".
 
 Output layout (--out):
@@ -31,6 +31,7 @@ Usage:
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
@@ -220,7 +221,7 @@ class Aligner:
 
 
 def crop_fields(manifest):
-    return [f for f in manifest["fields"] if f.get("crop")]
+    return [f for f in manifest["fields"] if f.get("crop") and not f.get("inference_error")]
 
 
 def resolve_rescanned_character(phase1, rescan, aligner, names):
@@ -295,26 +296,53 @@ def resolve_item(category, manifest, aligner, names):
         # showing unrelated text, or a 4th substat crop on a 3-line artifact): skip.
 
 
-def load_manifests(run_dir, category):
+def load_manifests(dump_root, category):
     """Item folder name -> (item_dir, ocr_fields manifest)."""
-    paths = glob.glob(os.path.join(run_dir, "debug_images", category, "*", "ocr_fields.json"))
-    return {os.path.basename(os.path.dirname(p)): (os.path.dirname(p), load_json(p)) for p in sorted(paths)}
+    paths = glob.glob(os.path.join(dump_root, category, "*", "ocr_fields.json"))
+    items = {os.path.basename(os.path.dirname(p)): (os.path.dirname(p), load_json(p)) for p in sorted(paths)}
+    return {key: value for key, value in items.items() if value[1].get("game", "genshin") == "genshin"}
 
 
 def iter_items(run_dir):
-    """Yield (category, scanned objects, [(item, {part: (item_dir, manifest)})])."""
+    """Yield (dump root, category, scanned objects, item manifests by phase)."""
     export = glob.glob(os.path.join(run_dir, "good_export_*.json"))
-    for category in ("characters", "weapons", "artifacts"):
-        items = load_manifests(run_dir, category)
+    # Accept debug_images directly or discover it under the scanner cwd.
+    # Historical unprefixed and timestamped dumps remain readable.
+    categories = ("characters", "weapons", "artifacts")
+    if any(os.path.isdir(os.path.join(run_dir, "gi_" + c)) for c in categories):
+        roots = [(run_dir, "gi_")]
+    elif any(os.path.isdir(os.path.join(run_dir, c)) for c in categories):
+        roots = [(run_dir, "")]
+    else:
+        dump_root = os.path.join(run_dir, "debug_images")
+        if any(os.path.isdir(os.path.join(dump_root, "gi_" + c)) for c in categories):
+            roots = [(dump_root, "gi_")]
+        else:
+            roots = [(p, "") for p in sorted(glob.glob(os.path.join(dump_root, "genshin", "run_*")))]
+            if any(os.path.isdir(os.path.join(dump_root, c)) for c in categories):
+                roots.append((dump_root, ""))
+    for root, prefix in roots:
+        yield from iter_dump_items(root, categories, export, prefix)
+
+
+def iter_dump_items(root, categories, export, prefix):
+    for category in categories:
+        items = load_manifests(root, prefix + category)
         if not items:
             continue
-        rescans = load_manifests(run_dir, RESCAN_DIR) if category == "characters" else {}
+        rescans = load_manifests(root, prefix + RESCAN_DIR) if category == "characters" else {}
         scanned = (load_json(export[0]).get(category) or []) if export else []
+        if not export:
+            scanned = [
+                (rescans.get(key, item)[1]).get("final_object")
+                for key, item in items.items()
+                if isinstance((rescans.get(key, item)[1]).get("final_object"), dict)
+            ]
         parts = [
             (item, {PHASE1: entry, **({RESCAN: rescans[item]} if item in rescans else {})})
             for item, entry in items.items()
         ]
-        yield category, scanned, parts
+        yield root, category, scanned, parts
 
 
 def resolve_parts(category, parts, aligner, names):
@@ -348,8 +376,9 @@ def ocr_matches(field, ocr_text, label):
 def collect(run_dirs, gt, names):
     records = []
     for run_dir in run_dirs:
-        run = os.path.basename(os.path.normpath(run_dir))
-        for category, scanned, items in iter_items(run_dir):
+        for root, category, scanned, items in iter_items(run_dir):
+            root_path = os.path.normcase(os.path.abspath(root))
+            run = os.path.basename(os.path.normpath(root)) + "_" + hashlib.sha256(root_path.encode()).hexdigest()[:12]
             aligner = Aligner(gt, scanned if category == "characters" else [])
             for item, parts in items:
                 for part, f, label, source in resolve_parts(category, parts, aligner, names):

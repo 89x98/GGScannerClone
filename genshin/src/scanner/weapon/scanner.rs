@@ -30,6 +30,7 @@ use crate::scanner::common::annotator;
 use crate::scanner::common::game_controller::GenshinGameController;
 use crate::scanner::common::mappings::MappingManager;
 use crate::scanner::common::models::{DebugOcrField, DebugScanResult, GoodWeapon};
+use crate::scanner::common::ocr_factory::same_model;
 use crate::scanner::common::ocr_pool::SharedOcrPools;
 use crate::scanner::common::pixel_utils;
 use crate::scanner::common::scan_worker::{self, WorkItem};
@@ -251,7 +252,7 @@ impl GoodWeaponScanner {
         let equip_text = Self::ocr_image_region(ocr, image, ocr_regions.equip, scaler)?;
         let mut location = Self::parse_equip_location(&equip_text, mappings);
         if location.is_empty() && equip_text.trim().len() >= 2 {
-            if let Some(fallback) = equip_fallback_ocr {
+            if let Some(fallback) = equip_fallback_ocr.filter(|f| !same_model(ocr, *f)) {
                 let equip_text_v5 =
                     Self::ocr_image_region(fallback, image, ocr_regions.equip, scaler)?;
                 location = Self::parse_equip_location(&equip_text_v5, mappings);
@@ -598,6 +599,7 @@ impl GoodWeaponScanner {
 
         let (item_tx, worker_handle) =
             scan_worker::start_worker::<Option<GridIconResult>, GoodWeapon, _>(
+                !self.config.continue_on_failure,
                 move |work_item: WorkItem<Option<GridIconResult>>| {
                     // Skip queued work if the run was cancelled mid-scan.
                     if worker_cancel.is_cancelled() {
@@ -665,6 +667,7 @@ impl GoodWeaponScanner {
             pf(0, total, "", "");
         }
         let mut voter: PagedGridVoter<()> = PagedGridVoter::new(total, GridMode::Weapon);
+        let mut visible_layout = None;
 
         let emit_ready = |ready: Vec<ReadyItem<()>>,
                           item_tx: &crossbeam_channel::Sender<WorkItem<Option<GridIconResult>>>|
@@ -689,12 +692,22 @@ impl GoodWeaponScanner {
 
         bp.scan_grid(total, &scan_config, start_at, |ctrl, event| match event {
             GridEvent::PageStarted { .. } => ScanAction::Continue,
-            GridEvent::PageCompleted { .. } => ScanAction::Continue,
+            GridEvent::PageCompleted { .. } => {
+                if worker_handle.stop_requested() {
+                    ScanAction::Stop
+                } else {
+                    ScanAction::Continue
+                }
+            },
             GridEvent::PageScrolled => {
+                visible_layout = None;
                 voter.reset_page();
                 ScanAction::Continue
             },
-            GridEvent::Item { idx, frame, .. } => {
+            GridEvent::Item {
+                idx, frame, layout, ..
+            } => {
+                visible_layout = Some(layout);
                 if worker_handle.stop_requested() {
                     return ScanAction::Stop;
                 }
@@ -711,7 +724,15 @@ impl GoodWeaponScanner {
                     let _ = emit_ready(ready, &item_tx);
                     return ScanAction::Stop;
                 }
-                let ready = voter.record(idx, frame, (), &scaler);
+                let ready = voter.record_with_layout(
+                    idx,
+                    frame,
+                    (),
+                    &scaler,
+                    layout.page_start_idx,
+                    layout.page_items,
+                    layout.screen_start_row,
+                );
                 if emit_ready(ready, &item_tx).is_err() {
                     return ScanAction::Stop;
                 }
@@ -724,30 +745,38 @@ impl GoodWeaponScanner {
         let _ = emit_ready(leftover, &item_tx);
 
         drop(item_tx);
-        let (weapons, index_map, worker_aborted) = worker_handle.join_with_status();
+        let outcome = worker_handle.join(|index| {
+            crate::scanner::common::backpack_scanner::focus_failed_item(
+                ctrl,
+                visible_layout,
+                index + start_at,
+                self.config.panel_delay,
+            );
+        })?;
+        let weapons = outcome.items;
+        let index_map = outcome.index_map;
 
         // Same contract as the artifact scanner: a worker stop means the run
         // gave up after repeated failures, so its partial list must not be
         // published as a completed scan.
-        if worker_aborted && !ctrl.cancel_token().is_cancelled() {
+        if outcome.stopped && !ctrl.cancel_token().is_cancelled() {
             log_error!(
                 "[weapon] 连续失败后中止：仅识别 {} / {} 个。\
-                 常见原因：点击未生效（游戏窗口未置顶，或 Wayland 下 ydotool 绝对定位失准），\
+                 常见原因：点击未生效（游戏窗口未置顶，或输入注入绝对定位失准），\
                  导致背包页签或详情面板没有切换。",
                 "[weapon] aborted after repeated item failures: only {} / {} recognized. \
                  The usual cause is that clicks never reached the game (window not raised, or inaccurate \
-                 ydotool absolute positioning on Wayland), so the inventory tab or detail panel never changed.",
+                 absolute input positioning), so the inventory tab or detail panel never changed.",
                 weapons.len(),
                 total
             );
             bail!(
                 "武器扫描连续失败后中止（识别 {} / {}）。\
-                 常见原因：点击未生效——游戏窗口未置顶，或 Wayland 会话下 ydotool 绝对定位失准，\
+                 常见原因：点击未生效——游戏窗口未置顶，或输入注入绝对定位失准，\
                  导致背包页签/详情面板未切换。\n\
                  / Weapon scan aborted after repeated item failures ({} / {} recognized). The usual \
-                 cause is that clicks never reached the game: the window was not raised, or ydotool \
-                 absolute positioning is inaccurate on a Wayland session, so the inventory tab or \
-                 detail panel never changed.",
+                 cause is that clicks never reached the game: the window was not raised, or absolute \
+                 input positioning is inaccurate, so the inventory tab or detail panel never changed.",
                 weapons.len(),
                 total,
                 weapons.len(),
@@ -757,9 +786,12 @@ impl GoodWeaponScanner {
 
         // Write index map for debug image correlation (output position → folder name)
         if self.config.dump_images {
-            let map_path = std::path::Path::new("debug_images")
-                .join("weapons")
-                .join("index_map.json");
+            let map_path = crate::scanner::common::dump_paths::category_dir(
+                "debug_images",
+                "genshin",
+                "weapons",
+            )
+            .join("index_map.json");
             let _ = std::fs::write(
                 &map_path,
                 serde_json::to_string(&index_map).unwrap_or_default(),
@@ -1027,8 +1059,9 @@ mod tests {
         let mappings = make_test_mappings();
         let config = default_config();
 
-        let ocr = FakeOcr::new(vec!["风鹰剑", "80/90", "精炼3阶", "纳两妲已装备"]);
-        let fallback = FakeOcr::new(vec!["纳西妲已装备"]);
+        let ocr = FakeOcr::new(vec!["风鹰剑", "80/90", "精炼3阶", "口口口已装备"])
+            .with_model_id("ppocrv4");
+        let fallback = FakeOcr::new(vec!["纳西妲已装备"]).with_model_id("ppocrv5");
 
         let result = GoodWeaponScanner::scan_single_weapon(
             &ocr,
@@ -1052,6 +1085,40 @@ mod tests {
             },
             other => panic!("Expected Weapon, got {:?}", std::mem::discriminant(&other)),
         }
+        assert_eq!(fallback.call_count(), 1);
+    }
+
+    #[test]
+    fn test_weapon_equip_fallback_skipped_for_same_model() {
+        let image = make_weapon_image(5, false);
+        let scaler = make_1080p_scaler();
+        let regions = WeaponOcrRegions::new();
+        let mappings = make_test_mappings();
+        let config = default_config();
+
+        let ocr = FakeOcr::new(vec!["风鹰剑", "80/90", "精炼3阶", "口口口已装备"])
+            .with_model_id("ppocrv6tiny");
+        let fallback = FakeOcr::new(vec![]).with_model_id("ppocrv6tiny");
+
+        let result = GoodWeaponScanner::scan_single_weapon(
+            &ocr,
+            Some(&fallback),
+            &image,
+            &scaler,
+            &regions,
+            &mappings,
+            &config,
+            0,
+            None,
+        )
+        .unwrap();
+
+        match result {
+            WeaponScanResult::Weapon(w) => assert!(w.location.is_empty()),
+            other => panic!("Expected Weapon, got {:?}", std::mem::discriminant(&other)),
+        }
+        assert_eq!(ocr.call_count(), 4);
+        assert_eq!(fallback.call_count(), 0);
     }
 
     #[test]

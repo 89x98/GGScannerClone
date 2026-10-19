@@ -1,4 +1,4 @@
-use image::{imageops, RgbImage};
+use image::{imageops, Rgb, RgbImage};
 use sha2::{Digest, Sha256};
 
 use crate::error::{hints, HsrError, HsrResult};
@@ -133,6 +133,7 @@ pub enum ScrollEvidence {
 /// bound plausible spacing; the selected origin, stride, row/column counts,
 /// and confidence are derived from the current frame.
 pub fn discover_inventory_grid(image: &RgbImage) -> HsrResult<GridGeometry> {
+    crate::annotator::record_detection("inventory_grid", image);
     let width = image.width() as usize;
     let height = image.height() as usize;
     let luma = luma_plane(image);
@@ -255,6 +256,7 @@ fn sample_peak(values: &[f64], index: isize) -> f64 {
 }
 
 pub fn selected_cell(grid: &GridGeometry, image: &RgbImage) -> Option<(usize, f64)> {
+    crate::annotator::record_region("selected_cell", image, NormRect::new(0.0, 0.0, 0.75, 1.0));
     let mut scores: Vec<(usize, f64)> = grid
         .flattened()
         .enumerate()
@@ -272,6 +274,74 @@ pub fn selected_cell(grid: &GridGeometry, image: &RgbImage) -> Option<(usize, f6
     (best.1 > 0.25 && gap > 0.015).then_some((best.0, gap))
 }
 
+/// Where the white selection frame sits in a backpack list.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SelectedCard {
+    pub column: usize,
+    /// Normalized frame center; rows scroll by arbitrary offsets.
+    pub y: f64,
+}
+
+/// Find the selected card using only the grid's fixed columns. The backpack
+/// scrolls vertically by arbitrary offsets to keep the selection visible, so
+/// fixed row centers go stale after the first scroll. The selection frame's
+/// two vertical edges are the only long white lines on the list; a card-high
+/// window counts white rows on each edge (the portrait badge interrupts the
+/// top of the right edge, hence a count rather than one unbroken run).
+pub fn selected_card(grid: &GridGeometry, image: &RgbImage) -> Option<SelectedCard> {
+    crate::annotator::record_region("selected_card", image, NormRect::new(0.0, 0.0, 0.75, 1.0));
+    let row = grid.centers.first()?;
+    let width = image.width();
+    let height = image.height();
+    let window = (grid.cell_height * f64::from(height)).round() as usize;
+    let half_width = grid.cell_width * f64::from(width) / 2.0;
+    // The relic tab's columns sit about 2px right of the light cone tab's.
+    let white = |x: i64, y: u32| {
+        (x - 3..=x + 3).any(|x| {
+            x >= 0 && (x as u32) < width && {
+                let pixel = image.get_pixel(x as u32, y);
+                u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2]) > 570
+            }
+        })
+    };
+    let edge_rows = |x: f64| -> Vec<bool> {
+        let x = x.round() as i64;
+        (0..height).map(|y| white(x, y)).collect()
+    };
+    let mut scores: Vec<(usize, f64, f64)> = row
+        .iter()
+        .enumerate()
+        .filter_map(|(column, center)| {
+            let cx = center.x * f64::from(width);
+            let left = edge_rows(cx - half_width);
+            let right = edge_rows(cx + half_width);
+            if window == 0 || window > left.len() {
+                return None;
+            }
+            let both: Vec<usize> = left
+                .iter()
+                .zip(&right)
+                .map(|(l, r)| usize::from(*l) + usize::from(*r))
+                .collect();
+            let mut sum: usize = both[..window].iter().sum();
+            let mut best = (sum, 0_usize);
+            for start in 1..=both.len() - window {
+                sum = sum + both[start + window - 1] - both[start - 1];
+                if sum > best.0 {
+                    best = (sum, start);
+                }
+            }
+            let score = best.0 as f64 / (2 * window) as f64;
+            let y = (best.1 as f64 + window as f64 / 2.0) / f64::from(height);
+            Some((column, score, y))
+        })
+        .collect();
+    scores.sort_by(|left, right| right.1.total_cmp(&left.1));
+    let (column, score, y) = *scores.first()?;
+    let second = scores.get(1).map_or(0.0, |entry| entry.1);
+    (score > 0.5 && score - second > 0.2).then_some(SelectedCard { column, y })
+}
+
 /// Compare two stable inventory screenshots and classify a requested page
 /// scroll. The comparison uses card interiors (not the animated selection
 /// border) plus a narrow gutter immediately beside the grid. Partial final
@@ -283,6 +353,151 @@ pub fn classify_inventory_scroll(
     grid: &GridGeometry,
     requested_rows: usize,
 ) -> HsrResult<ScrollEvidence> {
+    classify_inventory_scroll_inner(before, after, grid, grid, requested_rows, true)
+}
+
+/// Prove an automatic viewport reposition from row contents. A moved selection
+/// alone cannot establish that the same item remained selected across a menu.
+pub fn classify_inventory_reposition(
+    before: &RgbImage,
+    after: &RgbImage,
+    grid: &GridGeometry,
+    requested_rows: usize,
+) -> HsrResult<ScrollEvidence> {
+    if before.dimensions() != after.dimensions() {
+        return Err(HsrError::new(
+            "HSR-SCROLL-GEOMETRY",
+            hints::SCREEN_INVALID,
+            "inventory reposition screenshots have different dimensions",
+        ));
+    }
+    let uncertain = ScrollEvidence::Uncertain { confidence: 0.0 };
+    let Some((old, new)) = selected_card(grid, before).zip(selected_card(grid, after)) else {
+        return Ok(uncertain);
+    };
+    let Some((first, next)) = grid
+        .first()
+        .zip(grid.centers.get(1).and_then(|row| row.first()))
+    else {
+        return Ok(uncertain);
+    };
+    let stride = next.y - first.y;
+    if requested_rows == 0
+        || requested_rows > grid.rows()
+        || stride <= 0.0
+        || old.column != new.column
+        || old.y <= new.y
+    {
+        return Ok(uncertain);
+    }
+    let unchanged = signature_distance(
+        &grid_row_signatures(before, grid).concat(),
+        &grid_row_signatures(after, grid).concat(),
+    );
+    if unchanged <= 0.020 {
+        return Ok(ScrollEvidence::End {
+            confidence: (1.0 - unchanged / 0.020).clamp(0.0, 1.0),
+        });
+    }
+    // Keyboard scrolling can leave a clipped row at the top and a fifth
+    // selectable row below the four nominal centers. Returning from Character
+    // clamps a different origin. Anchor BOTH sets of content samples to the
+    // actual selected card, without rounding that origin to a nominal row.
+    let mut before_grid = grid.clone();
+    let mut after_grid = grid.clone();
+    before_grid.centers.clear();
+    after_grid.centers.clear();
+    let top = (first.y - grid.cell_height * 0.75).max(0.10);
+    let half_height = grid.cell_height / 2.0;
+    for offset in -(grid.rows() as i32)..=grid.rows() as i32 {
+        let old_y = old.y + offset as f64 * stride;
+        let new_y = new.y + offset as f64 * stride;
+        if old_y - half_height < top
+            || new_y - half_height < top
+            || old_y + half_height > 0.86
+            || new_y + half_height > 0.86
+        {
+            continue;
+        }
+        before_grid.centers.push(
+            grid.centers[0]
+                .iter()
+                .map(|point| Point::new(point.x, old_y))
+                .collect(),
+        );
+        after_grid.centers.push(
+            grid.centers[0]
+                .iter()
+                .map(|point| Point::new(point.x, new_y))
+                .collect(),
+        );
+    }
+    if before_grid.centers.is_empty() {
+        return Ok(uncertain);
+    }
+    crate::annotator::record_region(
+        "reposition_before",
+        before,
+        NormRect::new(0.0, 0.0, 0.75, 1.0),
+    );
+    crate::annotator::record_region(
+        "reposition_after",
+        after,
+        NormRect::new(0.0, 0.0, 0.75, 1.0),
+    );
+    let before_content = grid_row_content_signatures(before, &before_grid)?;
+    let mut score = 1.0_f64;
+    // The border detector can choose either end of a short brightness plateau.
+    // Average card interiors and allow only three reference pixels of jitter;
+    // sparse point samples alias the detailed artwork at that displacement.
+    for jitter in -3..=3 {
+        let mut aligned = after_grid.clone();
+        for point in aligned.centers.iter_mut().flatten() {
+            point.y += jitter as f64 / 1080.0;
+        }
+        score = score.min(signature_distance(
+            &before_content,
+            &grid_row_content_signatures(after, &aligned)?,
+        ));
+    }
+    // Use the strict scroll-content threshold, with an independent unchanged
+    // comparison. A moved selection alone never proves a valid return.
+    if score <= 0.030 && (unchanged - score >= 0.008 || score <= 0.018) {
+        Ok(ScrollEvidence::Advanced {
+            rows: requested_rows,
+            confidence: (1.0 - score / 0.030).clamp(0.0, 1.0),
+        })
+    } else {
+        Ok(uncertain)
+    }
+}
+
+fn grid_row_content_signatures(image: &RgbImage, grid: &GridGeometry) -> HsrResult<Vec<u8>> {
+    let mut signature = Vec::new();
+    for center in grid.centers.iter().flatten() {
+        let crop = NormRect::new(
+            center.x - grid.cell_width * 0.34,
+            center.y - grid.cell_height * 0.34,
+            grid.cell_width * 0.68,
+            grid.cell_height * 0.68,
+        )
+        .crop(image)?;
+        let averaged = imageops::resize(&crop, 12, 12, imageops::FilterType::Triangle);
+        signature.extend_from_slice(averaged.as_raw());
+    }
+    Ok(signature)
+}
+
+fn classify_inventory_scroll_inner(
+    before: &RgbImage,
+    after: &RgbImage,
+    grid: &GridGeometry,
+    after_grid: &GridGeometry,
+    requested_rows: usize,
+    use_selection_evidence: bool,
+) -> HsrResult<ScrollEvidence> {
+    crate::annotator::record_region("scroll_before", before, NormRect::new(0.0, 0.0, 0.75, 1.0));
+    crate::annotator::record_region("scroll_after", after, NormRect::new(0.0, 0.0, 0.75, 1.0));
     if before.dimensions() != after.dimensions() {
         return Err(HsrError::new(
             "HSR-SCROLL-GEOMETRY",
@@ -310,7 +525,7 @@ pub fn classify_inventory_scroll(
     // If the selected card remains visible, its row displacement is strong
     // independent evidence. This also works when adjacent items are genuinely
     // identical and their panel/card pixels cannot distinguish them.
-    if requested_rows < rows {
+    if use_selection_evidence && requested_rows < rows {
         if let (Some((before_index, before_gap)), Some((after_index, after_gap))) =
             (selected_cell(grid, before), selected_cell(grid, after))
         {
@@ -330,13 +545,13 @@ pub fn classify_inventory_scroll(
     }
 
     let before_rows = grid_row_signatures(before, grid);
-    let after_rows = grid_row_signatures(after, grid);
+    let after_rows = grid_row_signatures(after, after_grid);
     let unchanged_grid = signature_distance(&before_rows.concat(), &after_rows.concat());
     let before_gutter = scroll_gutter_signature(before, grid);
-    let after_gutter = scroll_gutter_signature(after, grid);
+    let after_gutter = scroll_gutter_signature(after, after_grid);
     let unchanged_gutter = signature_distance(&before_gutter, &after_gutter);
 
-    if unchanged_grid <= 0.020 && unchanged_gutter <= 0.014 {
+    if unchanged_grid <= 0.020 && (!use_selection_evidence || unchanged_gutter <= 0.014) {
         let confidence = 1.0 - (unchanged_grid / 0.020).max(unchanged_gutter / 0.014);
         return Ok(ScrollEvidence::End {
             confidence: confidence.clamp(0.0, 1.0),
@@ -386,6 +601,13 @@ pub fn classify_inventory_scroll(
 /// that a wheel event reached the inventory; this independent spatial signal
 /// is therefore required before complete inventory coverage is claimed.
 pub fn inventory_scrollbar_bottom_confidence(image: &RgbImage, grid: &GridGeometry) -> Option<f64> {
+    if let Some((x0, x1, y0, y1)) = scroll_gutter_bounds(grid) {
+        crate::annotator::record_region(
+            "scrollbar_bottom",
+            image,
+            NormRect::new(x0, y0, x1 - x0, y1 - y0),
+        );
+    }
     let (x0, x1, y0, y1) = scroll_gutter_bounds(grid)?;
     let left = (x0 * image.width() as f64).floor() as u32;
     let right = ((x1 * image.width() as f64).ceil() as u32).min(image.width());
@@ -547,15 +769,18 @@ fn ring_brightness(image: &RgbImage, center: Point, width: f64, height: f64) -> 
 }
 
 pub fn frame_fingerprint(image: &RgbImage, rect: NormRect) -> HsrResult<String> {
+    crate::annotator::record_region("frame_fingerprint", image, rect);
     let crop = rect.crop(image)?;
     let mut hasher = Sha256::new();
     hasher.update(crop.width().to_le_bytes());
     hasher.update(crop.height().to_le_bytes());
     hasher.update(crop.as_raw());
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 pub fn frames_similar(left: &RgbImage, right: &RgbImage) -> bool {
+    crate::annotator::record_detection("frames_similar_left", left);
+    crate::annotator::record_detection("frames_similar_right", right);
     if left.dimensions() != right.dimensions() || left.as_raw().is_empty() {
         return false;
     }
@@ -568,6 +793,32 @@ pub fn frames_similar(left: &RgbImage, right: &RgbImage) -> bool {
     }
     let len = left.as_raw().len() as f64;
     excess as f64 / len <= 0.20 && changed as f64 / len <= 0.01
+}
+
+/// Compare only the white glyphs of two crops, for the same text drawn over
+/// different screen backgrounds (the Character breadcrumb sits on plain dark
+/// on the Eidolon screen but on a starry nebula on Details). Compare neutral
+/// bright pixels so text dimming and colored background changes do not affect
+/// the glyph mask. Crops with no glyphs carry no evidence of a change.
+pub fn glyphs_match(left: &RgbImage, right: &RgbImage) -> bool {
+    crate::annotator::record_detection("glyphs_match_left", left);
+    crate::annotator::record_detection("glyphs_match_right", right);
+    if left.dimensions() != right.dimensions() {
+        return false;
+    }
+    const MIN_OVERLAP: f64 = 0.8;
+    let glyph = |pixel: &Rgb<u8>| {
+        let minimum = *pixel.0.iter().min().unwrap();
+        let maximum = *pixel.0.iter().max().unwrap();
+        minimum >= 80 && maximum.saturating_sub(minimum) <= 30
+    };
+    let (mut both, mut either) = (0_usize, 0_usize);
+    for (a, b) in left.pixels().zip(right.pixels()) {
+        let (a, b) = (glyph(a), glyph(b));
+        both += usize::from(a && b);
+        either += usize::from(a || b);
+    }
+    either == 0 || both as f64 / either as f64 >= MIN_OVERLAP
 }
 
 fn luma_plane(image: &RgbImage) -> Vec<u8> {
@@ -601,6 +852,229 @@ fn vertical_edge_projection(
         .collect()
 }
 
+/// Portrait immediately to the right of the selected character on the details
+/// and traces header. The selected ring is wider than its neighbors, so a
+/// merged bright run is split at its interior valley before the next icon is
+/// chosen. `None` means the selected portrait is the last one still on screen.
+pub fn next_character_portrait(frame: &RgbImage) -> Option<Point> {
+    let (selected, portraits) = character_portraits(frame)?;
+    portraits
+        .into_iter()
+        .find(|portrait| portrait.x > selected.x + 0.04)
+}
+
+/// Distinguish a selected final portrait from an unreadable header. A clipped
+/// portrait to its right is still another Character to visit.
+pub fn last_visible_character_selected(frame: &RgbImage) -> Option<bool> {
+    let (selected, portraits) = character_portraits(frame)?;
+    Some(
+        !portraits
+            .iter()
+            .any(|portrait| portrait.x > selected.x + 0.04)
+            && trailing_header_glint(frame).is_none(),
+    )
+}
+
+/// Star or clipped ring of a character that is only partly on screen, to the
+/// right of the selected portrait and left of the guide button.
+pub fn trailing_header_glint(frame: &RgbImage) -> Option<Point> {
+    crate::annotator::record_region("header_glint", frame, NormRect::new(0.0, 0.0, 1.0, 0.15));
+    let (selected, _) = character_portraits(frame)?;
+    let width = frame.width() as usize;
+    let height = frame.height() as usize;
+    let y0 = (height as f64 * 0.025) as usize;
+    let y1 = (height as f64 * 0.105) as usize;
+    if y1 <= y0 || width < 32 {
+        return None;
+    }
+    let mut columns = vec![0.0_f64; width];
+    for (x, column) in columns.iter_mut().enumerate() {
+        let mut score = 0.0;
+        for y in y0..y1 {
+            let [r, g, b] = frame.get_pixel(x as u32, y as u32).0;
+            let gold = r > 190 && g > 150 && b < 170 && r > b.saturating_add(25);
+            let white = r > 210 && g > 210 && b > 200;
+            if gold || white {
+                score += 1.0;
+            }
+        }
+        *column = score;
+    }
+    let mut smooth = vec![0.0; width];
+    for x in 0..width {
+        let start = x.saturating_sub(2);
+        let end = (x + 3).min(width);
+        smooth[x] = columns[start..end].iter().sum::<f64>() / (end - start) as f64;
+    }
+    let x_max = (width as f64 * 0.84) as usize;
+    let min_x = ((selected.x + 0.05) * width as f64) as usize;
+    let mut best: Option<usize> = None;
+    let mut current: Option<(usize, usize)> = None;
+    let finish = |run: (usize, usize), best: &mut Option<usize>| {
+        let (start, end) = run;
+        if end.saturating_sub(start) < 12 {
+            return;
+        }
+        let mid = (start + end) / 2;
+        if mid > min_x && mid < x_max {
+            *best = Some(mid);
+        }
+    };
+    for (x, score) in smooth.iter().copied().enumerate() {
+        if score >= 8.0 {
+            current = Some(match current {
+                Some((start, _)) => (start, x),
+                None => (x, x),
+            });
+        } else if let Some(run) = current {
+            if x - run.1 > 14 {
+                finish(run, &mut best);
+                current = None;
+            }
+        }
+    }
+    if let Some(run) = current {
+        finish(run, &mut best);
+    }
+    best.map(|x| Point::new(x as f64 / width as f64, 0.064))
+}
+
+fn character_portraits(frame: &RgbImage) -> Option<(Point, Vec<Point>)> {
+    crate::annotator::record_region(
+        "character_portraits",
+        frame,
+        NormRect::new(0.0, 0.0, 1.0, 0.15),
+    );
+    let width = frame.width() as usize;
+    let height = frame.height() as usize;
+    if width < 32 || height < 32 {
+        return None;
+    }
+    let y0 = (height as f64 * 0.025) as usize;
+    let y1 = (height as f64 * 0.105) as usize;
+    if y1 <= y0 {
+        return None;
+    }
+    let mut columns = vec![0.0_f64; width];
+    for (x, column) in columns.iter_mut().enumerate() {
+        let mut score = 0.0;
+        for y in y0..y1 {
+            let [r, g, b] = frame.get_pixel(x as u32, y as u32).0;
+            let gold = r > 190 && g > 150 && b < 170 && r > b.saturating_add(25);
+            let white = r > 210 && g > 210 && b > 200;
+            if gold || white {
+                score += 1.0;
+            }
+        }
+        *column = score;
+    }
+    let mut smooth = vec![0.0; width];
+    for x in 0..width {
+        let start = x.saturating_sub(2);
+        let end = (x + 3).min(width);
+        smooth[x] = columns[start..end].iter().sum::<f64>() / (end - start) as f64;
+    }
+    let mut runs = Vec::new();
+    let mut current: Option<(usize, usize)> = None;
+    for (x, score) in smooth.iter().copied().enumerate() {
+        if score >= 8.0 {
+            current = Some(match current {
+                Some((start, _)) => (start, x),
+                None => (x, x),
+            });
+        } else if let Some(run) = current {
+            if x - run.1 > 14 {
+                if run.1 - run.0 >= 18 {
+                    runs.push(run);
+                }
+                current = None;
+            }
+        }
+    }
+    if let Some(run) = current {
+        if run.1 - run.0 >= 18 {
+            runs.push(run);
+        }
+    }
+    let x_min = (width as f64 * 0.18) as usize;
+    let x_max = (width as f64 * 0.82) as usize;
+    let mut portraits = Vec::new();
+    for run in runs {
+        for (start, end) in split_portrait_run(&smooth, run) {
+            let mid = (start + end) / 2;
+            if mid < x_min || mid > x_max || end - start < 40 || end - start > 130 {
+                continue;
+            }
+            let mass: f64 = smooth[start..=end].iter().sum();
+            portraits.push((mid, mass));
+        }
+    }
+    // A selected ring splits into the disc plus a bright fragment. Real
+    // neighbors sit about 0.05 apart, so anything closer is the same icon.
+    portraits.sort_by_key(|(mid, _)| *mid);
+    let min_gap = (width as f64 * 0.04) as usize;
+    let mut merged: Vec<(usize, f64)> = Vec::new();
+    for (mid, mass) in portraits {
+        if let Some((prev_mid, prev_mass)) = merged.last_mut() {
+            if mid.saturating_sub(*prev_mid) < min_gap {
+                if mass > *prev_mass {
+                    *prev_mid = mid;
+                    *prev_mass = mass;
+                }
+                continue;
+            }
+        }
+        merged.push((mid, mass));
+    }
+    let portraits = merged;
+    let (selected_x, _) = portraits.iter().copied().max_by(|left, right| {
+        left.1
+            .partial_cmp(&right.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })?;
+    let y = 0.064;
+    let point = |x: usize| Point::new(x as f64 / width as f64, y);
+    Some((
+        point(selected_x),
+        portraits.into_iter().map(|(x, _)| point(x)).collect(),
+    ))
+}
+
+fn split_portrait_run(smooth: &[f64], run: (usize, usize)) -> Vec<(usize, usize)> {
+    let (start, end) = run;
+    if end.saturating_sub(start) <= 120 {
+        return vec![run];
+    }
+    let margin = 24.max((end - start) / 5);
+    let interior_start = start + margin;
+    let interior_end = end.saturating_sub(margin);
+    if interior_start >= interior_end {
+        return vec![run];
+    }
+    let cut = (interior_start..=interior_end)
+        .min_by(|&left, &right| {
+            smooth[left]
+                .partial_cmp(&smooth[right])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(interior_start);
+    if smooth[cut] > 12.0 {
+        return vec![run];
+    }
+    let mut parts = Vec::new();
+    if cut > start + 18 {
+        parts.extend(split_portrait_run(smooth, (start, cut - 1)));
+    }
+    if end > cut + 18 {
+        parts.extend(split_portrait_run(smooth, (cut + 1, end)));
+    }
+    if parts.is_empty() {
+        vec![run]
+    } else {
+        parts
+    }
+}
+
 fn horizontal_edge_projection(
     luma: &[u8],
     width: usize,
@@ -626,7 +1100,44 @@ fn horizontal_edge_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{Rgb, RgbImage};
+
+    #[test]
+    fn glyphs_match_ignores_the_background_but_not_the_text() {
+        let text = |background: Rgb<u8>, glyph_x: u32| {
+            let mut image = RgbImage::from_pixel(120, 30, background);
+            for y in 8..22 {
+                for x in glyph_x..glyph_x + 30 {
+                    image.put_pixel(x, y, Rgb([240, 240, 240]));
+                }
+            }
+            image
+        };
+        let plain = text(Rgb([10, 10, 20]), 10);
+        let nebula = text(Rgb([60, 60, 120]), 10);
+        let other_name = text(Rgb([10, 10, 20]), 60);
+
+        assert!(glyphs_match(&plain, &nebula));
+        assert!(!glyphs_match(&plain, &other_name));
+    }
+
+    #[test]
+    fn glyphs_match_survives_breadcrumb_dimming_between_tabs() {
+        let text = |background: u8, foreground: u8, glyph_x: u32| {
+            let mut image = RgbImage::from_pixel(120, 30, Rgb([background; 3]));
+            for y in 8..22 {
+                for x in glyph_x..glyph_x + 30 {
+                    image.put_pixel(x, y, Rgb([foreground; 3]));
+                }
+            }
+            image
+        };
+        let bright = text(10, 240, 10);
+        let dimmed = text(4, 142, 10);
+        let different_name = text(4, 142, 60);
+
+        assert!(glyphs_match(&bright, &dimmed));
+        assert!(!glyphs_match(&bright, &different_name));
+    }
 
     fn synthetic_grid(width: u32, height: u32) -> RgbImage {
         let mut image = RgbImage::from_pixel(width, height, Rgb([24, 28, 35]));
@@ -792,5 +1303,91 @@ mod tests {
         let frame = synthetic_page(1920, 1080, 0, 45, Some(17));
         let grid = discover_inventory_grid(&frame).unwrap();
         assert_eq!(selected_cell(&grid, &frame).map(|entry| entry.0), Some(17));
+    }
+
+    #[test]
+    fn next_character_portrait_is_the_icon_right_of_the_selected_ring() {
+        let mut frame = RgbImage::from_pixel(1920, 1080, Rgb([12, 16, 28]));
+        // Unselected rings are narrow. The selected ring is wider and therefore
+        // the heaviest bright run, matching the live details header.
+        for (center, half_width) in [(700, 28), (808, 48), (916, 28), (1024, 28)] {
+            for x in (center - half_width)..=(center + half_width) {
+                for y in 40..100 {
+                    frame.put_pixel(x, y, Rgb([230, 190, 80]));
+                }
+            }
+        }
+        let next = next_character_portrait(&frame).expect("next portrait");
+        assert!(
+            (next.x - 916.0 / 1920.0).abs() < 0.02,
+            "next portrait x={}",
+            next.x
+        );
+        assert!((next.y - 0.064).abs() < 1e-9);
+    }
+
+    #[test]
+    fn next_character_portrait_ignores_a_fragment_of_the_selected_ring() {
+        let mut frame = RgbImage::from_pixel(1920, 1080, Rgb([12, 16, 28]));
+        // 15px of dark background keeps this a separate run. Its center is
+        // still within 0.04 of the selected ring, so it is the same icon.
+        for (center, half_width) in [(700, 28), (808, 30), (873, 20), (980, 28)] {
+            for x in (center - half_width)..=(center + half_width) {
+                for y in 40..100 {
+                    frame.put_pixel(x, y, Rgb([230, 190, 80]));
+                }
+            }
+        }
+        let next = next_character_portrait(&frame).expect("next portrait");
+        assert!(
+            (next.x - 980.0 / 1920.0).abs() < 0.02,
+            "next portrait x={}",
+            next.x
+        );
+    }
+
+    #[test]
+    fn trailing_header_glint_is_the_clipped_icon_past_the_last_full_portrait() {
+        let mut frame = RgbImage::from_pixel(1920, 1080, Rgb([12, 16, 28]));
+        for (center, half_width) in [(700, 28), (808, 48), (1400, 10)] {
+            for x in (center - half_width)..=(center + half_width) {
+                for y in 40..100 {
+                    frame.put_pixel(x, y, Rgb([230, 190, 80]));
+                }
+            }
+        }
+        assert!(next_character_portrait(&frame).is_none());
+        let glint = trailing_header_glint(&frame).expect("clipped portrait");
+        assert!(
+            (glint.x - 1400.0 / 1920.0).abs() < 0.02,
+            "glint x={}",
+            glint.x
+        );
+    }
+
+    #[test]
+    fn character_beam_wider_than_a_portrait_is_not_the_selected_icon() {
+        let mut frame = RgbImage::from_pixel(1920, 1080, Rgb([12, 16, 28]));
+        // Huohuo's effect fills a band much wider than a portrait ring.
+        for x in 800..=1000 {
+            for y in 40..100 {
+                frame.put_pixel(x, y, Rgb([240, 240, 255]));
+            }
+        }
+        for (center, half_width) in [(1200, 48), (1450, 10)] {
+            for x in (center - half_width)..=(center + half_width) {
+                for y in 40..100 {
+                    frame.put_pixel(x, y, Rgb([230, 190, 80]));
+                }
+            }
+        }
+        let next = next_character_portrait(&frame);
+        assert!(next.is_none(), "next={next:?}");
+        let glint = trailing_header_glint(&frame).expect("clipped portrait");
+        assert!(
+            (glint.x - 1450.0 / 1920.0).abs() < 0.02,
+            "glint x={}",
+            glint.x
+        );
     }
 }

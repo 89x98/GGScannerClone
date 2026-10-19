@@ -2,6 +2,7 @@
 name = "good_tools_app"
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.95"
 
 [lib]
 test = false
@@ -22,20 +23,24 @@ hsr_scanner = { path = "../experimental/hsr" }
 clap = { version = "4.4", features = ["derive"] }
 log = "0.4"
 enigo = "0.1"
-image = "0.24"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp", "rayon"] }
 env_logger = "0.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-eframe = { version = "0.30", default-features = false, features = ["glow", "default_fonts"] }
-rfd = "0.15"
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "default_fonts", "links"] }
+egui-phosphor = { version = "0.14.0", default-features = false, features = ["subset"] }
+rfd = "0.17.2"
 tokio = { version = "1", features = ["sync"], optional = true }
-rand = "0.8"
+rand = "0.10.3"
 crossbeam-queue = "0.3"
+tiny_http = "0.12"
+url = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # eframe has default-features off; on Linux winit needs an explicit platform
-# backend or it fails with "platform not supported".
-eframe = { version = "0.30", default-features = false, features = ["x11", "wayland"] }
+# backend or it fails with "platform not supported". The version must match the
+# main dependency above, otherwise two incompatible eframe/egui copies resolve.
+eframe = { version = "0.36.2", default-features = false, features = ["x11", "wayland"] }
 # Desktop theme detection via xdg-desktop-portal (already in the Linux dep
 # tree through the screenshots backend, so no extra cost).
 zbus = "5"
@@ -43,27 +48,37 @@ zbus = "5"
 [target.'cfg(target_os = "windows")'.dependencies.windows-sys]
 version = "0.59.0"
 features = [
+    "Win32_Foundation",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Kernel",
+    "Win32_System_Com",
     "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
 ]
 
 [build-dependencies]
+time = "0.3"
 winres = "0.1"
 
 [[bin]]
-name = "GOODScanner"
+name = "GGScannerOCR"
 path = "src/bin/yas.rs"
 test = false
 
 [[bin]]
-name = "GOODCapture"
+name = "GGScanner"
 path = "src/bin/yas.rs"
 required-features = ["capture"]
 
 [[bin]]
 name = "ocr_test"
 path = "src/bin/ocr_test.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
+name = "ui_preview"
+path = "src/bin/ui_preview.rs"
 required-features = ["dev-tools"]
 
 [[bin]]
@@ -82,13 +97,33 @@ path = "src/bin/set_filter_test.rs"
 required-features = ["dev-tools"]
 
 [[test]]
+name = "hsr_server"
+path = "tests/hsr_server.rs"
+required-features = ["test-as-invoker"]
+
+[[test]]
 name = "ui_error"
 path = "tests/ui_error.rs"
 required-features = ["test-as-invoker"]
 
 [[test]]
+name = "gui_layout"
+path = "tests/gui_layout.rs"
+required-features = ["test-as-invoker"]
+
+[[test]]
+name = "gui_feedback"
+path = "tests/gui_feedback.rs"
+required-features = ["test-as-invoker"]
+
+[[test]]
 name = "shared_games"
 path = "tests/shared_games.rs"
+required-features = ["test-as-invoker"]
+
+[[test]]
+name = "update_restart"
+path = "tests/update_restart.rs"
 required-features = ["test-as-invoker"]
 
 [[bin]]

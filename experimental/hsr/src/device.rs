@@ -26,10 +26,20 @@ pub struct WindowIdentity {
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputCommand {
     Click(Point),
+    /// Move the pointer without clicking. A hovered backpack card keeps a
+    /// selection-like border that the keyboard walk must not mistake for the
+    /// selected card.
+    Hover(Point),
     Key(char),
     /// One or more vertical mouse-wheel detents. Positive values scroll the
     /// inventory down, matching the existing YAS Windows controller contract.
     Scroll(i32),
+    /// Press, move, and release. The character header scrolls when dragged
+    /// along the portrait row; the wheel does not move it.
+    Drag {
+        from: Point,
+        to: Point,
+    },
     Escape,
 }
 
@@ -55,14 +65,15 @@ pub struct WindowsHsrDevice {
 }
 
 impl WindowsHsrDevice {
-    pub fn locate(capture_method: CaptureMethod) -> HsrResult<Self> {
-        Self::locate_with_cancel(capture_method, CancelToken::new())
+    pub fn locate(capture_method: CaptureMethod, hdr_mode: bool) -> HsrResult<Self> {
+        Self::locate_with_cancel(capture_method, hdr_mode, CancelToken::new())
     }
 
     /// Locate the HSR client and bind the supplied per-run cancellation token
     /// to every wait and input operation performed by the device.
     pub fn locate_with_cancel(
         capture_method: CaptureMethod,
+        hdr_mode: bool,
         cancel: CancelToken,
     ) -> HsrResult<Self> {
         if cancel.is_cancelled() {
@@ -77,11 +88,13 @@ impl WindowsHsrDevice {
             let (hwnd, title, client_rect) = locate_hsr_window()?;
             let capturer: Rc<dyn Capturer<RgbImage>> = match capture_method {
                 CaptureMethod::BitBlt => Rc::new(GenericCapturer::new().map_err(device_error)?),
-                CaptureMethod::PrintWindow => {
-                    Rc::new(yas::capture::PrintWindowCapturer::new(hwnd).map_err(device_error)?)
-                },
                 CaptureMethod::Wgc => Rc::new(
-                    yas::capture::WgcCapturer::new(hwnd, false, 203.0).map_err(device_error)?,
+                    yas::capture::WgcCapturer::new(
+                        hwnd,
+                        hdr_mode,
+                        yas::capture::constants::DEFAULT_HDR_WHITE_POINT,
+                    )
+                    .map_err(device_error)?,
                 ),
             };
             Ok(Self {
@@ -100,7 +113,7 @@ impl WindowsHsrDevice {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (capture_method, cancel);
+            let _ = (capture_method, hdr_mode, cancel);
             Err(HsrError::new(
                 "HSR-DEVICE-PLATFORM",
                 hints::DEVICE_UNAVAILABLE,
@@ -133,6 +146,7 @@ impl WindowsHsrDevice {
     fn revalidate_rect(&self) -> HsrResult<Rect<i32>> {
         #[cfg(target_os = "windows")]
         {
+            self.validate_window()?;
             let current =
                 yas::utils::get_client_rect(self.identity.hwnd as _).map_err(device_error)?;
             validate_client_geometry(self.client_rect, current, self.verified_frame_dimensions)?;
@@ -143,6 +157,8 @@ impl WindowsHsrDevice {
     }
 
     fn ensure_input_attended(&self) -> HsrResult<()> {
+        #[cfg(target_os = "windows")]
+        self.validate_window()?;
         if self.cancel.check_rmb() {
             return Err(HsrError::new(
                 "HSR-DEVICE-CANCELLED",
@@ -159,6 +175,49 @@ impl WindowsHsrDevice {
         }
         Ok(())
     }
+
+    #[cfg(target_os = "windows")]
+    fn validate_window(&self) -> HsrResult<()> {
+        let hwnd = self.identity.hwnd as _;
+        let title_matches = yas::utils::get_window_title(hwnd)
+            .is_some_and(|title| title.trim() == self.identity.title);
+        if !yas::utils::is_window_handle_valid(hwnd)
+            || unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd) } == 0
+            || !title_matches
+            || !matches!(
+                window_class(hwnd).as_str(),
+                "UnityWndClass" | "Qt5152QWindowIcon"
+            )
+        {
+            return Err(HsrError::new(
+                "HSR-DEVICE-LOST",
+                hints::DEVICE_UNAVAILABLE,
+                "selected window is no longer the located HSR client",
+            ));
+        }
+        Ok(())
+    }
+
+    fn move_pointer(&mut self, point: Point) -> HsrResult<()> {
+        if !(0.0..=1.0).contains(&point.x) || !(0.0..=1.0).contains(&point.y) {
+            return Err(HsrError::new(
+                "HSR-DEVICE-INPUT",
+                hints::SCREEN_INVALID,
+                format!(
+                    "normalized pointer target outside client: ({:.4},{:.4})",
+                    point.x, point.y
+                ),
+            ));
+        }
+        // Bind the normalized point to the exact client rectangle that
+        // produced the last verified frame (or the focused baseline before
+        // the first frame). A moved/resized window invalidates the input
+        // instead of silently reusing stale coordinates.
+        let rect = self.revalidate_rect()?;
+        let x = rect.left + (point.x * rect.width.saturating_sub(1) as f64).round() as i32;
+        let y = rect.top + (point.y * rect.height.saturating_sub(1) as f64).round() as i32;
+        self.control.mouse_move_to(x, y).map_err(device_error)
+    }
 }
 
 impl HsrDevice for WindowsHsrDevice {
@@ -167,11 +226,37 @@ impl HsrDevice for WindowsHsrDevice {
     }
 
     fn capture_client(&mut self) -> HsrResult<RgbImage> {
+        self.ensure_input_attended()?;
         let rect = self.revalidate_rect()?;
-        let image = self
-            .capturer
-            .capture_rect(self.client_rect)
-            .map_err(device_error)?;
+        let mut captured = None;
+        let mut last_error = None;
+        for attempt in 0..4 {
+            match self.capturer.capture_rect(self.client_rect) {
+                Ok(image) => {
+                    captured = Some(image);
+                    break;
+                },
+                Err(error) => {
+                    let wrapped = device_error(error);
+                    let transient = wrapped.code() == "HSR-DEVICE-IO"
+                        && wrapped.to_string().contains("no frame");
+                    if !transient || attempt == 3 {
+                        return Err(wrapped);
+                    }
+                    last_error = Some(wrapped);
+                    std::thread::sleep(Duration::from_millis(80));
+                },
+            }
+        }
+        let image = captured.ok_or_else(|| {
+            last_error.unwrap_or_else(|| {
+                HsrError::new(
+                    "HSR-DEVICE-IO",
+                    hints::DEVICE_UNAVAILABLE,
+                    "capture produced no frame",
+                )
+            })
+        })?;
         let expected = (rect.width as u32, rect.height as u32);
         if image.dimensions() != expected {
             return Err(HsrError::new(
@@ -190,6 +275,7 @@ impl HsrDevice for WindowsHsrDevice {
     fn focus_and_verify(&mut self) -> HsrResult<()> {
         #[cfg(target_os = "windows")]
         {
+            self.validate_window()?;
             if !yas::utils::is_window_handle_valid(self.identity.hwnd as _) {
                 return Err(HsrError::new(
                     "HSR-DEVICE-LOST",
@@ -197,8 +283,19 @@ impl HsrDevice for WindowsHsrDevice {
                     "the selected HSR window handle is no longer valid",
                 ));
             }
-            let focused = yas::utils::show_window_and_set_foreground(self.identity.hwnd as _)
-                .map_err(device_error)?;
+            let focused = {
+                // A brief Alt press lets this process call SetForegroundWindow
+                // while another app, such as the editor, is in front.
+                unsafe {
+                    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+                        keybd_event, KEYEVENTF_KEYUP, VK_MENU,
+                    };
+                    keybd_event(VK_MENU as u8, 0, 0, 0);
+                    keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0);
+                }
+                yas::utils::show_window_and_set_foreground(self.identity.hwnd as _)
+                    .map_err(device_error)?
+            };
             if !focused || !self.is_foreground() {
                 return Err(HsrError::new(
                     "HSR-DEVICE-FOCUS",
@@ -224,25 +321,9 @@ impl HsrDevice for WindowsHsrDevice {
     fn input(&mut self, command: InputCommand) -> HsrResult<()> {
         self.ensure_input_attended()?;
         match command {
+            InputCommand::Hover(point) => self.move_pointer(point)?,
             InputCommand::Click(point) => {
-                if !(0.0..=1.0).contains(&point.x) || !(0.0..=1.0).contains(&point.y) {
-                    return Err(HsrError::new(
-                        "HSR-DEVICE-INPUT",
-                        hints::SCREEN_INVALID,
-                        format!(
-                            "normalized click outside client: ({:.4},{:.4})",
-                            point.x, point.y
-                        ),
-                    ));
-                }
-                // Bind the normalized point to the exact client rectangle that
-                // produced the last verified frame (or the focused baseline
-                // before the first frame). A moved/resized window invalidates
-                // the click instead of silently reusing stale coordinates.
-                let rect = self.revalidate_rect()?;
-                let x = rect.left + (point.x * rect.width.saturating_sub(1) as f64).round() as i32;
-                let y = rect.top + (point.y * rect.height.saturating_sub(1) as f64).round() as i32;
-                self.control.mouse_move_to(x, y).map_err(device_error)?;
+                self.move_pointer(point)?;
                 std::thread::sleep(Duration::from_millis(12));
 
                 // Close the cursor-move/click TOCTOU window: a focus loss,
@@ -270,6 +351,44 @@ impl HsrDevice for WindowsHsrDevice {
                     .map_err(device_error)?;
                 #[cfg(target_os = "macos")]
                 self.control.mouse_scroll(amount).map_err(device_error)?;
+            },
+            InputCommand::Drag { from, to } => {
+                if [from.x, from.y, to.x, to.y]
+                    .into_iter()
+                    .any(|v| !(0.0..=1.0).contains(&v))
+                {
+                    return Err(HsrError::new(
+                        "HSR-DEVICE-INPUT",
+                        hints::SCREEN_INVALID,
+                        "normalized drag endpoints outside the client",
+                    ));
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    let rect = self.revalidate_rect()?;
+                    let pixel = |point: Point| {
+                        let x = rect.left
+                            + (point.x * rect.width.saturating_sub(1) as f64).round() as i32;
+                        let y = rect.top
+                            + (point.y * rect.height.saturating_sub(1) as f64).round() as i32;
+                        (x, y)
+                    };
+                    let (x0, y0) = pixel(from);
+                    let (x1, y1) = pixel(to);
+                    self.ensure_input_attended()?;
+                    self.control
+                        .mouse_drag(x0, y0, x1, y1)
+                        .map_err(device_error)?;
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = (from, to);
+                    return Err(HsrError::new(
+                        "HSR-DEVICE-INPUT",
+                        hints::DEVICE_UNAVAILABLE,
+                        "portrait-bar dragging is implemented for the Windows client only",
+                    ));
+                }
             },
             InputCommand::Escape => self.control.key_press(Key::Escape).map_err(device_error)?,
         }
@@ -368,6 +487,9 @@ fn locate_hsr_window() -> HsrResult<(isize, String, Rect<i32>)> {
     ];
     let mut matches = Vec::new();
     for hwnd in yas::utils::iterate_window() {
+        if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd) } == 0 {
+            continue;
+        }
         let Some(title) = yas::utils::get_window_title(hwnd) else {
             continue;
         };
@@ -656,7 +778,7 @@ mod tests {
         let cancel = CancelToken::new();
         cancel.cancel(StopReason::UserAbort);
 
-        let error = WindowsHsrDevice::locate_with_cancel(CaptureMethod::Wgc, cancel)
+        let error = WindowsHsrDevice::locate_with_cancel(CaptureMethod::Wgc, true, cancel)
             .err()
             .expect("a pre-cancelled live device must not touch the game window");
 

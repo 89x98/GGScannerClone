@@ -2,11 +2,57 @@
 
 ## Build Rules
 
-- **NEVER kill GOODScanner.exe or any user process to unblock a build.** If `cargo build` fails with "access denied" because the exe is locked, tell the user and wait. If they confirm the process can be stopped, wait for it to exit on its own or let the user close it.
+- When a running scanner executable locks a build output, the user authorizes stopping that scanner process before rebuilding and reopening it.
+
+## Public Releases And Player-Facing Changes
+
+- **Treat the public release page, download list, and release copy as product UI.**
+  A technically correct updater or passing build does not establish that the
+  release is ready for players.
+- **Technical needs must fit the public product contract.** Build identity,
+  cache handling, compatibility, and internal naming are implementation concerns.
+  Solve them through metadata, tags, manifests, or internal routing; do not expose
+  extra downloads, choices, or explanations merely to simplify implementation.
+- A routine release publishes the existing editions. Do not add public variants,
+  duplicate binaries, revision-suffixed executables, or rename downloads unless
+  the user specifically requests that public change. The current release asset
+  list is exactly `GOODCapture.exe`, `GOODScanner.exe`, and `update.json`.
+- Keep build revisions in version/manifest metadata. The updater and website
+  must use the same download for each edition. Preserve edition mapping when
+  handling historical names; compatibility does not justify publishing duplicate
+  binaries. Keep any necessary old-release fallback inside the updater.
+- Same-day publication is blocked when that day's release or tag already exists.
+  Never automatically delete, overwrite, or add another public build variant.
+  A replacement requires the operator to manually remove the existing release
+  and tag first. Ordinary CI builds may still run without publishing.
+- Before publishing, inspect the exact proposed asset list and bilingual copy
+  from a player's perspective. Each download must represent a distinct useful
+  choice. Check names, edition mapping, links, manifest targets, and unexpected
+  files. After publishing, verify the actual release against that same contract.
+- Write release/download copy around supported games, benefits, and edition
+  choices. Omit control locations, architecture, dependency details, renaming
+  plans, and updater mechanics. Use useful download labels and a brief risk
+  disclaimer; do not add terms-of-service links or lengthy defensive copy unless
+  requested.
+- Tests must enforce the intended public contract, not just confirm a workaround.
+  When changing release plumbing, verify the asset inventory and updater targets
+  as well as build success. Passing tests cannot excuse a confusing public result.
+- Existing code, tests, and rollout docs are evidence of past decisions, not
+  automatic justification for retaining them. Reassess inherited workarounds
+  against the user's current requirements, and update obsolete instructions
+  rather than turning implementation accidents into permanent policy.
 
 ## Prioritization
 
 - **When instructions are clear, implement them directly.** Do not block one clear item because another item needs discussion. Make all clear changes first, then discuss the unclear ones.
+
+## Logging And UI Status
+
+- Rust logs must use `yas::log_debug!`, `log_info!`, `log_warn!`, or `log_error!` with two literal templates in the order `(Chinese, English)`. The macro selects one language; never put `中文 / English` in either template or in a dynamic value.
+- Keep errors language-neutral until they reach a user-facing boundary. If a legacy bilingual `anyhow` error must be logged, call `yas::lang::localize(&error.to_string())` before passing it as a log argument. Do not log `anyhow` chains containing bilingual text directly.
+- Use logs for diagnostics and failures, never to update visible task progress. Scanner progress goes through `ProgressFn` and category lifecycle through `ScanPhaseFn` (`genshin/src/scanner/common/progress.rs`). GUI task status uses `TaskProgress`/`Step`/`StepState` (`application/src/gui/task_progress.rs`), with worker updates in `application/src/gui/worker.rs`.
+- For a current phase message or user-facing failure, use `UiText` and `TaskStatus` (`application/src/gui/state.rs`) so the GUI selects one language at display time; keep technical details separate for copying.
+- UI copy uses the existing language pair at the presentation boundary (`Lang::t(zh, en)` in the GUI); do not build bilingual strings with a slash. Progress callbacks carry counts, item IDs, and phase keys, not translated prose when a stable key is available.
 
 ## No Piecemeal Refactoring
 
@@ -28,7 +74,7 @@ Yas (Yet Another Scanner) is a Rust application that scans Genshin Impact in-gam
 
 - **`yas`** (`yas_core`) — Platform-agnostic core library: screen capture, OCR (PaddlePaddle ONNX models), system control (mouse/keyboard), game window detection, positioning/scaling utilities.
 - **`genshin`** (`genshin_scanner`) — Genshin-specific scanner logic: GOOD v3 scanners for characters, weapons, and artifacts. Handles in-game navigation, panel OCR, and name matching via remote mappings.
-- **`application`** (`good_tools_app`) — Binary crate. Two user-facing targets: `GOODScanner.exe` (OCR scanner + manager) and `GOODCapture.exe` (capture + OCR scanner + manager, behind the `capture` feature flag).
+- **`application`** (`good_tools_app`) — Binary crate. Two user-facing targets: `GGScannerOCR.exe` (OCR scanner + manager) and `GGScanner.exe` (capture + OCR scanner + manager, behind the `capture` feature flag).
 
 ### Key Modules (genshin)
 
@@ -69,14 +115,14 @@ src/
 
 ```
 src/
-├── main.rs                    # Entry point: CLI mode or GUI mode (GOODScanner.exe)
+├── main.rs                    # Entry point: CLI mode or GUI mode (GGScannerOCR.exe)
 ├── bin/
-│   └── yas.rs                 # Entry point for GOODScanner.exe and GOODCapture.exe
+│   └── yas.rs                 # Entry point for GGScannerOCR.exe and GGScanner.exe
 └── gui/
     ├── mod.rs                 # eframe App impl, tab routing
     ├── state.rs               # AppState: all GUI state fields
     ├── worker.rs              # spawn_scan(), spawn_server() — background thread launchers
-    ├── manager_tab.rs         # Manager tab UI: server start/stop, update_inventory checkbox
+    ├── manager_tab.rs         # Manager tab UI: server start/stop and requested-set filtering
     ├── scan_tab.rs            # Scan tab UI: scan target checkboxes, options
     ├── capture_tab.rs         # Capture tab UI: start/stop packet capture, export
     ├── settings_tab.rs        # Settings tab: config editing
@@ -137,15 +183,15 @@ rustup default stable
 # Build
 cargo build --release
 
-# The binary is at target/release/GOODScanner.exe
+# The binary is at target/release/GGScannerOCR.exe
 # Run with default (scan artifacts):
-GOODScanner.exe
+GGScannerOCR.exe
 
 # Scan everything:
-GOODScanner.exe --all
+GGScannerOCR.exe --all
 
 # Scan specific categories:
-GOODScanner.exe --characters --weapons --artifacts
+GGScannerOCR.exe --characters --weapons --artifacts
 ```
 
 Requires administrator privileges on Windows (for input simulation).
@@ -159,7 +205,7 @@ All help text is bilingual (Chinese + English). Flags are grouped into four sect
 
 ### Global Options
 - `-v, --verbose` — detailed scan info
-- `--continue-on-failure` — keep scanning when individual items fail
+- `--stop-on-failure` — stop at the first OCR failure; default skips unreadable entries and logs the cause
 - `--log-progress` — log each scanned item
 - `--output-dir <DIR>` — output directory (default: `.`)
 - `--ocr-backend <NAME>` — override every category's secondary (v5-slot) backend: character name/level check, weapon equip fallback, artifact level (also achievements)
@@ -259,7 +305,11 @@ Each data type (characters, weapons, artifacts) has an independent `ScanDataCach
 
 ### Key config flow
 
-GUI `state.update_inventory` (bool, default true) + `state.filter_involved_sets` (bool, default false) → `stop_on_all_matched` / set-filter mode → passed through `cli.rs::run_server_core()` → `ArtifactManager::new()` → `LockManager::execute()`.
+GUI `state.filter_involved_sets` defaults true. Management always stops once
+targets are matched; it does not refresh full inventory. The independent scan
+actions supply inventory data. These choices pass through `cli.rs::run_server_core()`
+to `ArtifactManager::new()` and `LockManager::execute()`. See
+`docs/SCANNER_OPTION_PARITY.md` for shared options and remaining Star Rail work.
 
 ### Matching (matching.rs)
 
@@ -271,7 +321,9 @@ Per-page: scan all items via pipelined OCR → match against targets → re-clic
 
 ### Snapshot (orchestrator.rs)
 
-After a complete manage scan, builds an artifact snapshot reflecting post-toggle state: updates `lock` and clears `astral_mark` on unlock (game forces this). Served via `GET /artifacts?jobId=xxx`.
+The internal complete-scan path can build a post-toggle snapshot, but current
+management always stops after matching and does not publish a full inventory
+snapshot. Use `POST /scan` to populate `GET /artifacts?jobId=xxx`.
 
 ## Fuzzy Matching (`fuzzy_match.rs`)
 
@@ -301,6 +353,8 @@ In `OCR_CONFUSIONS` array. Rules:
 - `--ocr-backend` overrides every category's secondary slot. The equip manager reads character names, so it uses the character pair.
 
 Level uses dual-engine (tries both, takes max valid). Substats use only the general engine. Results are collected as `OcrCandidate` lists per line, then validated by the roll solver.
+
+Second-engine reads (level cross-read, equip retry, substat same-rect retry, character name cross-check, weapon equip fallback) are skipped when both engines run the same model (`ocr_factory::same_model`, via `ImageToText::model_id`) — re-running identical weights on an identical crop cannot change the result. Retries on a different crop (shifted/narrowed substat rects, icon-masked, grayscale set name, other Y probes) always run.
 
 ### Roll Solver (`roll_solver.rs`)
 
@@ -359,14 +413,14 @@ Verify a change here with a multi-page scan (`--artifact-max-count 80`): every p
 - `scan_worker`: Generic parallel worker for backpack grid items
 - **ALWAYS create separate pools** for main and substat OCR (sharing causes deadlock: N tasks each hold 1 instance, all waiting for a 2nd)
 
-## GOODCapture (Packet Capture Scanner)
+## GGScanner (Packet Capture Scanner)
 
-GOODCapture is the merged binary (`GOODCapture.exe`) with Capture, Scanner, and Manager tabs. It exports GOOD v3 data either by sniffing game network packets or by OCR. The standalone GOODScanner.exe remains available for users who do not need packet capture.
+GGScanner is the merged binary (`GGScanner.exe`) with Capture, Scanner, and Manager tabs. It exports GOOD v3 data either by sniffing game network packets or by OCR. The standalone GGScannerOCR.exe remains available for users who do not need packet capture.
 
 ### Build
 
 ```bash
-cargo build --release --features capture --bin GOODCapture
+cargo build --release --features capture --bin GGScanner
 ```
 
 ### How It Works
@@ -381,7 +435,6 @@ cargo build --release --features capture --bin GOODCapture
 
 - `HashMap<u16, String>` mapping game version → base64-encoded key
 - External key file (`keys/gi.json` next to exe) overrides embedded keys, allowing updates without recompiling
-- Keys are per game version, NOT per server channel — same keys work for official (官服) and Bilibili (B服) servers
 
 ### Dependencies (capture-only)
 

@@ -1,7 +1,16 @@
-name: Build and Release
+name: Build (manual release)
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish binaries as a GitHub release
+        type: boolean
+        required: true
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -55,6 +64,19 @@ jobs:
           $tag = "v$date"
           "VERSION=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      - name: Require an unused release tag
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+        run: ./.github/scripts/check-release-available.ps1 -Tag $env:VERSION -Repository $env:GITHUB_REPOSITORY
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check bundled capture keys
+        run: |
+          python -m unittest discover -s scripts -p test_check_capture_keys.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/check_capture_keys.py --revision HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Cache Cargo registry + build
         uses: actions/cache@v4
         with:
@@ -67,10 +89,17 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Setup Toolchain
-        run: rustup default stable-msvc
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
 
       - name: Test user-facing error diagnostics
-        run: cargo test -p good_tools_app --features test-as-invoker --test ui_error
+        run: |
+          cargo test -p genshin_scanner --lib updater::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p good_tools_app --features test-as-invoker --test ui_error --test update_restart --test shared_games --test gui_layout --test gui_feedback
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p good_tools_app --features capture,test-as-invoker --test ui_error --test shared_games --test gui_layout --test gui_feedback
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p good_tools_app --features capture,test-as-invoker --lib feedback_tests
 
       - name: Set version in Cargo.toml
         run: |
@@ -80,41 +109,67 @@ jobs:
               './genshin/Cargo.toml'
               './application/Cargo.toml'
           )
-          # Convert calver v2026.03.12 to valid semver: 20260312.0.0
+          # Pack the date into major and the release build into minor.
           # Cargo requires 3-part semver; pack YYYYMMDD into major
           $d = Get-Date -Format "yyyyMMdd"
-          $ver = "$d.0.0"
+          $ver = "$d.${{ github.run_number }}.0"
           [regex]$pattern = '(?<=version = ").*(?=")'
           foreach ($file in $files) {
               $pattern.Replace((Get-Content -Raw $file), $ver, 1) | Out-File -FilePath $file
           }
+          # Stable roles allow installed transition builds to find renamed
+          # assets later. Keep these filenames in sync with release uploads.
+          @{
+            tag = $env:VERSION
+            revision = [int]${{ github.run_number }}
+            assets = @{
+              scanner = "GOODScanner.exe"
+              capture = "GOODCapture.exe"
+            }
+          } |
+            ConvertTo-Json | Set-Content -Encoding utf8 update.json
 
-      - name: Build GOODScanner (Release)
-        run: cargo build --release --bin GOODScanner
+      - name: Build GGScannerOCR (Release)
+        run: cargo build --release --bin GGScannerOCR
 
-      - name: Build GOODCapture (Release)
-        run: cargo build --release --bin GOODCapture --features capture
+      - name: Build GGScanner (Release)
+        run: cargo build --release --bin GGScanner --features capture
+
+      - name: Prepare existing download names
+        run: |
+          # Branding changes now; public download names change after adoption.
+          # At that cutoff add the GG names to uploads and retain these old
+          # names indefinitely for clients that skipped the bridge release.
+          $editions = @(
+            @{ Canonical = 'GGScannerOCR'; Legacy = 'GOODScanner' }
+            @{ Canonical = 'GGScanner'; Legacy = 'GOODCapture' }
+          )
+          foreach ($edition in $editions) {
+            $source = "target/release/$($edition.Canonical).exe"
+            Copy-Item $source "target/release/$($edition.Legacy).exe"
+          }
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: GOODScanner_${{ env.VERSION }}
+          name: GGScanner_${{ env.VERSION }}
           path: |
             target/release/GOODScanner.exe
             target/release/GOODCapture.exe
 
-      - name: Delete existing release if any
-        run: gh release delete $env:VERSION --yes --cleanup-tag 2>$null
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate bilingual release description
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+        run: |
+          # Keep this machine-readable line for legacy and current updaters.
+          "Build revision: ${{ github.run_number }}" | Set-Content -Encoding utf8 release-notes.md
+          Add-Content -Encoding utf8 release-notes.md ""
+          Get-Content -Raw .github/release-description.md | Add-Content -Encoding utf8 release-notes.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.VERSION }}
-          name: ${{ env.VERSION }}
-          files: |
-            target/release/GOODScanner.exe
-            target/release/GOODCapture.exe
-          make_latest: true
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+        run: |
+          # Create only: a concurrent publication must fail, never edit a release.
+          gh release create $env:VERSION target/release/GOODScanner.exe target/release/GOODCapture.exe update.json --target $env:GITHUB_SHA --title $env:VERSION --notes-file release-notes.md --latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

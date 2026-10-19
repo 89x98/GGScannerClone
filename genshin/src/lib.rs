@@ -1,7 +1,9 @@
 #[cfg(feature = "capture")]
 pub mod capture;
 pub mod cli;
+mod data_http;
 pub mod fs_utils;
+pub mod game_data;
 pub mod manager;
 pub mod scanner;
 pub mod server;

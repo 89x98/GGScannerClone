@@ -69,6 +69,8 @@ pub fn local_time_hms() -> Option<String> {
 }
 
 mod misc;
+pub mod packet_capture;
+pub mod request_log;
 
 mod fonts;
 pub use fonts::{find_cjk_font, SystemFont};

@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use image::RgbImage;
 use log::{error, info, warn};
+use rand::rng;
 use rand::seq::SliceRandom;
-use rand::thread_rng;
 
 use yas::game_info::GameInfoBuilder;
 use yas::utils;
@@ -115,7 +115,7 @@ fn main() -> Result<()> {
         eligible.len()
     );
 
-    let mut rng = thread_rng();
+    let mut rng = rng();
     let mut selection: Vec<&GoodArtifact> = eligible.clone();
     selection.shuffle(&mut rng);
     let test_artifacts: Vec<&GoodArtifact> = selection.into_iter().take(count).collect();

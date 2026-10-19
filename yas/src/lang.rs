@@ -68,24 +68,82 @@ pub fn localize(msg: &str) -> String {
     }
 }
 
-/// Localize a log record exactly once.
+/// Localize a log record at the sink.
 ///
 /// The bilingual macros mark their records as already localized. Legacy raw
 /// log calls may still use the `"中文 / English"` convention and are parsed at
-/// the sink for backwards compatibility.
+/// the sink for backwards compatibility. As a defensive fallback, marked
+/// records also collapse an obvious CJK/English pair embedded in a dynamic
+/// error argument, while preserving technical slashes such as `failed / CODE`.
 pub fn localize_log_message(target: &str, msg: &str) -> String {
     if target == LOCALIZED_LOG_TARGET || target.ends_with(LOCALIZED_LOG_TARGET_SUFFIX) {
-        msg.to_string()
+        localize_embedded_bilingual(msg)
     } else {
         localize(msg)
     }
 }
 
+/// Clean up a bilingual legacy error accidentally interpolated into an
+/// already-localized log template. Only treat a delimiter as a translation
+/// pair when its left phrase contains CJK text and its right phrase contains
+/// English letters; technical diagnostics such as `failed / STATUS_CODE` stay
+/// intact.
+fn localize_embedded_bilingual(msg: &str) -> String {
+    const SEPARATOR: &str = " / ";
+    let mut localized = msg.to_string();
+    let mut search_from = 0;
+
+    while let Some(relative_idx) = localized[search_from..].find(SEPARATOR) {
+        let separator_idx = search_from + relative_idx;
+        let prefix = &localized[..separator_idx];
+        let phrase_start = prefix
+            .rfind("\n")
+            .map_or(0, |idx| idx + 1)
+            .max(prefix.rfind(": ").map_or(0, |idx| idx + 2));
+        let suffix_start = separator_idx + SEPARATOR.len();
+        let phrase_end = localized[suffix_start..]
+            .find('\n')
+            .map_or(localized.len(), |idx| suffix_start + idx);
+        let chinese = &localized[phrase_start..separator_idx];
+        let english = &localized[suffix_start..phrase_end];
+        let has_cjk = chinese.chars().any(is_cjk_character);
+        let has_english = english
+            .chars()
+            .any(|character| character.is_ascii_alphabetic());
+
+        if has_cjk && has_english {
+            let replacement = if is_en() { english } else { chinese }.to_string();
+            let replacement_len = replacement.len();
+            localized.replace_range(phrase_start..phrase_end, &replacement);
+            search_from = phrase_start + replacement_len;
+        } else {
+            search_from = suffix_start;
+        }
+        if search_from >= localized.len() {
+            break;
+        }
+    }
+
+    localized
+}
+
+fn is_cjk_character(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0x3040..=0x30FF
+            | 0xAC00..=0xD7AF
+    )
+}
+
 // ── Bilingual log macros ────────────────────────────────────────────
 //
-// Each macro requires **two** string literals (zh, en) plus optional
-// format arguments.  The compiler rejects calls with only one literal,
-// making missing translations a build error.
+// Each macro requires **two** string literals in `(Chinese, English)` order,
+// plus optional format arguments. The selected template must be the only
+// translated text in the record; error arguments must be localized before
+// interpolation. The compiler rejects calls with only one literal.
 //
 // `::log::*` uses an absolute path so the calling crate only needs
 // `log` in its dependency list (all workspace crates already have it).

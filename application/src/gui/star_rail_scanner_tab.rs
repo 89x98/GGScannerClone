@@ -1,15 +1,11 @@
 use eframe::egui;
+use hsr_scanner::TrailblazerGender;
 
-use crate::config::{StarRailCaptureMethod, StarRailSettings};
+use crate::config::StarRailSettings;
 
-use super::{
-    star_rail_state::StarRailState,
-    star_rail_worker,
-    state::{Lang, TaskStatus},
-    widgets, worker,
-};
+use super::{star_rail_state::StarRailState, star_rail_worker, state::Lang, widgets, worker};
 
-pub fn show(
+pub fn show_status(
     ui: &mut egui::Ui,
     lang: Lang,
     settings: &mut StarRailSettings,
@@ -18,40 +14,93 @@ pub fn show(
     restart_required: bool,
 ) {
     let is_running = state.scan_running();
-    let native_failure = state
-        .scan_handle
-        .as_ref()
-        .and_then(super::worker::TaskHandle::native_failure);
-
-    ui.add_space(4.0);
     if restart_required {
-        if let Some(error) = native_failure {
-            widgets::error_card(ui, lang, &error);
-        } else {
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 90, 90),
-                lang.t(
-                    "另一个任务发生了底层崩溃。请复制完整错误，然后重启程序。",
-                    "Another task had a low-level crash. Copy the full error, then restart the application.",
-                ),
-            );
-        }
-        ui.add_enabled(
-            false,
-            egui::Button::new(lang.t("需重启程序", "Restart required")),
+        super::theme::restart_required(
+            ui,
+            lang,
+            state
+                .scan_handle
+                .as_ref()
+                .and_then(super::worker::TaskHandle::native_failure)
+                .as_ref(),
         );
         return;
     }
-
-    ui.horizontal(|ui| {
+    let mut status = worker::try_task_status(&state.scan_status);
+    if matches!(status, Some(super::state::TaskStatus::Idle)) {
+        let reason = if !settings.scan_characters
+            && !settings.scan_light_cones
+            && !settings.scan_relics_and_ornaments
+        {
+            Some(lang.t("请选择扫描内容", "Select scan targets"))
+        } else if settings.missing_trailblazer() {
+            Some(lang.t(
+                "请填写游戏内昵称并选择性别",
+                "Enter your in-game nickname and choose a gender",
+            ))
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            status = Some(super::state::TaskStatus::AwaitingInput(
+                super::state::UiText::new(reason, reason),
+            ));
+        }
+    }
+    widgets::status_content(ui, "hsr-scan-status", 2, |ui| {
+        super::theme::task_status(
+            ui,
+            lang,
+            status.as_ref(),
+            lang.t("准备扫描", "Ready to scan"),
+        );
+        if let Ok(progress) = state.scan_progress.try_lock() {
+            let mut display = progress.clone();
+            if matches!(status, Some(super::state::TaskStatus::Failed(_))) {
+                display.interrupt_unfinished();
+            }
+            if matches!(
+                status,
+                Some(super::state::TaskStatus::Exported { partial: true, .. })
+            ) {
+                widgets::hint(
+                    ui,
+                    widgets::partial_export_hint(
+                        lang,
+                        &display,
+                        &[
+                            ("characters", settings.max_characters),
+                            ("light_cones", settings.max_light_cones),
+                            ("gear", settings.max_gear),
+                        ],
+                    ),
+                );
+            }
+            super::task_progress::show(ui, lang, &display);
+        }
+    });
+    ui.add_space(12.0);
+    ui.add_enabled_ui(!is_running && !game_busy, |ui| {
+        widgets::scan_export_options(ui, lang, &mut settings.scan_only_keep_latest_export);
+    });
+    ui.add_space(4.0);
+    widgets::export_action(ui, lang, status.as_ref());
+    ui.scope(|ui| {
         if is_running {
             let stopping = state
                 .scan_handle
                 .as_ref()
                 .is_some_and(super::worker::TaskHandle::is_stopping);
-            if ui
-                .add_enabled(!stopping, egui::Button::new(lang.t("■ 停止", "■ Stop")))
-                .clicked()
+            if super::theme::primary_action(
+                ui,
+                !stopping,
+                if stopping {
+                    lang.t("正在停止", "Stopping")
+                } else {
+                    lang.t("停止扫描", "Stop scan")
+                },
+            )
+            .clicked()
             {
                 if let Some(handle) = &state.scan_handle {
                     handle.stop();
@@ -61,283 +110,198 @@ pub fn show(
             let has_target = settings.scan_characters
                 || settings.scan_light_cones
                 || settings.scan_relics_and_ornaments;
-            if ui
-                .add_enabled(
-                    !game_busy && has_target,
-                    egui::Button::new(lang.t("▶ 开始扫描", "▶ Start Scan")),
-                )
-                .clicked()
+            if super::theme::primary_action(
+                ui,
+                !game_busy && has_target && !settings.missing_trailblazer(),
+                if matches!(status, Some(super::state::TaskStatus::Failed(_))) {
+                    lang.t("重试", "Retry")
+                } else if matches!(status, Some(super::state::TaskStatus::Exported { .. })) {
+                    lang.t("再次扫描", "Scan again")
+                } else {
+                    lang.t("开始扫描", "Start scan")
+                },
+            )
+            .clicked()
             {
                 state.scan_handle = Some(star_rail_worker::spawn_scan(
                     settings,
                     state.scan_status.clone(),
+                    state.scan_progress.clone(),
                 ));
             }
         }
-
-        if let Some(status) = worker::try_task_status(&state.scan_status) {
-            match status {
-                TaskStatus::Running(message) => {
-                    ui.spinner();
-                    ui.label(message.text(lang));
-                },
-                TaskStatus::Completed(message) => {
-                    ui.colored_label(egui::Color32::from_rgb(100, 200, 100), message.text(lang));
-                },
-                TaskStatus::Idle | TaskStatus::Failed(_) => {},
-            }
-        }
     });
-
-    if game_busy && !is_running {
-        ui.colored_label(
-            egui::Color32::from_rgb(255, 200, 50),
-            lang.t(
-                "另一个游戏数据任务正在运行，请等待完成。",
-                "Another game-data task is running. Wait for it to finish.",
-            ),
-        );
-    }
-    if let Some(TaskStatus::Failed(error)) = worker::try_task_status(&state.scan_status) {
-        widgets::error_card(ui, lang, &error);
-    }
-    ui.label(
-        egui::RichText::new(lang.t(
-            "扫描角色、光锥、隧洞遗器和位面饰品，并生成与抓包相同的 HSR-Scanner v4 JSON（star_rail_scan_*.json）。",
-            "Scan Characters, Light Cones, Cavern Relics, and Planar Ornaments into the same HSR-Scanner v4 JSON as capture (star_rail_scan_*.json).",
-        ))
-        .color(egui::Color32::from_rgb(120, 120, 120)),
-    );
-    ui.add_enabled_ui(!is_running && !game_busy, |ui| {
-        widgets::star_rail_game_data_refresh_control(ui, lang, &mut state.data_cache_refresh);
-    });
-    ui.add_space(4.0);
-    ui.separator();
-
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.add_space(4.0);
-            egui::CollapsingHeader::new(lang.t("扫描目标", "Scan Targets"))
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.add_enabled_ui(!is_running && !game_busy, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.checkbox(
-                                &mut settings.scan_characters,
-                                lang.t("角色", "Characters"),
-                            );
-                            ui.checkbox(
-                                &mut settings.scan_light_cones,
-                                lang.t("光锥", "Light Cones"),
-                            );
-                            ui.checkbox(
-                                &mut settings.scan_relics_and_ornaments,
-                                lang.t(
-                                    "隧洞遗器与位面饰品",
-                                    "Cavern Relics & Planar Ornaments",
-                                ),
-                            );
-                        });
-                        ui.checkbox(
-                            &mut settings.dump_images,
-                            lang.t(
-                                "保存OCR截图 → debug_images/",
-                                "Dump OCR images → debug_images/",
-                            ),
-                        );
-                        if !settings.scan_characters
-                            && !settings.scan_light_cones
-                            && !settings.scan_relics_and_ornaments
-                        {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(255, 200, 50),
-                                lang.t(
-                                    "请至少选择一种扫描目标。",
-                                    "Select at least one scan target.",
-                                ),
-                            );
-                        }
-                    });
-                });
-
-            egui::CollapsingHeader::new(lang.t("扫描设置", "Scan Settings"))
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.add_enabled_ui(!is_running && !game_busy, |ui| {
-                        egui::Grid::new("star_rail_scan_settings")
-                            .num_columns(2)
-                            .spacing([12.0, 6.0])
-                            .show(ui, |ui| {
-                                ui.label(lang.t("截图方式", "Capture method"));
-                                egui::ComboBox::from_id_salt("star_rail_capture_method")
-                                    .selected_text(capture_method_label(
-                                        lang,
-                                        settings.capture_method,
-                                    ))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut settings.capture_method,
-                                            StarRailCaptureMethod::Wgc,
-                                            capture_method_label(
-                                                lang,
-                                                StarRailCaptureMethod::Wgc,
-                                            ),
-                                        );
-                                        ui.selectable_value(
-                                            &mut settings.capture_method,
-                                            StarRailCaptureMethod::BitBlt,
-                                            capture_method_label(
-                                                lang,
-                                                StarRailCaptureMethod::BitBlt,
-                                            ),
-                                        );
-                                        ui.selectable_value(
-                                            &mut settings.capture_method,
-                                            StarRailCaptureMethod::PrintWindow,
-                                            capture_method_label(
-                                                lang,
-                                                StarRailCaptureMethod::PrintWindow,
-                                            ),
-                                        );
-                                    });
-                                ui.end_row();
-
-                                ui.label(lang.t("操作后等待 (ms)", "Navigation delay (ms)"));
-                                ui.add(
-                                    egui::DragValue::new(&mut settings.navigation_delay_ms)
-                                        .range(50..=5_000)
-                                        .speed(10.0),
-                                );
-                                ui.end_row();
-
-                                ui.label(lang.t("面板等待上限 (ms)", "Panel timeout (ms)"));
-                                ui.add(
-                                    egui::DragValue::new(&mut settings.panel_timeout_ms)
-                                        .range(250..=10_000)
-                                        .speed(10.0),
-                                );
-                                ui.end_row();
-
-                                ui.label(lang.t("背包物品安全上限", "Inventory safety limit"));
-                                ui.add(
-                                    egui::DragValue::new(&mut settings.max_inventory_items)
-                                        .range(1..=10_000),
-                                );
-                                ui.end_row();
-
-                                ui.label(lang.t("角色安全上限", "Character safety limit"));
-                                ui.add(
-                                    egui::DragValue::new(&mut settings.max_characters)
-                                        .range(1..=500),
-                                );
-                                ui.end_row();
-
-                                ui.label(lang.t(
-                                    "已知角色总数（0 = 未知）",
-                                    "Known Character total (0 = unknown)",
-                                ));
-                                ui.add(
-                                    egui::DragValue::new(&mut settings.expected_characters)
-                                        .range(0..=500),
-                                );
-                                ui.end_row();
-
-                                ui.label(lang.t("下一个角色按键", "Next Character key"));
-                                ui.add(
-                                    egui::TextEdit::singleline(
-                                        &mut settings.next_character_key,
-                                    )
-                                    .desired_width(60.0)
-                                    .char_limit(1),
-                                );
-                                ui.end_row();
-                            });
-                        ui.label(
-                            egui::RichText::new(lang.t(
-                                "只有填写准确的角色总数，并验证回到首位后，角色覆盖才会标记为完整。",
-                                "Character coverage is marked complete only when the correct total is supplied and wraparound to the first Character is verified.",
-                            ))
-                            .small()
-                            .color(egui::Color32::from_rgb(120, 120, 120)),
-                        );
-                    });
-                });
-
-            egui::CollapsingHeader::new(lang.t("导入已有存档", "Import Existing Archive"))
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.add_enabled_ui(!is_running && !game_busy, |ui| {
-                        path_row(
-                            ui,
-                            lang.t("存档 JSON", "Archive JSON"),
-                            &mut settings.offline_import_path,
-                            lang.t("选择文件...", "Choose file..."),
-                            false,
-                        );
-                        ui.label(
-                            egui::RichText::new(lang.t(
-                                "离线导入 Reliquary / Fribbels v4 JSON；不会读取账号、会话或原始数据包。",
-                                "Import an existing Reliquary / Fribbels v4 JSON offline; account, session, and raw-packet data are never retained.",
-                            ))
-                            .small()
-                            .color(egui::Color32::from_rgb(120, 120, 120)),
-                        );
-                        if ui
-                            .add_enabled(
-                                !game_busy && !settings.offline_import_path.trim().is_empty(),
-                                egui::Button::new(lang.t(
-                                    "导入并导出 HSR-Scanner v4 JSON",
-                                    "Import and Export HSR-Scanner v4 JSON",
-                                )),
-                            )
-                            .clicked()
-                        {
-                            state.scan_handle = Some(star_rail_worker::spawn_offline_import(
-                                settings,
-                                state.scan_status.clone(),
-                            ));
-                        }
-                    });
-                });
-        });
 }
 
-fn capture_method_label(lang: Lang, method: StarRailCaptureMethod) -> &'static str {
-    match method {
-        StarRailCaptureMethod::Wgc => lang.t(
-            "Windows 图形捕获（推荐）",
-            "Windows Graphics Capture (recommended)",
-        ),
-        StarRailCaptureMethod::BitBlt => "BitBlt",
-        StarRailCaptureMethod::PrintWindow => "PrintWindow",
-    }
-}
-
-pub(super) fn path_row(
+pub fn show_settings(
     ui: &mut egui::Ui,
-    label: &str,
-    value: &mut String,
-    button_label: &str,
-    directory: bool,
+    lang: Lang,
+    settings: &mut StarRailSettings,
+    is_running: bool,
 ) {
-    ui.horizontal(|ui| {
-        ui.label(format!("{label}:"));
-        ui.add(
-            egui::TextEdit::singleline(value)
-                .desired_width((ui.available_width() - 120.0).max(120.0)),
-        );
-        if ui.button(button_label).clicked() {
-            let selected = if directory {
-                rfd::FileDialog::new().pick_folder()
-            } else {
-                rfd::FileDialog::new()
-                    .add_filter("JSON", &["json"])
-                    .pick_file()
-            };
-            if let Some(path) = selected {
-                *value = path.display().to_string();
+    let game_busy = false;
+
+    widgets::form(ui, |ui| {
+        ui.add_enabled_ui(!is_running && !game_busy, |ui| {
+            widgets::group(ui, lang.t("扫描内容", "Scan targets"), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut settings.scan_characters, lang.t("角色", "Characters"));
+                    ui.checkbox(
+                        &mut settings.scan_light_cones,
+                        lang.t("光锥", "Light Cones"),
+                    );
+                    ui.checkbox(
+                        &mut settings.scan_relics_and_ornaments,
+                        lang.t("遗器与饰品", "Relics"),
+                    )
+                    .on_hover_text(
+                        lang.t("隧洞遗器与位面饰品", "Cavern Relics and Planar Ornaments"),
+                    );
+                });
+            });
+            ui.add_space(4.0);
+            trailblazer_row(
+                ui,
+                lang,
+                settings,
+                settings.scan_characters
+                    || settings.scan_light_cones
+                    || settings.scan_relics_and_ornaments,
+            );
+            ui.separator();
+            if ui
+                .checkbox(
+                    &mut settings.hdr_mode,
+                    lang.t("游戏使用 HDR", "Game uses HDR"),
+                )
+                .changed()
+            {
+                settings.set_hdr_mode(settings.hdr_mode);
             }
-        }
+        });
+    });
+
+    timing_settings(ui, lang, settings, is_running);
+    widgets::fold(ui, lang.t("高级选项", "Advanced"), |ui| {
+        ui.add_enabled_ui(!is_running && !game_busy, |ui| {
+            widgets::scan_debug_options(
+                ui,
+                lang,
+                &mut settings.verbose,
+                &mut settings.stop_on_failure,
+                &mut settings.dump_images,
+            );
+            ui.separator();
+            widgets::scan_limits(
+                ui,
+                lang,
+                &mut [
+                    (lang.t("角色", "Characters"), &mut settings.max_characters),
+                    (lang.t("光锥", "Light Cones"), &mut settings.max_light_cones),
+                    (lang.t("遗器与饰品", "Relics"), &mut settings.max_gear),
+                ],
+            );
+        });
+    });
+}
+
+/// The Trailblazer can be renamed in-game, like Genshin's Traveler, and the
+/// character screen does not show which gender this account plays.
+pub(super) fn trailblazer_row(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    settings: &mut StarRailSettings,
+    required: bool,
+) {
+    widgets::field_row(
+        ui,
+        if required {
+            lang.t("游戏内昵称*", "In-game nickname*")
+        } else {
+            lang.t("游戏内昵称", "In-game nickname")
+        },
+        |ui| {
+            if required && settings.trailblazer_name.trim().is_empty() {
+                ui.visuals_mut().widgets.inactive.bg_stroke.color =
+                    super::theme::palette(ui.visuals().dark_mode).warning;
+            }
+            ui.add(
+                widgets::singleline_input(&mut settings.trailblazer_name)
+                    .desired_width(ui.available_width())
+                    .min_size(egui::vec2(0.0, 26.0)),
+            );
+        },
+    );
+    widgets::field_row(
+        ui,
+        if required {
+            lang.t("性别*", "Gender*")
+        } else {
+            lang.t("性别", "Gender")
+        },
+        |ui| {
+            if required && settings.trailblazer_gender.is_none() {
+                ui.visuals_mut().widgets.inactive.bg_stroke.color =
+                    super::theme::palette(ui.visuals().dark_mode).warning;
+            }
+            egui::ComboBox::from_id_salt("star_rail_trailblazer_gender")
+                .width(140.0_f32.min(ui.available_width() - ui.spacing().button_padding.x * 2.0))
+                .selected_text(match settings.trailblazer_gender {
+                    Some(gender) => trailblazer_gender_label(lang, gender),
+                    None => lang.t("请选择", "Choose"),
+                })
+                .show_ui(ui, |ui| {
+                    for gender in [TrailblazerGender::Stelle, TrailblazerGender::Caelus] {
+                        ui.selectable_value(
+                            &mut settings.trailblazer_gender,
+                            Some(gender),
+                            trailblazer_gender_label(lang, gender),
+                        );
+                    }
+                });
+        },
+    );
+}
+
+fn trailblazer_gender_label(lang: Lang, gender: TrailblazerGender) -> &'static str {
+    match gender {
+        TrailblazerGender::Stelle => lang.t("星（女）", "Stelle (female)"),
+        TrailblazerGender::Caelus => lang.t("穹（男）", "Caelus (male)"),
+    }
+}
+
+pub(super) fn timing_settings(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    settings: &mut StarRailSettings,
+    is_running: bool,
+) {
+    let game_busy = false;
+    widgets::fold(ui, lang.t("延迟设置", "Timing"), |ui| {
+        ui.add_enabled_ui(!is_running && !game_busy, |ui| {
+                        let defaults = hsr_scanner::scan_timing::ScanTimings::default();
+                        let timings = &mut settings.timings;
+                        {
+                            widgets::delay_group(ui, "hsr_timing_0", lang.t("界面操作", "Navigation"), lang, &mut [
+                                (lang.t("打开界面", "Open screen"), &mut timings.menu_open_ms, defaults.menu_open_ms, lang.t("打开背包或角色界面后的总等待时间", "Total wait after opening Inventory or Characters")),
+                                (lang.t("关闭界面", "Close screen"), &mut timings.menu_close_ms, defaults.menu_close_ms, lang.t("关闭界面或弹窗后的等待时间", "Wait after closing a menu or dialog")),
+                                (lang.t("输入就绪", "Input ready"), &mut timings.input_settle_ms, defaults.input_settle_ms, lang.t("切换鼠标操作模式或激活窗口后等待输入生效", "Wait after activating the window or switching input mode")),
+                                (lang.t("背包分类切换", "Inventory tab"), &mut timings.inventory_tab_ms, defaults.inventory_tab_ms, lang.t("切换光锥或遗器分类后的等待时间", "Wait after switching Light Cone or Relic tabs")),
+                                (lang.t("详情面板切换", "Panel switch"), &mut timings.panel_switch_ms, defaults.panel_switch_ms, lang.t("角色详情、星魂以及首次选中背包物品共用此等待", "Shared wait for Character details, Eidolons and the first inventory selection")),
+                                (lang.t("打开行迹", "Open Traces"), &mut timings.traces_open_ms, defaults.traces_open_ms, lang.t("行迹界面加载后的等待时间", "Wait for the Traces screen to load")),
+                                (lang.t("角色栏翻页", "Character page"), &mut timings.character_page_ms, defaults.character_page_ms, lang.t("角色栏拖动后的等待，扫描和拖动诊断共用", "Wait after dragging the Character bar, shared with the drag diagnostic")),
+                                (lang.t("切换角色", "Character switch"), &mut timings.character_switch_ms, defaults.character_switch_ms, lang.t("点击下一名角色后，开始检查名字变化前的等待", "Wait after clicking the next Character before checking the name change")),
+                            ]);
+                            widgets::delay_group(ui, "hsr_timing_1", lang.t("截图与验证", "Capture & Verification"), lang, &mut [
+                                (lang.t("截图间隔", "Capture interval"), &mut timings.capture_interval_ms, defaults.capture_interval_ms, lang.t("比较稳定画面或选中框的两次截图之间的等待", "Wait between screenshots used to confirm a stable panel or selection")),
+                                (lang.t("按键后等待", "Key settle"), &mut timings.key_settle_ms, defaults.key_settle_ms, lang.t("发送下一项按键后，开始检查画面前的等待", "Wait after next-item input before checking the screen")),
+                                (lang.t("面板检查间隔", "Panel poll interval"), &mut timings.poll_interval_ms, defaults.poll_interval_ms, lang.t("等待物品或角色切换时检查画面的间隔", "Interval for checking an item or Character transition")),
+                                (lang.t("选中框动画", "Selection animation"), &mut timings.selection_settle_ms, defaults.selection_settle_ms, lang.t("相同物品副本之间切换时，选中框动画的等待时间", "Selection animation wait when moving between identical item copies")),
+                                (lang.t("面板等待上限", "Panel timeout"), &mut timings.panel_timeout_ms, defaults.panel_timeout_ms, lang.t("单次切换等待画面更新的最长时间", "Maximum wait for one item or Character transition")),
+                                (lang.t("界面检查间隔", "Menu poll interval"), &mut timings.menu_poll_interval_ms, defaults.menu_poll_interval_ms, lang.t("界面标题尚未加载时重新检查的间隔", "Interval for rechecking a menu title while it loads")),
+                                (lang.t("标记切换", "Status toggle"), &mut timings.status_toggle_ms, defaults.status_toggle_ms, lang.t("管理器切换锁定或弃置标记后共用的等待", "Shared manager wait after toggling Lock or Discard")),
+                            ]);
+                        }
+                    });
     });
 }

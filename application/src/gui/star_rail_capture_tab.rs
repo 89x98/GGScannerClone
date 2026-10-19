@@ -64,12 +64,7 @@ impl StarRailCaptureHandle {
                 *poisoned.into_inner() = Some(error.clone());
             },
         }
-        let lang = if yas::lang::is_en() {
-            Lang::En
-        } else {
-            Lang::Zh
-        };
-        log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", error.copy_text(lang));
+        error.log_diagnostics();
     }
 
     fn is_finished(&self) -> bool {
@@ -135,6 +130,7 @@ enum CapturePhase {
     Initializing,
     Waiting,
     Stopping,
+    Stopped,
     Exporting,
     Done { summary: UiText, path: String },
     Failed(UiError),
@@ -148,10 +144,36 @@ pub struct StarRailCaptureState {
     phase: CapturePhase,
     output_dir: String,
     only_keep_latest_export: bool,
-    data_cache_refresh: super::state::RefreshState,
 }
 
 impl StarRailCaptureState {
+    #[cfg(feature = "dev-tools")]
+    pub(super) fn preview_feedback(&mut self, scenario: &str) {
+        if scenario == "done" {
+            let mut shared = self.shared.lock().unwrap();
+            shared.has_key_exchange = true;
+            shared.has_characters = true;
+            shared.has_light_cones = true;
+            shared.has_relics = true;
+            shared.has_achievements = true;
+            shared.character_count = 58;
+            shared.light_cone_count = 198;
+            shared.relic_count = 1126;
+            shared.achievement_count = 600;
+        }
+        self.phase = match scenario {
+            "error" => CapturePhase::Failed(super::preview::preview_error()),
+            "stopped" => CapturePhase::Stopped,
+            "exporting" => CapturePhase::Exporting,
+            "login" => CapturePhase::Waiting,
+            "done" => CapturePhase::Done {
+                summary: UiText::new("抓包已完成", "Capture completed"),
+                path: "C:\\Users\\Player\\Exports\\capture.json".into(),
+            },
+            _ => return,
+        };
+    }
+
     pub fn new(output_dir: String) -> Self {
         Self {
             handle: None,
@@ -161,7 +183,6 @@ impl StarRailCaptureState {
             phase: CapturePhase::Idle,
             output_dir,
             only_keep_latest_export: false,
-            data_cache_refresh: super::state::RefreshState::Idle,
         }
     }
 
@@ -188,7 +209,13 @@ impl StarRailCaptureState {
     /// visible tab. The app calls this every frame so switching to another
     /// Star Rail tab cannot strand a completed monitor or its export.
     pub fn tick(&mut self) {
+        let previous = self.phase.clone();
         update_phase(self);
+        if self.phase != previous {
+            if let CapturePhase::Failed(error) = &self.phase {
+                error.log_diagnostics();
+            }
+        }
     }
 
     pub fn requires_restart(&self) -> bool {
@@ -216,7 +243,10 @@ impl StarRailCaptureState {
                 "正在导出星穹铁道数据",
                 "Exporting Star Rail data",
             )),
-            CapturePhase::Idle | CapturePhase::Done { .. } | CapturePhase::Failed(_) => None,
+            CapturePhase::Idle
+            | CapturePhase::Stopped
+            | CapturePhase::Done { .. }
+            | CapturePhase::Failed(_) => None,
         };
         self.handle.as_ref().and_then(|handle| {
             handle.surface_native_failure(phase);
@@ -236,8 +266,17 @@ impl StarRailCaptureState {
         *lock_shared(&self.shared) = HsrCaptureState {
             capturing: false,
             complete: true,
+            has_key_exchange: true,
             achievement_count,
-            completed_ids,
+            quests: completed_ids
+                .into_iter()
+                .map(|id| hsr_scanner::model::ObservedQuest {
+                    id,
+                    status: 3,
+                    progress: 1,
+                    counters: vec![],
+                })
+                .collect(),
             inventory: Some(inventory),
             has_achievements: true,
             ..HsrCaptureState::default()
@@ -257,7 +296,50 @@ impl StarRailCaptureState {
     }
 }
 
-pub fn show(
+pub fn show_settings(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    settings: &mut StarRailSettings,
+    state: &mut StarRailCaptureState,
+    is_busy: bool,
+) {
+    let game_busy = false;
+    let _ = is_busy;
+
+    widgets::section(ui, lang.t("导出内容", "Export targets"), |ui| {
+        ui.add_enabled_ui(!state.is_busy() && !game_busy, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
+                ui.checkbox(
+                    &mut settings.capture_include_characters,
+                    lang.t("角色", "Characters"),
+                );
+                ui.checkbox(
+                    &mut settings.capture_include_light_cones,
+                    lang.t("光锥", "Light Cones"),
+                );
+                ui.checkbox(
+                    &mut settings.capture_include_relics,
+                    lang.t("遗器与饰品", "Relics"),
+                );
+                ui.checkbox(
+                    &mut settings.capture_include_achievements,
+                    lang.t("成就", "Achievements"),
+                );
+            });
+        });
+    });
+    widgets::fold(ui, lang.t("高级选项", "Advanced"), |ui| {
+        ui.add_enabled_ui(!state.is_busy() && !game_busy, |ui| {
+            ui.checkbox(
+                &mut settings.capture_dump_packets,
+                lang.t("保存解密数据包", "Save decoded packets"),
+            );
+        });
+    });
+}
+
+pub fn show_status(
     ui: &mut egui::Ui,
     lang: Lang,
     settings: &mut StarRailSettings,
@@ -265,270 +347,175 @@ pub fn show(
     game_busy: bool,
     restart_required: bool,
 ) {
-    ui.add_space(4.0);
     if restart_required {
-        if let Some(error) = state.native_failure() {
-            widgets::error_card(ui, lang, &error);
-        } else {
-            ui.colored_label(
-                egui::Color32::from_rgb(220, 90, 90),
-                lang.t(
-                    "另一个任务发生了底层崩溃。请复制完整错误，然后重启程序。",
-                    "Another task had a low-level crash. Copy the full error, then restart the application.",
-                ),
-            );
-        }
-        ui.add_enabled(
-            false,
-            egui::Button::new(lang.t("需重启程序", "Restart required")),
+        super::theme::restart_required(
+            ui,
+            lang,
+            state
+                .handle
+                .as_ref()
+                .and_then(StarRailCaptureHandle::native_failure)
+                .as_ref(),
         );
         return;
     }
-
-    action_bar(ui, lang, settings, state, game_busy);
-    let progress = shared_snapshot(&state.shared);
-    ui.horizontal_wrapped(|ui| {
-        for (label, selected, ready, count) in [
+    let shared = lock_shared(&state.shared).clone();
+    use super::capture_status::{self, Stage};
+    let stage = match &state.phase {
+        CapturePhase::Stopped => Stage::Stopped,
+        CapturePhase::Idle => Stage::Ready,
+        CapturePhase::Initializing => Stage::Starting,
+        CapturePhase::Waiting => capture_status::waiting(
+            shared.has_key_exchange,
+            (settings.capture_include_characters && !shared.has_characters)
+                || (settings.capture_include_light_cones && !shared.has_light_cones)
+                || (settings.capture_include_relics && !shared.has_relics),
+            settings.capture_include_achievements && !shared.has_achievements,
+        ),
+        CapturePhase::Stopping => Stage::Stopping,
+        CapturePhase::Exporting => Stage::Exporting,
+        CapturePhase::Done { .. } => Stage::Done,
+        CapturePhase::Failed(_) => Stage::Failed,
+    };
+    let text = if stage == Stage::Achievements {
+        lang.t("正在接收成就", "Receiving achievements")
+    } else {
+        stage.headline(lang)
+    };
+    let feedback = match &state.phase {
+        CapturePhase::Idle if !capture_targets(settings).any() => {
+            Some(super::state::TaskStatus::AwaitingInput(UiText::new(
+                "请选择导出内容",
+                "Select export targets",
+            )))
+        },
+        CapturePhase::Failed(error) => Some(super::state::TaskStatus::Failed(error.clone())),
+        CapturePhase::Done { summary, path } => Some(super::state::TaskStatus::Exported {
+            message: summary.clone(),
+            path: path.clone(),
+            partial: false,
+        }),
+        CapturePhase::Stopped => Some(super::state::TaskStatus::Stopped(UiText::new(text, text))),
+        _ => None,
+    };
+    widgets::status_content(ui, "hsr-capture-status", 1, |ui| {
+        super::theme::task_status(ui, lang, feedback.as_ref(), text);
+        if stage != Stage::Ready && stage != Stage::Done && capture_targets(settings).any() {
+            capture_status::show_connection(ui, lang, stage, shared.has_key_exchange);
+            capture_status::show_diagnostics(
+                ui,
+                lang,
+                capture_status::Diagnostics {
+                    active: matches!(
+                        state.phase,
+                        CapturePhase::Initializing | CapturePhase::Waiting
+                    ),
+                    ready: shared.listener_ready,
+                    elapsed: shared.elapsed_secs,
+                    packets: shared.packet_count,
+                    commands: shared.command_count,
+                    error: shared.last_transport_error.as_deref(),
+                    details: shared.diagnostics(),
+                },
+            );
+        }
+        for (selected, key, zh, en, complete, count) in [
             (
-                lang.t("角色", "Characters"),
                 settings.capture_include_characters,
-                progress.has_characters,
-                progress.character_count,
+                "characters",
+                "角色",
+                "Characters",
+                shared.has_characters,
+                shared.character_count,
             ),
             (
-                lang.t("光锥", "Light Cones"),
                 settings.capture_include_light_cones,
-                progress.has_light_cones,
-                progress.light_cone_count,
+                "light_cones",
+                "光锥",
+                "Light Cones",
+                shared.has_light_cones,
+                shared.light_cone_count,
             ),
             (
-                lang.t("遗器", "Relics"),
                 settings.capture_include_relics,
-                progress.has_relics,
-                progress.relic_count,
+                "gear",
+                "遗器与位面饰品",
+                "Relics & Ornaments",
+                shared.has_relics,
+                shared.relic_count,
             ),
             (
-                lang.t("成就", "Achievements"),
                 settings.capture_include_achievements,
-                progress.has_achievements,
-                progress.achievement_count,
+                "achievements",
+                "成就",
+                "Achievements",
+                shared.has_achievements,
+                shared.achievement_count,
             ),
         ] {
-            if !selected {
-                continue;
+            if selected && stage != Stage::Ready {
+                let mut step = super::task_progress::Step::new(key, zh, en);
+                step.completed = count;
+                if complete {
+                    step.state = super::task_progress::StepState::Complete;
+                } else if matches!(state.phase, CapturePhase::Failed(_) | CapturePhase::Stopped) {
+                    step.state = super::task_progress::StepState::Interrupted;
+                } else if matches!(state.phase, CapturePhase::Waiting) && shared.has_key_exchange {
+                    step.state = super::task_progress::StepState::Running;
+                }
+                super::task_progress::row(ui, lang, &step);
             }
-            let value = if ready {
-                count.to_string()
-            } else if !progress.capturing {
-                "—".to_owned()
-            } else {
-                lang.t("等待中", "Waiting").to_owned()
-            };
-            ui.label(format!("{label}: {value}"));
         }
     });
-    if progress.capturing {
-        ui.label(if progress.packet_count == 0 {
-            lang.t("等待游戏连接…", "Waiting for the game connection…")
-                .to_owned()
-        } else if progress.command_count == 0 {
-            lang.t(
-                "已收到流量，等待登录解密…",
-                "Traffic received; waiting for login decryption…",
-            )
-            .to_owned()
-        } else {
-            lang.t("已连接，正在读取游戏数据…", "Connected; reading game data…")
-                .to_owned()
-        });
-    }
-    ui.label(
-        egui::RichText::new(lang.t(
-            "登录游戏即可读取角色、光锥、遗器和已完成成就，完成后自动保存导出文件。",
-            "Log in to capture characters, Light Cones, Relics, and completed achievements. The export is saved automatically.",
-        ))
-        .color(egui::Color32::from_rgb(120, 120, 120)),
-    );
+    ui.add_space(12.0);
+    ui.add_enabled_ui(!state.is_busy() && !game_busy, |ui| {
+        ui.checkbox(
+            &mut settings.capture_only_keep_latest_export,
+            lang.t("仅保留最新导出", "Keep latest export only"),
+        );
+    });
     ui.add_space(4.0);
-    ui.separator();
-
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            egui::CollapsingHeader::new(lang.t("导出设置", "Export Settings"))
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.add_enabled_ui(!state.is_busy() && !game_busy, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut settings.capture_include_characters, lang.t("角色", "Characters"));
-                            ui.add_space(12.0);
-                            ui.checkbox(&mut settings.capture_include_light_cones, lang.t("光锥", "Light Cones"));
-                            ui.add_space(12.0);
-                            ui.checkbox(&mut settings.capture_include_relics, lang.t("遗器", "Relics"));
-                            ui.add_space(12.0);
-                            ui.checkbox(&mut settings.capture_include_achievements, lang.t("成就", "Achievements"));
-                        });
-                    });
-                });
-
-            egui::CollapsingHeader::new(lang.t("高级设置", "Advanced"))
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.add_enabled_ui(!state.is_busy() && !game_busy, |ui| {
-                        ui.checkbox(&mut settings.capture_dump_packets,
-                            lang.t("保存所有数据包 → debug_capture/hsr/", "Dump decrypted packets → debug_capture/hsr/"));
-                        ui.checkbox(&mut settings.capture_only_keep_latest_export,
-                            lang.t("仅保留最新导出", "Only keep latest export"));
-                        widgets::star_rail_game_data_refresh_control(ui, lang, &mut state.data_cache_refresh);
-                    });
-                });
-            ui.label(lang.t(
-                "导出一份 HSR-Scanner v4 JSON（含成就与开拓者性别/命途扩展）。",
-                "Writes one HSR-Scanner v4 JSON, including achievements and Trailblazer gender/path."));
-
-            egui::CollapsingHeader::new(lang.t("使用说明", "How to Use"))
-                .default_open(true)
-                .show(ui, |ui| {
-                    ui.label(lang.t(
-                        "1. 关闭星穹铁道。\n2. 点击“开始抓包”。\n3. 启动游戏并登录，直至进入列车或当前场景。\n4. 所选数据读取完成后会自动停止并导出。",
-                        "1. Close Star Rail.\n2. Select Start Capture.\n3. Launch and log in until the Astral Express or current scene appears.\n4. Capture stops and exports after all selected data arrive.",
-                    ));
-                });
-        });
-}
-
-fn action_bar(
-    ui: &mut egui::Ui,
-    lang: Lang,
-    settings: &StarRailSettings,
-    state: &mut StarRailCaptureState,
-    game_busy: bool,
-) {
+    widgets::export_action(ui, lang, feedback.as_ref());
     match &state.phase {
-        CapturePhase::Idle => {
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        !game_busy
-                            && capture_targets(settings).any()
-                            && !settings.output_dir.trim().is_empty(),
-                        egui::Button::new(lang.t("▶ 开始抓包", "▶ Start Capture")),
-                    )
-                    .clicked()
-                {
-                    start_capture(settings, state);
+        CapturePhase::Initializing | CapturePhase::Waiting => {
+            if super::theme::primary_action(ui, true, lang.t("停止抓包", "Stop capture")).clicked()
+            {
+                if let Some(h) = &state.handle {
+                    h.stop();
                 }
-                readiness_label(ui, lang, Readiness::NotRequested);
-            });
-            if game_busy {
-                ui.colored_label(
-                    egui::Color32::from_rgb(255, 200, 50),
-                    lang.t(
-                        "另一个游戏数据任务正在运行，请等待完成。",
-                        "Another game-data task is running. Wait for it to finish.",
-                    ),
-                );
+                state.phase = CapturePhase::Stopping;
             }
         },
-        CapturePhase::Initializing | CapturePhase::Waiting => {
-            ui.horizontal(|ui| {
-                if ui.button(lang.t("■ 停止抓包", "■ Stop Capture")).clicked() {
-                    if let Some(handle) = &state.handle {
-                        handle.stop();
-                    }
-                    state.phase = CapturePhase::Stopping;
-                }
-                ui.spinner();
-                readiness_label(ui, lang, Readiness::Waiting);
-            });
+        CapturePhase::Stopping | CapturePhase::Exporting => {
+            super::theme::primary_action(ui, false, lang.t("正在处理", "Processing"));
         },
-        CapturePhase::Stopping => {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(lang.t("正在停止抓包...", "Stopping capture..."));
-            });
+        CapturePhase::Failed(_) => {
+            if super::theme::primary_action(
+                ui,
+                !game_busy && !state.is_busy() && capture_targets(settings).any(),
+                lang.t("重试", "Retry"),
+            )
+            .clicked()
+            {
+                start_capture(settings, state);
+            }
         },
-        CapturePhase::Exporting => {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                readiness_label(ui, lang, Readiness::Complete);
-                ui.label(lang.t("正在导出...", "Exporting..."));
-            });
-        },
-        CapturePhase::Done { summary, path } => {
-            let summary = summary.clone();
-            let path = path.clone();
-            let cleanup_busy = state.is_busy();
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        !cleanup_busy,
-                        egui::Button::new(lang.t("↻ 重新抓包", "↻ Capture Again")),
-                    )
-                    .clicked()
-                {
-                    state.handle = None;
-                    state.phase = CapturePhase::Idle;
-                }
-                if cleanup_busy {
-                    ui.spinner();
-                }
-                readiness_label(ui, lang, Readiness::Complete);
-            });
-            ui.colored_label(egui::Color32::from_rgb(100, 200, 100), summary.text(lang));
-            ui.label(egui::RichText::new(format!("→ {path}")).small().weak());
-        },
-        CapturePhase::Failed(error) => {
-            let error = error.clone();
-            let cleanup_busy = state.is_busy();
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        !cleanup_busy,
-                        egui::Button::new(lang.t("↻ 重试", "↻ Retry")),
-                    )
-                    .clicked()
-                {
-                    state.handle = None;
-                    state.phase = CapturePhase::Idle;
-                }
-                if cleanup_busy {
-                    ui.spinner();
-                    ui.label(lang.t(
-                        "正在安全关闭后台任务...",
-                        "Waiting for the background task to stop safely...",
-                    ));
-                }
-            });
-            widgets::error_card(ui, lang, &error);
+        CapturePhase::Idle | CapturePhase::Stopped | CapturePhase::Done { .. } => {
+            if super::theme::primary_action(
+                ui,
+                !game_busy && !state.is_busy() && capture_targets(settings).any(),
+                if matches!(state.phase, CapturePhase::Done { .. }) {
+                    lang.t("再次抓包", "Capture again")
+                } else {
+                    lang.t("开始抓包", "Start capture")
+                },
+            )
+            .clicked()
+            {
+                start_capture(settings, state);
+            }
         },
     }
-}
-
-#[derive(Clone, Copy)]
-enum Readiness {
-    NotRequested,
-    Waiting,
-    Complete,
-}
-
-fn readiness_label(ui: &mut egui::Ui, lang: Lang, readiness: Readiness) {
-    let (color, text) = match readiness {
-        Readiness::NotRequested => (
-            egui::Color32::from_rgb(120, 120, 120),
-            lang.t("等待开始", "Ready to capture").to_owned(),
-        ),
-        Readiness::Waiting => (
-            egui::Color32::from_rgb(255, 200, 50),
-            lang.t("正在等待游戏数据", "Waiting for game data")
-                .to_owned(),
-        ),
-        Readiness::Complete => (
-            egui::Color32::from_rgb(100, 200, 100),
-            lang.t("数据读取完成", "Capture complete").to_owned(),
-        ),
-    };
-    ui.colored_label(color, text);
 }
 
 fn capture_targets(settings: &StarRailSettings) -> CaptureTargets {
@@ -543,7 +530,7 @@ fn capture_targets(settings: &StarRailSettings) -> CaptureTargets {
 fn start_capture(settings: &StarRailSettings, state: &mut StarRailCaptureState) {
     // Freeze export destination at Start. Shared settings are disabled while
     // any Star Rail task runs, but this snapshot also protects future callers.
-    state.output_dir.clone_from(&settings.output_dir);
+    state.output_dir = settings.export_directory().display().to_string();
     state.only_keep_latest_export = settings.capture_only_keep_latest_export;
     *lock_shared(&state.shared) = HsrCaptureState::default();
     *lock_shared(&state.references) = None;
@@ -568,7 +555,10 @@ fn start_capture(settings: &StarRailSettings, state: &mut StarRailCaptureState) 
                 native_failure: Mutex::new(None),
             });
         },
-        Err(error) => state.phase = CapturePhase::Failed(error),
+        Err(error) => {
+            error.log_diagnostics();
+            state.phase = CapturePhase::Failed(error);
+        },
     }
 }
 
@@ -700,13 +690,23 @@ fn update_phase(state: &mut StarRailCaptureState) {
     }
 
     if state.phase == CapturePhase::Stopping {
+        if let Some(error) = shared_snapshot(&state.shared).error {
+            state.phase = CapturePhase::Failed(star_rail_worker::hsr_ui_error(
+                UiText::new(
+                    "星穹铁道抓包未能完成。",
+                    "Star Rail capture could not finish.",
+                ),
+                error,
+            ));
+            return;
+        }
         if state
             .handle
             .as_ref()
             .is_none_or(StarRailCaptureHandle::is_finished)
         {
             state.handle = None;
-            state.phase = CapturePhase::Idle;
+            state.phase = CapturePhase::Stopped;
         }
         return;
     }
@@ -762,12 +762,21 @@ fn update_phase(state: &mut StarRailCaptureState) {
         return;
     }
 
+    // Completion remains in shared state until the next explicit Start. Only
+    // an active capture may consume it, otherwise every frame re-exports it.
+    if !matches!(
+        state.phase,
+        CapturePhase::Initializing | CapturePhase::Waiting
+    ) {
+        return;
+    }
+
     let shared = shared_snapshot(&state.shared);
     if let Some(error) = shared.error {
         state.phase = CapturePhase::Failed(star_rail_worker::hsr_ui_error(
             UiText::new(
-                "星穹铁道抓包未能完成。请复制完整错误以搜索或寻求帮助。",
-                "Star Rail capture could not finish. Copy the full error to search or ask for help.",
+                "星穹铁道抓包未能完成。",
+                "Star Rail capture could not finish.",
             ),
             error,
         ));
@@ -870,5 +879,69 @@ fn lock_shared<T>(shared: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
             shared.clear_poison();
             poisoned.into_inner()
         },
+    }
+}
+#[cfg(test)]
+mod feedback_tests {
+    use super::*;
+    #[test]
+    fn next_action_changes_only_after_relevant_capture_data_arrives() {
+        use super::super::capture_status::feedback_tests::texts;
+        let mut settings = StarRailSettings::default();
+        let mut state = StarRailCaptureState::new(String::new());
+        state.phase = CapturePhase::Waiting;
+        let login = texts(|ui| show_status(ui, Lang::En, &mut settings, &mut state, false, false));
+        assert!(login.iter().any(|s| s == "Launch the game and log in"));
+        lock_shared(&state.shared).command_count = 1;
+        let dispatch =
+            texts(|ui| show_status(ui, Lang::En, &mut settings, &mut state, false, false));
+        assert!(dispatch.iter().any(|s| s == "Launch the game and log in"));
+        lock_shared(&state.shared).has_key_exchange = true;
+        let inventory =
+            texts(|ui| show_status(ui, Lang::En, &mut settings, &mut state, false, false));
+        assert!(inventory.iter().any(|s| s == "Receiving game data"));
+        assert!(!inventory.iter().any(|s| s.contains("Open Achievements")));
+        {
+            let mut shared = lock_shared(&state.shared);
+            shared.has_characters = true;
+            shared.has_light_cones = true;
+            shared.has_relics = true;
+        }
+        let achievements =
+            texts(|ui| show_status(ui, Lang::En, &mut settings, &mut state, false, false));
+        assert!(achievements.iter().any(|s| s == "Receiving achievements"));
+        assert!(!achievements.iter().any(|s| s.contains("Import the file")));
+        state.phase = CapturePhase::Done {
+            summary: UiText::new("已完成", "Completed"),
+            path: "capture.json".into(),
+        };
+        let done = texts(|ui| show_status(ui, Lang::En, &mut settings, &mut state, false, false));
+        assert!(done.iter().any(|s| s == "Export saved"));
+        assert!(!done.iter().any(|s| s.contains("Open Achievements")));
+    }
+    #[test]
+    fn stop_cannot_hide_a_reported_capture_failure() {
+        let mut state = StarRailCaptureState::new(String::new());
+        state.phase = CapturePhase::Stopping;
+        lock_shared(&state.shared).error = Some(HsrError::new(
+            "HSR-TEST",
+            LocalizedText::new("抓包失败", "Capture failed"),
+            "CAPTURE_ERROR_MARKER",
+        ));
+        state.tick();
+        let CapturePhase::Failed(error) = &state.phase else {
+            panic!("capture failure was hidden")
+        };
+        assert!(error.copy_text(Lang::En).contains("CAPTURE_ERROR_MARKER"));
+    }
+    #[test]
+    fn stop_remains_visible_after_the_worker_exits() {
+        let mut state = StarRailCaptureState::new(String::new());
+        state.phase = CapturePhase::Stopping;
+        state.tick();
+        assert!(matches!(state.phase, CapturePhase::Stopped));
+        state.tick();
+        assert!(matches!(state.phase, CapturePhase::Stopped));
+        assert!(!state.is_busy());
     }
 }

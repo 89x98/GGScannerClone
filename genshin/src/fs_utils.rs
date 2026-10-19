@@ -23,8 +23,99 @@ pub(crate) fn remove_file_if_exists(path: impl AsRef<Path>) -> Result<()> {
     }
 }
 
+/// Save before retention. Partial scans replace partial history, preserving complete exports.
+pub fn write_scan_export(
+    output_dir: &Path,
+    json: &str,
+    timestamp: &str,
+    partial: bool,
+    only_latest: bool,
+) -> Result<std::path::PathBuf> {
+    write_export(
+        output_dir,
+        json,
+        timestamp,
+        partial,
+        only_latest,
+        SCANNER_EXPORT_PREFIX,
+    )
+}
+
+/// Persist capture first, so a failed write never deletes the previous result.
+pub fn write_capture_export(
+    output_dir: &Path,
+    json: &str,
+    timestamp: &str,
+    only_latest: bool,
+) -> Result<std::path::PathBuf> {
+    write_export(
+        output_dir,
+        json,
+        timestamp,
+        false,
+        only_latest,
+        CAPTURE_EXPORT_PREFIX,
+    )
+}
+
+fn write_export(
+    output_dir: &Path,
+    json: &str,
+    timestamp: &str,
+    partial: bool,
+    only_latest: bool,
+    prefix: &str,
+) -> Result<std::path::PathBuf> {
+    use std::io::Write;
+    std::fs::create_dir_all(output_dir)?;
+    let path = output_dir.join(format!(
+        "{}{}{}{}",
+        prefix,
+        if partial { "partial_" } else { "" },
+        timestamp,
+        EXPORT_JSON_SUFFIX
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    if let Err(error) = file
+        .write_all(json.as_bytes())
+        .and_then(|_| file.sync_all())
+    {
+        drop(file);
+        let cleanup = std::fs::remove_file(&path);
+        return Err(error).with_context(|| format!("Failed to save scan {}; incomplete-file cleanup={cleanup:?}; older exports retained", path.display()));
+    }
+    drop(file);
+    if only_latest {
+        let cleanup_prefix = if partial {
+            format!("{prefix}partial_")
+        } else {
+            prefix.to_owned()
+        };
+        remove_previous_exports_except(output_dir, &cleanup_prefix, Some(&path)).with_context(
+            || {
+                format!(
+                    "New scan saved at {}; could not clean older exports",
+                    path.display()
+                )
+            },
+        )?;
+    }
+    Ok(path)
+}
+
 /// Delete previously generated timestamped exports that share `prefix`.
 pub fn remove_previous_exports(output_dir: &Path, prefix: &str) -> Result<usize> {
+    remove_previous_exports_except(output_dir, prefix, None)
+}
+
+fn remove_previous_exports_except(
+    output_dir: &Path,
+    prefix: &str,
+    keep: Option<&Path>,
+) -> Result<usize> {
     let mut removed = 0;
     for entry in fs::read_dir(output_dir)? {
         let entry = entry?;
@@ -35,7 +126,7 @@ pub fn remove_previous_exports(output_dir: &Path, prefix: &str) -> Result<usize>
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        if is_generated_export_filename(file_name, prefix) {
+        if keep != Some(entry.path().as_path()) && is_generated_export_filename(file_name, prefix) {
             fs::remove_file(entry.path())?;
             removed += 1;
         }
@@ -49,7 +140,7 @@ pub fn is_generated_export_filename(file_name: &str, prefix: &str) -> bool {
     }
 
     let timestamp = &file_name[prefix.len()..file_name.len() - EXPORT_JSON_SUFFIX.len()];
-    is_export_timestamp(timestamp)
+    is_export_timestamp(timestamp.strip_prefix("partial_").unwrap_or(timestamp))
 }
 
 fn is_export_timestamp(timestamp: &str) -> bool {
@@ -94,6 +185,22 @@ mod tests {
     use super::{is_generated_export_filename, CAPTURE_EXPORT_PREFIX, SCANNER_EXPORT_PREFIX};
 
     #[test]
+    fn capture_save_failure_preserves_previous_export() {
+        let dir = std::env::temp_dir().join(format!("capture-retention-{}", std::process::id()));
+        let old =
+            super::write_capture_export(&dir, "previous", "2026-10-13_13-45-09", true).unwrap();
+        assert!(
+            super::write_capture_export(&dir, "replacement", "2026-10-13_13-45-09", true).is_err()
+        );
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), "previous");
+        let new = super::write_capture_export(&dir, "new", "2026-10-14_13-45-09", true).unwrap();
+        assert!(!old.exists());
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "new");
+        std::fs::remove_file(new).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
     fn matches_generated_scanner_exports_only() {
         assert!(is_generated_export_filename(
             "good_export_2026-04-27_13-45-09.json",
@@ -115,6 +222,86 @@ mod tests {
             "genshin_export_2026-04-27_13-45-09.json",
             SCANNER_EXPORT_PREFIX
         ));
+    }
+
+    #[test]
+    fn cleanup_keeps_the_new_export_and_removes_old_partial_results() {
+        let dir = std::env::temp_dir().join(format!(
+            "goodscanner-partial-cleanup-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let current = dir.join("good_export_2026-10-13_13-45-09.json");
+        let partial = dir.join("good_export_partial_2026-10-12_13-45-09.json");
+        let old = dir.join("good_export_2026-10-11_13-45-09.json");
+        for path in [&current, &partial, &old] {
+            std::fs::write(path, "{}").unwrap();
+        }
+        assert_eq!(
+            super::remove_previous_exports_except(&dir, SCANNER_EXPORT_PREFIX, Some(&current))
+                .unwrap(),
+            2
+        );
+        assert!(current.exists());
+        assert!(!partial.exists());
+        assert!(!old.exists());
+        std::fs::remove_file(current).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn partial_scan_preserves_complete_export_and_failed_write_preserves_both() {
+        let dir =
+            std::env::temp_dir().join(format!("goodscanner-save-partial-{}", std::process::id()));
+        let full =
+            super::write_scan_export(&dir, "complete", "2026-10-11_13-45-09", false, true).unwrap();
+        let partial =
+            super::write_scan_export(&dir, "partial", "2026-10-12_13-45-09", true, true).unwrap();
+        let replacement =
+            super::write_scan_export(&dir, "new partial", "2026-10-12_14-45-09", true, true)
+                .unwrap();
+        assert!(!partial.exists());
+        assert_eq!(std::fs::read_to_string(&full).unwrap(), "complete");
+        assert!(
+            super::write_scan_export(&dir, "replacement", "2026-10-11_13-45-09", false, true)
+                .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(&full).unwrap(), "complete");
+        assert!(super::write_scan_export(
+            &dir,
+            "failed partial",
+            "2026-10-12_14-45-09",
+            true,
+            true
+        )
+        .is_err());
+        assert_eq!(
+            std::fs::read_to_string(&replacement).unwrap(),
+            "new partial"
+        );
+        let latest =
+            super::write_scan_export(&dir, "latest", "2026-10-13_13-45-09", false, true).unwrap();
+        assert!(!full.exists());
+        assert!(!partial.exists());
+        assert!(!replacement.exists());
+        assert!(latest.exists());
+        std::fs::remove_file(latest).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn partial_scans_keep_history_when_latest_only_is_disabled() {
+        let dir =
+            std::env::temp_dir().join(format!("goodscanner-keep-partials-{}", std::process::id()));
+        let first =
+            super::write_scan_export(&dir, "first", "2026-10-11_13-45-09", true, false).unwrap();
+        let second =
+            super::write_scan_export(&dir, "second", "2026-10-12_13-45-09", true, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "second");
+        std::fs::remove_file(first).unwrap();
+        std::fs::remove_file(second).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]

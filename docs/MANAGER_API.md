@@ -1,6 +1,10 @@
-# GOODScanner HTTP API
+# GGScanner HTTP API
 
 Server: `http://127.0.0.1:{port}` (default 8765)
+
+The application defaults to filtering the requested artifact sets and stops
+management once all targets are matched. Management does not refresh full
+inventory; use `POST /scan` (including the recent-artifacts mode) to read data.
 
 ## Security
 
@@ -34,7 +38,7 @@ Every response with an error body keeps the same schema:
 {"error":"<message>"}
 ```
 
-`message` uses the language currently configured in GOODScanner (`zh` or `en`).
+`message` uses the language currently configured in GGScanner (`zh` or `en`).
 It contains one language only; clients should not split it on `" / "`.
 
 When the server has a lower-level I/O, JSON parsing, serialization, or job-channel
@@ -148,7 +152,7 @@ Lock toggles use the scanned piece's `elixirCrafted` to apply a 40px Y-shift whe
 
 #### Server-side performance options (GUI)
 
-These are configured in the GOODScanner **Manager** tab, not in the HTTP request. They affect lock/unlock behavior:
+These are configured in the GGScanner **Manager** tab, not in the HTTP request. They affect lock/unlock behavior:
 
 | GUI option | Effect |
 |------------|--------|
@@ -310,12 +314,12 @@ turns the in-game 5-star acquired-time filter on before scanning. `artifactLimit
 caps the number of artifacts scanned and is required for `"recent"` mode.
 
 The user must navigate to the appropriate in-game screen before submitting:
-- **Achievements**: open the achievement screen to any category (this phase runs first)
+- **Achievements**: the scanner opens the achievement screen automatically (this phase runs last)
 - **Characters**: open character screen (press C)
 - **Weapons**: open backpack → weapon tab
 - **Artifacts**: open backpack → artifact tab (if also scanning weapons, the scanner navigates from weapon tab automatically)
 
-When scanning multiple targets, they execute in order: achievements → characters → weapons → artifacts. `--all` and a request that omits `achievements` do **not** imply achievements; that category is opt-in because it uses a different UI (left category column + right card list, not the backpack grid).
+When scanning multiple targets, they execute in order: characters → weapons → artifacts → achievements. `--all` and a request that omits `achievements` do **not** imply achievements; that category is opt-in because it uses a different UI (left category column + right card list, not the backpack grid).
 
 Recent artifact scan example:
 
@@ -492,7 +496,7 @@ Full execution result. Requires the `jobId` returned by `POST /manage`, `POST /e
 }
 ```
 
-Every result keeps the existing `id` and `status` fields. Failed results also include an optional `message` string. Its first paragraph is a plain-language hint selected from GOODScanner's configured language. When a lower-level error exists, the same string then contains `完整错误详情:` or `Full error details:` followed by the complete diagnostic/source chain. Clients should display the whole string as selectable/copyable text; successful results omit `message`.
+Every result keeps the existing `id` and `status` fields. Failed results also include an optional `message` string. Its first paragraph is a plain-language hint selected from GGScanner's configured language. When a lower-level error exists, the same string then contains `完整错误详情:` or `Full error details:` followed by the complete diagnostic/source chain. Clients should display the whole string as selectable/copyable text; successful results omit `message`.
 
 #### Other responses
 
@@ -690,7 +694,7 @@ The `jobId` parameter is **optional** for backwards compatibility:
 ## Cancellation
 
 Cancellation is local only — there is no cancel endpoint.
-The user cancels by right-clicking in the game or stopping via the GOODScanner GUI.
+The user cancels by right-clicking in the game or stopping via the GGScanner GUI.
 The client just keeps polling; eventually `/status` will show `"completed"` with
 aborted instructions reflected in the results.
 
@@ -764,7 +768,7 @@ All targets execute in a single backpack scan pass. Invalid entries (empty keys,
 
 ### 2026-09-18
 
-- **`POST /scan` accepts `achievements`.** Opt-in OCR scan of the in-game achievement list. Not implied by `--all` or by omitting the field (defaults `false`). When mixed with other categories, achievements run first. Progress appears as `scanProgress.achievements` (indeterminate `completed == total`, same as characters).
+- **`POST /scan` accepts `achievements`.** Opt-in OCR scan of the in-game achievement list. Not implied by `--all` or by omitting the field (defaults `false`). When mixed with other categories, achievements run last. Progress appears as `scanProgress.achievements` (indeterminate `completed == total`, same as characters).
 - **`GET /achievements?jobId=xxx`** — Completed achievement IDs (`Vec<u32>`). Same all-or-nothing cache and 400/404/503 contract as `/characters` and `/weapons`. `jobId` is required.
 - **202 `targets` includes `achievements`.** Existing character/weapon/artifact clients can ignore the new field.
 

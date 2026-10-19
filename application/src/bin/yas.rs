@@ -73,13 +73,25 @@ fn init_cli() {
 }
 
 pub fn main() {
-    // No CLI args → launch GUI; any args → CLI mode
-    if std::env::args().len() == 1 {
+    // GUI automation is opt-in and still uses the same GUI/server paths as
+    // ordinary launches. The dedicated launch flag is used by the constrained
+    // local GGScanner agent tasks; all other arguments retain CLI behavior.
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.is_empty() {
         good_tools_app::gui::run_gui();
+        return;
+    }
+    if args.len() == 1 && args[0] == "--agent-mode" {
+        good_tools_app::gui::run_gui_agent_mode();
         return;
     }
 
     // CLI mode: attach console and run
+    if args.first().map(String::as_str) == Some("star-rail") {
+        #[cfg(windows)]
+        attach_console();
+        std::process::exit(good_tools_app::star_rail_cli::run());
+    }
     init_cli();
     let command = GoodScannerApplication::build_command();
     let matches = match command.try_get_matches() {
@@ -122,7 +134,11 @@ pub fn main() {
                 good_tools_app::gui::state::Lang::Zh
             };
             let full_error = error.copy_text(lang);
-            log::error!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", full_error);
+            log::error!(
+                target: yas::lang::LOCALIZED_LOG_TARGET,
+                "{}",
+                error.hint_text(lang)
+            );
             if error.is_native_exception() {
                 match good_tools_app::gui::state::persist_error_report(
                     "cli_native_error.txt",

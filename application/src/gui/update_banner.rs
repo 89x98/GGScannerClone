@@ -8,9 +8,15 @@ use super::widgets;
 
 /// Show the update notification banner when an update is available.
 ///
-/// Call this from the `eframe::App::update` method, before the central panel.
+/// Call this from the `eframe::App::ui` method, before the central panel.
 /// `update_state` is the shared state that tracks the update lifecycle.
-pub fn show(ctx: &egui::Context, l: Lang, update_state: &Arc<Mutex<UpdateState>>) {
+pub fn show(
+    root_ui: &mut egui::Ui,
+    l: Lang,
+    update_state: &Arc<Mutex<UpdateState>>,
+    game_busy: bool,
+) {
+    let ctx = root_ui.ctx().clone();
     let state_snapshot = update_state.lock().unwrap().clone();
 
     let show = !matches!(state_snapshot, UpdateState::None | UpdateState::Checking);
@@ -18,21 +24,38 @@ pub fn show(ctx: &egui::Context, l: Lang, update_state: &Arc<Mutex<UpdateState>>
         return;
     }
 
-    egui::TopBottomPanel::top("update_banner").show(ctx, |ui| match state_snapshot {
+    egui::Panel::top("update_banner").show(root_ui, |ui| match state_snapshot {
         UpdateState::Available {
             ref latest_version,
             ref download_url,
         } => {
+            let current = genshin_scanner::updater::current_version_display();
+            let message = egui::RichText::new(l.t(
+                &format!("发现新版本: {} → {}", current, latest_version),
+                &format!("Update available: {} → {}", current, latest_version),
+            ))
+            .strong()
+            .family(egui::FontFamily::Name("bold".into()))
+            .color(egui::Color32::from_rgb(255, 200, 50));
+            let download = l.t("下载更新", "Download Update");
+            let skip = l.t("跳过", "Skip");
+            let text_width = |text: egui::WidgetText, style| {
+                text.into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style)
+                    .size()
+                    .x
+            };
+            let row_width = text_width(message.clone().into(), egui::TextStyle::Body)
+                + text_width(download.into(), egui::TextStyle::Button)
+                + text_width(skip.into(), egui::TextStyle::Button)
+                + 4.0 * ui.spacing().button_padding.x
+                + 2.0 * ui.spacing().item_spacing.x;
+            let leading_space = ((ui.available_width() - row_width) / 2.0).max(0.0);
             ui.horizontal(|ui| {
-                let current = genshin_scanner::updater::current_version_display();
-                ui.label(
-                    egui::RichText::new(l.t(
-                        &format!("发现新版本: {} → {}", current, latest_version),
-                        &format!("Update available: {} → {}", current, latest_version),
-                    ))
-                    .color(egui::Color32::from_rgb(255, 200, 50)),
-                );
-                if ui.button(l.t("下载更新", "Download Update")).clicked() {
+                ui.add_space(leading_space);
+                ui.label(message);
+                if ui.add_enabled(!game_busy, egui::Button::new(download))
+                    .on_disabled_hover_text(l.t("请先停止当前任务。", "Stop the current task first."))
+                    .clicked() {
                     let arc = update_state.clone();
                     let url = download_url.clone();
                     let lang = l;
@@ -50,39 +73,42 @@ pub fn show(ctx: &egui::Context, l: Lang, update_state: &Arc<Mutex<UpdateState>>
                                 show_restart_dialog(exe_path, worker_state, lang);
                             },
                             Ok(Err(error)) => {
-                                *worker_state.lock().unwrap() = UpdateState::Failed(
-                                    UiError::from_anyhow(
-                                        UiText::new(
-                                            "更新无法下载或安装。请检查网络连接、磁盘空间和安全软件设置，然后重启程序以重试。",
-                                            "The update could not be downloaded or installed. Check the network connection, disk space, and security software, then restart the application to retry.",
-                                        ),
-                                        &error,
+                                let failure = UiError::from_anyhow(
+                                    UiText::new(
+                                        "更新无法下载或安装。可前往 GitHub 发布页手动下载，或检查网络连接、磁盘空间和安全软件设置后重试。",
+                                        "The update could not be downloaded or installed. Download it manually from the GitHub release page, or check the network connection, disk space, and security software before retrying.",
                                     ),
+                                    &error,
                                 );
+                                failure.log_diagnostics();
+                                *worker_state.lock().unwrap() = UpdateState::Failed(failure);
                             },
                             Err(panic_info) => {
-                                *worker_state.lock().unwrap() =
-                                    UpdateState::Failed(UiError::from_panic(
-                                        UiText::new(
-                                            "更新任务因意外的内部错误而停止。请复制完整错误并报告此问题。",
-                                            "The update task stopped because of an unexpected internal error. Copy the full error and report this problem.",
-                                        ),
-                                        panic_info.as_ref(),
-                                    ));
+                                let failure = UiError::from_panic(
+                                    UiText::new(
+                                        "更新任务因意外的内部错误而停止。请复制完整错误并报告此问题。",
+                                        "The update task stopped because of an unexpected internal error. Copy the full error and report this problem.",
+                                    ),
+                                    panic_info.as_ref(),
+                                );
+                                failure.log_diagnostics();
+                                *worker_state.lock().unwrap() = UpdateState::Failed(failure);
                             },
                         }
                     });
                     if let Err(error) = spawn_result {
-                        *arc.lock().unwrap() = UpdateState::Failed(UiError::from_error(
+                        let failure = UiError::from_error(
                             UiText::new(
                                 "更新后台任务无法启动。请检查系统资源，然后重试。",
                                 "The update background task could not start. Check available system resources, then retry.",
                             ),
                             error,
-                        ));
+                        );
+                        failure.log_diagnostics();
+                        *arc.lock().unwrap() = UpdateState::Failed(failure);
                     }
                 }
-                if ui.button(l.t("跳过", "Skip")).clicked() {
+                if ui.button(skip).clicked() {
                     *update_state.lock().unwrap() = UpdateState::None;
                 }
             });
@@ -94,7 +120,7 @@ pub fn show(ctx: &egui::Context, l: Lang, update_state: &Arc<Mutex<UpdateState>>
             });
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         },
-        UpdateState::ShowingDialog => {
+        UpdateState::ShowingDialog | UpdateState::RestartRequested(_) => {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label(
@@ -116,6 +142,10 @@ pub fn show(ctx: &egui::Context, l: Lang, update_state: &Arc<Mutex<UpdateState>>
         },
         UpdateState::Failed(ref error) => {
             ui.horizontal(|ui| {
+                ui.hyperlink_to(
+                    l.t("前往 GitHub 手动下载", "Download manually on GitHub"),
+                    genshin_scanner::updater::RELEASES_URL,
+                );
                 if ui.button(l.t("关闭", "Dismiss")).clicked() {
                     *update_state.lock().unwrap() = UpdateState::None;
                 }
@@ -156,31 +186,41 @@ pub fn spawn_check(asset_name: &'static str, update_state: &Arc<Mutex<UpdateStat
                     download_url,
                 };
             },
+            Ok(Ok(genshin_scanner::updater::UpdateStatus::ManualDownload { latest_version })) => {
+                let failure = UiError::from_message(
+                    UiText::new(
+                        format!("发现新版本 {latest_version}，但未找到此版本的程序文件。请前往 GitHub 发布页手动下载。当前版本仍可继续使用。"),
+                        format!("Release {latest_version} is available, but its executable for this edition was not found. Download manually from the GitHub release page. You can keep using the current version."),
+                    ),
+                    format!("No executable for {asset_name} in release {latest_version}"),
+                );
+                failure.log_diagnostics();
+                *state.lock().unwrap() = UpdateState::Failed(failure);
+            },
             Ok(Ok(_)) => {
                 *state.lock().unwrap() = UpdateState::None;
             },
             Ok(Err(error)) => {
-                yas::log_debug!(
-                    "无法检查更新。完整错误详情: {:#}",
-                    "Could not check for updates. Full error details: {:#}",
-                    error
-                );
-                *state.lock().unwrap() = UpdateState::Failed(UiError::from_anyhow(
+                let failure = UiError::from_anyhow(
                     UiText::new(
                         "无法检查更新。当前版本仍可继续使用；请检查网络连接，重启程序以重试，或关闭此提示。",
                         "Updates could not be checked. You can keep using this version; check the network connection, restart the application to retry, or dismiss this message.",
                     ),
                     &error,
-                ));
+                );
+                failure.log_diagnostics();
+                *state.lock().unwrap() = UpdateState::Failed(failure);
             },
             Err(panic_info) => {
-                *state.lock().unwrap() = UpdateState::Failed(UiError::from_panic(
+                let failure = UiError::from_panic(
                     UiText::new(
                         "检查更新的后台任务因意外的内部错误而停止。当前版本仍可继续使用。",
                         "The background update check stopped because of an unexpected internal error. You can keep using the current version.",
                     ),
                     panic_info.as_ref(),
-                ));
+                );
+                failure.log_diagnostics();
+                *state.lock().unwrap() = UpdateState::Failed(failure);
             },
         }
     });
@@ -216,21 +256,7 @@ fn show_restart_dialog(exe_path: PathBuf, update_state: Arc<Mutex<UpdateState>>,
     match result {
         rfd::MessageDialogResult::Yes => {
             yas::log_info!("用户选择立即重启", "User chose to restart now");
-            match std::process::Command::new(&exe_path).spawn() {
-                Ok(_) => std::process::exit(0),
-                Err(e) => {
-                    yas::log_error!("启动新版本失败: {}", "Failed to launch new version: {}", e);
-                    *update_state.lock().unwrap() = UpdateState::Failed(
-                        UiError::from_error(
-                            UiText::new(
-                                "更新已安装，但新版本无法自动启动。请手动重新打开程序。",
-                                "The update was installed, but the new version could not start automatically. Reopen the application manually.",
-                            ),
-                            e,
-                        ),
-                    );
-                },
-            }
+            *update_state.lock().unwrap() = UpdateState::RestartRequested(exe_path);
         },
         _ => {
             yas::log_info!("用户选择稍后重启", "User chose to restart later");

@@ -1,18 +1,33 @@
 #!/bin/bash
-# Pre-push hook: run all tests before allowing push.
 # Install: git config core.hooksPath .githooks
+set -e
+cd "$(git rev-parse --show-toplevel)"
 
-echo "Running tests before push..."
-
-# Run tests for the main crate (with capture feature for full coverage)
-cargo test --lib -p genshin_scanner --features capture 2>&1
-RESULT=$?
-
-if [ $RESULT -ne 0 ]; then
-    echo ""
-    echo "PUSH BLOCKED: tests failed. Fix the failures and try again."
-    exit 1
+# Validate the actual outgoing trees, not uncommitted working-tree keys.
+revisions=()
+while read -r local_ref local_sha remote_ref remote_sha; do
+    if [[ "$local_sha" != "0000000000000000000000000000000000000000" ]]; then
+        revisions+=(--revision "$local_sha")
+    fi
+done
+if [[ ${#revisions[@]} -eq 0 ]]; then
+    exit 0
 fi
 
-echo "All tests passed."
-exit 0
+echo "Checking Genshin and Star Rail capture keys before push..."
+uv run --no-project python scripts/check_capture_keys.py "${revisions[@]}"
+uv run --no-project python -m unittest discover -s scripts -p test_check_capture_keys.py
+
+mkdir -p test-results
+test_log="test-results/pre-push-capture-$$.log"
+trap 'rm -f "$test_log"' EXIT
+for package in genshin_scanner hsr_scanner; do
+    echo "Running $package capture tests..."
+    if ! cargo test -p "$package" --features capture > "$test_log" 2>&1; then
+        cat "$test_log"
+        echo "PUSH BLOCKED: capture tests failed."
+        exit 1
+    fi
+    tail -n 8 "$test_log"
+done
+echo "Capture key checks and tests passed."

@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bundle_root = bundle_root.expect("checked above");
     let output_path = output_path.expect("checked above");
     let generated = generate_embedded_gilore_reference(&bundle_root)?;
-    let sha256 = format!("{:x}", Sha256::digest(&generated));
+    let sha256 = hex::encode(Sha256::digest(&generated));
 
     if mode.is_some() {
         let committed = fs::read(&output_path)?;

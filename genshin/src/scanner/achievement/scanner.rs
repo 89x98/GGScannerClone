@@ -28,7 +28,9 @@ use crate::scanner::common::ocr_factory;
 use crate::scanner::common::ocr_pool::{OcrPool, SharedOcrPools};
 use crate::scanner::common::progress::ProgressFn;
 
-const DUMP_DIR: &str = "debug_images/achievement";
+fn dump_dir() -> std::path::PathBuf {
+    crate::scanner::common::dump_paths::category_dir("debug_images", "genshin", "achievement")
+}
 
 pub struct GoodAchievementScanner {
     config: GoodAchievementScannerConfig,
@@ -47,7 +49,7 @@ impl GoodAchievementScanner {
     /// categories. Returns sorted unique completed achievement IDs.
     ///
     /// List motion: capture → split rows → OCR → park the cursor on the
-    /// scrollbar (cards enlarge if hovered) → 8 delayed wheel detents.
+    /// scrollbar (cards enlarge if hovered) → 40 delayed wheel detents.
     /// Stop after several frames with no new rows. Category motion clicks the
     /// next left-list row; after the 8th visible row the game auto-scrolls.
     pub fn scan(
@@ -56,7 +58,6 @@ impl GoodAchievementScanner {
         _pools: &SharedOcrPools,
         progress_fn: Option<&ProgressFn<'_>>,
     ) -> Result<Vec<u32>> {
-        log_info!("[achievement] 开始扫描成就", "[achievement] starting scan");
         let rec_backend = self.config.ocr_backend.clone();
         log_info!(
             "[achievement] OCR后端: {}",
@@ -175,7 +176,10 @@ impl GoodAchievementScanner {
                 .unwrap_or_else(|| format!("{}", category_index + 1));
             if self.config.dump_images {
                 if let Some(crop) = self.capture_selected_category(ctrl) {
-                    save_dump(&format!("c{category_index:02}_{category_label}_sel.png"), &crop);
+                    save_dump(
+                        &format!("c{category_index:02}_{category_label}_sel.png"),
+                        &crop,
+                    );
                 }
             }
 
@@ -448,7 +452,7 @@ impl GoodAchievementScanner {
                 if is_progress_banner(&row) {
                     if !force_done {
                         let ocr = rec.get();
-                        if let Ok(text) = ocr.image_to_text(&row, false) {
+                        if let Ok(text) = logged_achievement_ocr(&ocr, &row) {
                             if category_looks_complete(&text) {
                                 force_done = true;
                                 progress_log(&format!(
@@ -468,20 +472,39 @@ impl GoodAchievementScanner {
             ));
             let catalog = Arc::clone(&self.catalog);
             let category_owned = category_name.map(|s| s.to_string());
-            let recognized: Vec<(usize, RgbImage, super::recognize::RecognizedRow)> = rows
+            let recognized: Vec<
+                anyhow::Result<(usize, RgbImage, super::recognize::RecognizedRow)>,
+            > = rows
                 .into_par_iter()
-                .filter_map(|(i, row)| {
+                .map(|(i, row)| {
                     let ocr = rec.get();
-                    match recognize_row(&ocr, &row, &catalog, category_owned.as_deref()) {
-                        Ok(recognized) => Some((i, row, recognized)),
-                        Err(_) => None,
-                    }
+                    recognize_row(&ocr, &row, &catalog, category_owned.as_deref())
+                        .map(|recognized| (i, row, recognized))
+                        .map_err(|error| {
+                            error.context(format!(
+                                "achievement category {category_label}, frame {frame_idx}, row {i}"
+                            ))
+                        })
                 })
                 .collect();
             let ocr_ms = t_ocr.elapsed().as_millis();
             ocr_ms_total += ocr_ms;
 
-            for (_i, row, recognized) in recognized {
+            for outcome in recognized {
+                let (_i, row, recognized) = match outcome {
+                    Ok(row) => row,
+                    Err(error) => {
+                        yas::log_error!(
+                            "成就识别失败：{:#}",
+                            "Achievement OCR failed: {:#}",
+                            error
+                        );
+                        if !self.config.continue_on_failure {
+                            return Err(error);
+                        }
+                        continue;
+                    },
+                };
                 if !is_plausible_row_title(&recognized.title) {
                     continue;
                 }
@@ -494,8 +517,7 @@ impl GoodAchievementScanner {
                     continue;
                 }
 
-                let done = !progress_is_open(&recognized.status)
-                    && (recognized.done || force_done);
+                let done = !progress_is_open(&recognized.status) && (recognized.done || force_done);
                 let credited = self
                     .catalog
                     .completed_ids_for_shown(&recognized.title, done);
@@ -540,7 +562,7 @@ impl GoodAchievementScanner {
                 idle_frames = 0;
             }
 
-            log_info!(
+            log_debug!(
                 "[achievement] 帧 {}/{} capture={}ms ocr={}ms rows={} new={} unmatched={} idle={} done={}",
                 "[achievement] frame {}/{} capture={}ms ocr={}ms rows={} new={} unmatched={} idle={} done={}",
                 frame_idx,
@@ -699,7 +721,7 @@ impl GoodAchievementScanner {
     }
 
     /// Same tick path as the backpack scanner: `mouse_scroll(1)` is one detent.
-    /// Sleep after every notch so Windows cannot coalesce 8 ticks into a jump.
+    /// Sleep after every notch so Windows cannot coalesce the burst into a jump.
     fn scroll_list(&self, ctrl: &mut GenshinGameController, ticks: i32, groove: (f64, f64)) {
         self.park_cursor_on_scrollbar(ctrl, groove);
         for _ in 0..ticks {
@@ -710,11 +732,7 @@ impl GoodAchievementScanner {
     }
 
     /// One-tick capture/OCR loop so we can measure pixels and titles per detent.
-    fn calibrate_list_scroll(
-        &self,
-        ctrl: &mut GenshinGameController,
-        rec: &OcrPool,
-    ) -> Result<()> {
+    fn calibrate_list_scroll(&self, ctrl: &mut GenshinGameController, rec: &OcrPool) -> Result<()> {
         const NOTCH_FRAMES: u32 = 24;
         const MICRO_FRAMES: u32 = 8;
         log_info!(
@@ -790,7 +808,7 @@ impl GoodAchievementScanner {
                 moved = true;
             }
             progress_log(&format!("cal_micro i={frame_idx} shift={shift:?}"));
-            log_info!(
+            log_debug!(
                 "[achievement] 1/8-notch {} shift={:?}",
                 "[achievement] 1/8-notch {} shift={:?}",
                 frame_idx,
@@ -833,7 +851,7 @@ impl GoodAchievementScanner {
             }
             let ocr = rec.get();
             if let Some(crop) = crop_title(&row) {
-                if let Ok(text) = ocr.image_to_text(&crop, false) {
+                if let Ok(text) = logged_achievement_ocr(&ocr, &crop) {
                     let text = text.trim().to_string();
                     if !text.is_empty() {
                         titles.push(text);
@@ -858,11 +876,8 @@ impl GoodAchievementScanner {
                 save_dump(&format!("c{category_index:02}_before_click.png"), &frame);
             }
             if let Some(rect) = detect_selected_category_rect(&frame) {
-                let (_bx, cy) = pixel_to_base(
-                    rect.x + rect.w / 2,
-                    rect.y + rect.h / 2,
-                    &ctrl.scaler,
-                );
+                let (_bx, cy) =
+                    pixel_to_base(rect.x + rect.w / 2, rect.y + rect.h / 2, &ctrl.scaler);
                 // One row below the selected card. The inset crop is shorter
                 // than the real row, so adding STEP from the center is required.
                 y = (cy + CATEGORY_STEP_Y).clamp(CATEGORY_FIRST_Y, 1030.0);
@@ -902,7 +917,7 @@ impl GoodAchievementScanner {
             return (None, false);
         };
         let ocr = rec.get();
-        let Ok(text) = ocr.image_to_text(&crop, false) else {
+        let Ok(text) = logged_achievement_ocr(&ocr, &crop) else {
             return (None, false);
         };
         let mut complete = category_looks_complete(&text);
@@ -912,7 +927,7 @@ impl GoodAchievementScanner {
             let y = h / 2;
             if h > y {
                 let bottom = crop.view(0, y, crop.width(), h - y).to_image();
-                if let Ok(bottom_text) = ocr.image_to_text(&bottom, false) {
+                if let Ok(bottom_text) = logged_achievement_ocr(&ocr, &bottom) {
                     complete = category_looks_complete(&bottom_text);
                 }
             }
@@ -933,6 +948,20 @@ fn is_plausible_category_name(name: &str) -> bool {
         .filter(|c| !c.is_ascii_digit() && *c != '%' && *c != ' ')
         .count();
     letters >= 2
+}
+
+fn logged_achievement_ocr(
+    ocr: &dyn ImageToText<RgbImage>,
+    image: &RgbImage,
+) -> anyhow::Result<String> {
+    ocr.image_to_text(image, false).map_err(|error| {
+        yas::log_error!(
+            "成就界面 OCR 失败：{:#}",
+            "Achievement screen OCR failed: {:#}",
+            error
+        );
+        error
+    })
 }
 
 fn is_plausible_row_title(title: &str) -> bool {
@@ -967,6 +996,12 @@ fn category_looks_complete(text: &str) -> bool {
 }
 
 fn is_progress_banner(row: &RgbImage) -> bool {
+    crate::scanner::common::annotator::record_input(
+        "achievement_progress_banner",
+        row,
+        "progress banner detection",
+        false,
+    );
     if row.width() < 32 || row.height() < 16 {
         return false;
     }
@@ -1021,6 +1056,18 @@ fn row_key(title: &str, subtitle: &str) -> String {
 }
 
 fn vertical_shift_hint(a: &RgbImage, b: &RgbImage) -> Option<i32> {
+    crate::scanner::common::annotator::record_input(
+        "achievement_vertical_shift_left",
+        a,
+        "vertical shift comparison",
+        false,
+    );
+    crate::scanner::common::annotator::record_input(
+        "achievement_vertical_shift_right",
+        b,
+        "vertical shift comparison",
+        false,
+    );
     if a.dimensions() != b.dimensions() {
         return None;
     }
@@ -1080,21 +1127,20 @@ fn dump_slug(name: &str) -> String {
 }
 
 fn save_dump(name: &str, image: &RgbImage) {
-    let _ = std::fs::create_dir_all(DUMP_DIR);
-    let path = format!("{DUMP_DIR}/{name}");
-    if let Err(error) = image.save(&path) {
+    let dir = dump_dir();
+    let path = dir.join(name);
+    if let Err(error) = crate::scanner::common::dump_paths::save_image(&dir, name, image) {
         log_debug!(
             "[achievement] 无法保存调试图 {}: {:#}",
             "[achievement] could not save dump {}: {:#}",
-            path,
+            path.display(),
             error
         );
     }
 }
 
 fn progress_log(line: &str) {
-    let _ = std::fs::create_dir_all(DUMP_DIR);
-    let path = format!("{DUMP_DIR}/progress.log");
+    let path = dump_dir().join("progress.log");
     let ts_ms = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())

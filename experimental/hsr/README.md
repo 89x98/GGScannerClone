@@ -31,21 +31,13 @@ Genshin Impact and Star Rail.
 - 扫描与抓包都导出 [HSR-Scanner v4](../../docs/HSR_EXPORT.md)，供 Fribbels / Reliquary 客户端使用，
   并可附带成就 ID 与开拓者性别/当前命途。
 
-The older Reliquary/Fribbels v4 JSON importer remains available as an optional
-offline normalization boundary for existing user files. It is not used by the
-normal live-capture flow, and the shared binaries never require or invoke
-Reliquary Archiver.
-
-Scanner, import, Manager, and achievement-capture flows use the complete,
+Scanner, Manager, and achievement-capture flows use the complete,
 SHA-256-verified GIlore 1.2.0 public reference snapshot embedded in both shared
 binaries. No reference-data folder is required. The GUI reference-folder field
 is an advanced explicit override; when nonempty, the selected bundle must pass
 the same strict completeness checks and an invalid override fails closed.
 
-旧版 Reliquary/Fribbels v4 JSON 导入器仍可用于离线转换已有文件，但正式实时抓包流程不会使用它，
-共用程序也不会要求或调用 Reliquary Archiver。
-
-扫描、导入、管理及成就抓包流程均默认使用内置在两个共用程序中的完整 GIlore 1.2.0 公开参考快照，
+扫描、管理及成就抓包流程均默认使用内置在两个共用程序中的完整 GIlore 1.2.0 公开参考快照，
 并会校验其 SHA-256；无需准备参考数据目录。界面中的参考目录是高级自定义覆盖；一旦填写，所选数据包
 必须通过同样严格的完整性校验，无效覆盖会安全拒绝。
 
@@ -110,6 +102,70 @@ operations. Keep the chosen game window in the foreground; focus loss, window
 geometry drift, the GUI Stop action, or right-click emergency abort prevents
 further input. Automated replay tests likewise do not prove live screenshot
 recognition or live game mutation.
+
+Character screenshot scans click the nine visible top-bar portraits, drag by
+nine portrait gaps, and resume at the first click position. The scanner resets
+the bar to its beginning first and deduplicates overlapping entries on the
+clamped final page. No virtual-controller driver is needed. Keep the mouse
+and keyboard idle during scanning. Completion is detected when the last
+visible portrait has been visited and two forward drags leave the bar at its
+end. No entered Character total is required; repeated identities alone do not
+prove completion.
+
+角色截图扫描会依次点击顶部九个头像，再拖动九个头像间距，从第一处点击位置继续。
+扫描前会先将角色栏移回开头，最后一页重叠的角色会自动去重，无需安装虚拟手柄驱动。
+扫描期间请勿操作鼠标或键盘。扫描完最后一个可见头像后，连续两次向前拖动仍停留在末端，
+即可确认角色扫描完整，无需填写角色总数。仅重复识别到同一角色不能证明扫描完整。
+
+The HSR scanner's **Timing Delays** section exposes total waits shared across
+navigation, detail panels, Character paging, screenshot comparisons and manager
+status toggles. These values have no hidden per-path additions. Older saved
+navigation delays migrate to equivalent total waits.
+
+Capture defaults to **Automatic**: BitBlt for SDR and WGC with FP16 capture and
+tone mapping when **HDR mode** is enabled beside the scan targets. Existing saved
+backend choices remain overrides. Select Automatic to restore the recommended
+behavior. Changing HDR mode also restores Automatic capture. Retired PrintWindow
+selections migrate to Automatic.
+
+**Advanced Options** contains the capture override, image dumps and separate scan
+caps for Characters, Light Cones, and Relics/Ornaments. `0` scans the whole
+category; stopping early produces unknown coverage. Inventory caps sample the
+backpack instead of rejecting a larger total. Manager scans always read the
+whole inventory. OCR uses automatic per-field routing, including v6 tiny for
+evaluated fields; model and pool overrides are not shown.
+
+星穹铁道扫描器的**延迟设置**提供界面操作、详情面板、角色栏翻页、截图对比和管理器标记切换
+共用的总等待时间，不再叠加各路径内隐藏的延迟。旧版保存的操作延迟会迁移为等效的总等待时间。
+
+截图方式默认为**自动**：普通模式使用 BitBlt；在扫描目标旁勾选 **HDR** 后，使用 WGC
+以 FP16 截图并进行色调映射。旧版保存的截图方式保留为手动覆盖，选择“自动”可恢复推荐设置。
+切换 HDR 选项也会恢复自动截图。旧版 PrintWindow 设置会迁移为自动截图。
+
+**高级选项**包含截图方式覆盖、OCR 截图保存，以及角色、光锥、遗器与饰品各自的最大扫描数。
+`0` 表示扫描全部；提前达到上限时，覆盖率标记为未知。背包上限用于抽样，不会因为背包总数
+更大就拒绝扫描。管理器始终扫描全部库存。OCR 按字段自动选择模型，已验证的字段使用 v6 tiny；
+暂不提供模型或识别池的手动设置。
+
+Both shipped executables expose the same scan path as the GUI:
+
+```powershell
+.\GOODCapture.exe star-rail check --capture-method wgc --log-file wgc-check.log
+.\GOODCapture.exe star-rail check --capture-method auto --hdr-mode --save-frame hdr.png
+.\GOODCapture.exe star-rail check --capture-method bitblt --drag-character-bar --save-frame drag.png --log-file drag.log
+.\GOODCapture.exe star-rail scan --characters --max-characters 2 --dump-images --log-file characters.log
+.\GOODCapture.exe star-rail scan --light-cones --relics --sample-items 3 --capture-method bitblt --dump-images --log-file inventory.log
+```
+
+`scan` loads saved GUI settings beside the executable. Explicit target flags
+replace the saved targets for that run; overrides never rewrite the settings.
+Sampling keeps inventory coverage incomplete. `check` focuses the game and
+captures its client without navigating menus. `--drag-character-bar` tests the
+same page-drag function used by the scan; open Character Details first. With
+`--save-frame`, it saves both the before and after screenshots.
+Commands exit with a nonzero status on failure and retain full errors in
+`--log-file`; they do not pause for a keypress. Use these shipped binaries for
+live verification instead of claiming success from the example programs.
 
 实机截图扫描和管理器应用属于有人值守的 Windows 操作。请保持选定游戏窗口位于前台；焦点丢失、
 窗口位置/尺寸变化、点击界面“停止”或鼠标右键紧急中止，都会阻止后续输入。自动回放测试同样不能证明

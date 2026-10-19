@@ -43,7 +43,7 @@ struct EmbeddedReferenceProvenance {
 }
 
 /// Load the audited, account-independent GIlore reference snapshot compiled
-/// into GOODScanner and GOODCapture. The bytes, provenance, normalized schema,
+/// into GGScannerOCR and GGScanner. The bytes, provenance, normalized schema,
 /// privacy boundary, live-profile completeness, and achievement set are all
 /// validated before the cache is returned.
 pub fn load_embedded_gilore_reference() -> HsrResult<ReferenceCache> {
@@ -176,7 +176,7 @@ fn validate_embedded_document(document: &EmbeddedReferenceDocument) -> HsrResult
 }
 
 fn require_sha256(label: &str, bytes: &[u8], expected: &str, code: &'static str) -> HsrResult<()> {
-    let actual = format!("{:x}", Sha256::digest(bytes));
+    let actual = hex::encode(Sha256::digest(bytes));
     if actual != expected {
         return Err(embedded_error(
             code,

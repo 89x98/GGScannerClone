@@ -8,29 +8,29 @@ Status date: 2026-09-04. Branch: `codex/hsr-capture`. Integration base: `4cea0d7
 
 Honkai: Star Rail is integrated into the existing Windows products. Users do not download or run a separate HSR executable:
 
-- `GOODScanner.exe` contains Genshin and Star Rail Scanner, Export, and Manager flows.
-- `GOODCapture.exe` contains those same flows plus in-process achievement packet capture for both games.
+- `GGScannerOCR.exe` contains Genshin and Star Rail Scanner, Export, and Manager flows.
+- `GGScanner.exe` contains those same flows plus in-process achievement packet capture for both games.
 - The GUI begins with two equal-width, visibly clickable Genshin and Star Rail choices. Selecting a game changes the available workflow while each game's settings and last selected page remain independent.
 - Existing Genshin CLI behavior, `data/good_config.json`, GOOD v3 output, and the optional GOOD achievement extension remain compatible.
 - Cross-game navigation and Star Rail settings use the separate versioned `data/good_app_config.json` boundary.
 
 《星穹铁道》现已集成到既有 Windows 产品中，用户无需下载或运行单独的 HSR 可执行文件：
 
-- `GOODScanner.exe` 同时提供《原神》和《星穹铁道》的扫描、导出与管理流程。
-- `GOODCapture.exe` 包含上述全部能力，并在程序内为两款游戏提供成就抓包。
+- `GGScannerOCR.exe` 同时提供《原神》和《星穹铁道》的扫描、导出与管理流程。
+- `GGScanner.exe` 包含上述全部能力，并在程序内为两款游戏提供成就抓包。
 - 窗口顶部首先显示两个等宽、静止时也清晰可点击的“原神 / 星穹铁道”选项。切换游戏会切换可用流程，同时分别保留两款游戏的设置与上次页面。
 - 现有《原神》命令行行为、`data/good_config.json`、GOOD v3 输出及可选 GOOD 成就扩展保持兼容。
 - 跨游戏导航与《星穹铁道》设置使用独立且带版本的 `data/good_app_config.json`。
 
-Star Rail retains screenshot/OCR scanning for Characters, Light Cones, Cavern Relics, and Planar Ornaments; deterministic export; offline Reliquary/Fribbels v4 import; and attended Manager preview/apply for reversible Relic lock and discard-mark changes. Manager apply remains digest-bound, journaled, re-read before each action, and stops on drift or uncertain evidence. It does not salvage, delete, consume, enhance, equip, mutate Light Cones, or inject packets.
+Star Rail retains screenshot/OCR scanning for Characters, Light Cones, Cavern Relics, and Planar Ornaments; deterministic export; and attended Manager preview/apply for reversible Relic lock and discard-mark changes. Manager apply remains digest-bound, journaled, re-read before each action, and stops on drift or uncertain evidence. It does not salvage, delete, consume, enhance, equip, mutate Light Cones, or inject packets.
 
-《星穹铁道》保留以下能力：通过截图与 OCR 扫描角色、光锥、隧洞遗器和位面饰品；确定性导出；离线导入 Reliquary/Fribbels v4；以及有人值守的管理预览/应用，用于可逆的遗器锁定和弃置标记操作。管理应用仍绑定预览摘要、记录持久日志、每次动作前重新读取，并在状态漂移或证据不确定时停止。它不会分解、删除、消耗、强化、装备、修改光锥或注入数据包。
+《星穹铁道》保留以下能力：通过截图与 OCR 扫描角色、光锥、隧洞遗器和位面饰品；确定性导出；以及有人值守的管理预览/应用，用于可逆的遗器锁定和弃置标记操作。管理应用仍绑定预览摘要、记录持久日志、每次动作前重新读取，并在状态漂移或证据不确定时停止。它不会分解、删除、消耗、强化、装备、修改光锥或注入数据包。
 
 ## Completed-achievement capture / 已完成成就抓包
 
-`GOODCapture.exe` captures HSR UDP traffic in process and emits a snapshot only after recognizing a structurally complete achievement response. It does not download, stage, or launch Reliquary Archiver or any other helper executable. Packet transport/decryption support is compiled into GOODCapture from the revision-pinned dependency and bundled protocol keys; GOODScanner does not contain the capture feature.
+`GGScanner.exe` captures HSR UDP traffic in process and emits a snapshot only after recognizing a structurally complete achievement response. It does not download, stage, or launch Reliquary Archiver or any other helper executable. Packet transport/decryption support is compiled into GGScanner from the revision-pinned dependency and bundled protocol keys; GGScannerOCR does not contain the capture feature.
 
-`GOODCapture.exe` 在程序内捕获 HSR UDP 流量，并且只会在识别到结构完整的成就响应后生成快照。它不会下载、暂存或启动 Reliquary Archiver 或其他辅助可执行文件。数据包传输/解密能力通过固定修订的依赖和内置协议密钥编译进 GOODCapture；GOODScanner 不包含抓包功能。
+`GGScanner.exe` 在程序内捕获 HSR UDP 流量，并且只会在识别到结构完整的成就响应后生成快照。它不会下载、暂存或启动 Reliquary Archiver 或其他辅助可执行文件。数据包传输/解密能力通过固定修订的依赖和内置协议密钥编译进 GGScanner；GGScannerOCR 不包含抓包功能。
 
 Only completed public definition IDs are retained. Raw protocol statuses `2` and `3` both normalize to `"completed"`. IDs are validated against the loaded GIlore references, sorted ascending, and deduplicated. UIDs, player names, account/session/device identifiers, timestamps, progress, raw statuses, server item IDs, packet bytes, protobuf payloads, and PCAP/ETL files are not exported.
 
@@ -103,7 +103,7 @@ The achievement object is strict: its only source kind is `packetCapture`, its o
 
 ## GIlore reference contract / GIlore 参考数据契约
 
-Both shared binaries embed a compact, checksummed snapshot of the complete public GIlore `1.2.0` reference. It is the default for Scanner, offline import, Manager, and achievement capture/export, so a normal installation requires only the existing executable. The embedded loader verifies its bytes and metadata before constructing the same strict `ReferenceCache` used for external bundles; failure stops the requested flow.
+Both shared binaries embed a compact, checksummed snapshot of the complete public GIlore `1.2.0` reference. It is the default for Scanner, Manager, and achievement capture/export, so a normal installation requires only the existing executable. The embedded loader verifies its bytes and metadata before constructing the same strict `ReferenceCache` used for external bundles; failure stops the requested flow.
 
 The snapshot was derived from clean GIlore commit `7ef3650a63622c204b89234406c99dc221e01d85`, public source revision `8cdb905dc2f8e6fffa9be4eb07af3e34435d6091`, and source-manifest SHA-256 `9899cc8fdde578cdbd744ec9f8b2705cd2f11d43670232e871f489fc3d549b5f`. Its deterministic normalized JSON is 331,391 bytes with SHA-256 `46fdddc9252046580154823d596315fb09d88dab570ffa958787286c99d76782`; it contains public reference metadata only, with no icon binaries, account/session/capture data, or raw packets.
 
@@ -112,7 +112,7 @@ Advanced users may explicitly select an external GIlore reference folder. A nonb
 - `achievement_categories.json`, with `collection: "achievement_categories"`
 - `achievements.json`, with `collection: "achievements"`
 
-两个共用程序都内置一份紧凑且带校验和的完整公开 GIlore `1.2.0` 参考快照。扫描、离线导入、管理以及成就抓包/导出默认都使用这份数据，因此正常安装只需要既有可执行文件。内置加载器会先验证数据字节与元数据，再构造与外部数据包相同的严格 `ReferenceCache`；验证失败会停止当前流程。
+两个共用程序都内置一份紧凑且带校验和的完整公开 GIlore `1.2.0` 参考快照。扫描、管理以及成就抓包/导出默认都使用这份数据，因此正常安装只需要既有可执行文件。内置加载器会先验证数据字节与元数据，再构造与外部数据包相同的严格 `ReferenceCache`；验证失败会停止当前流程。
 
 该快照来自干净的 GIlore 提交 `7ef3650a63622c204b89234406c99dc221e01d85`、公开源修订 `8cdb905dc2f8e6fffa9be4eb07af3e34435d6091`，源清单 SHA-256 为 `9899cc8fdde578cdbd744ec9f8b2705cd2f11d43670232e871f489fc3d549b5f`。确定性规范化 JSON 共 331,391 字节，SHA-256 为 `46fdddc9252046580154823d596315fb09d88dab570ffa958787286c99d76782`；其中仅含公开参考元数据，不含图标二进制、账号/会话/抓包数据或原始数据包。
 
@@ -144,8 +144,8 @@ cargo check --locked -p hsr_scanner --all-features --all-targets
 cargo check --locked -p good_tools_app --features "capture,test-as-invoker" --all-targets
 cargo clippy --locked -p hsr_scanner --all-features --all-targets --no-deps -- -D warnings
 cargo clippy --locked -p good_tools_app --features "capture,test-as-invoker" --all-targets --no-deps -- -D warnings
-cargo build --locked --release -p good_tools_app --bin GOODScanner
-cargo build --locked --release -p good_tools_app --features capture --bin GOODCapture
+cargo build --locked --release -p good_tools_app --bin GGScannerOCR
+cargo build --locked --release -p good_tools_app --features capture --bin GGScanner
 ```
 
 The workspace does not use one blanket `--all-features` invocation because `yas_core` exposes mutually exclusive OCR backends. The supported default and capture feature matrices above are checked separately.
@@ -155,8 +155,8 @@ The workspace does not use one blanket `--all-features` invocation because `yas_
 The concrete build outputs remain:
 
 ```text
-target\release\GOODScanner.exe
-target\release\GOODCapture.exe
+target\release\GGScannerOCR.exe
+target\release\GGScanner.exe
 ```
 
 The branch must remain isolated: do not merge, push, deploy, replace release binaries, or copy these artifacts over the main checkout as part of this work.
@@ -169,6 +169,6 @@ Protocol fixtures, packet replay, generated/sanitized images, and simulated cont
 
 协议夹具、数据包回放、生成/脱敏图像与控制器模拟可以证明确定性解析、规范化、导出、路由及安全行为；它们**不能**证明 HSR 实时抓包、当前客户端 OCR 坐标、焦点/输入行为、HDR 或非 16:9 布局、渠道服差异或实时管理变更。
 
-The smallest remaining achievement-capture validation is attended and read-only: open the current HSR client at its “Click to Start” screen, run this branch's `target\release\GOODCapture.exe` as administrator, choose Star Rail → Capture, start capture, and enter the game once. Verify that the resulting v3 JSON imports into GGStarRail. Until that is performed against a live client, live HSR capture remains explicitly unvalidated. Do not perform a Manager mutation during this calibration.
+The smallest remaining achievement-capture validation is attended and read-only: open the current HSR client at its “Click to Start” screen, run this branch's `target\release\GGScanner.exe` as administrator, choose Star Rail → Capture, start capture, and enter the game once. Verify that the resulting v3 JSON imports into GGStarRail. Until that is performed against a live client, live HSR capture remains explicitly unvalidated. Do not perform a Manager mutation during this calibration.
 
-剩余最小的成就抓包验证需要有人值守，但只读：把当前 HSR 客户端停在“点击进入”界面，以管理员身份运行本分支的 `target\release\GOODCapture.exe`，选择“星穹铁道 → 抓包”，开始抓包后进入游戏一次，再确认生成的 v3 JSON 可导入 GGStarRail。在当前实机客户端完成该步骤前，HSR 实时抓包仍明确视为未验证。校准期间不得执行管理变更。
+剩余最小的成就抓包验证需要有人值守，但只读：把当前 HSR 客户端停在“点击进入”界面，以管理员身份运行本分支的 `target\release\GGScanner.exe`，选择“星穹铁道 → 抓包”，开始抓包后进入游戏一次，再确认生成的 v3 JSON 可导入 GGStarRail。在当前实机客户端完成该步骤前，HSR 实时抓包仍明确视为未验证。校准期间不得执行管理变更。

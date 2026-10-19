@@ -1,4 +1,5 @@
 target/
+test-results/
 captures/
 dumps/
 .vscode/
@@ -6,6 +7,8 @@ dumps/
 /*.json
 **/*.png
 !assets/*.png
+!experimental/hsr/tests/fixtures/abundance_partial_trace_nodes.png
+!experimental/hsr/src/assets/equipped_path_badges.png
 **tmp**
 **/.DS_Store
 *.pyc

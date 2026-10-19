@@ -17,7 +17,7 @@ use crate::scanner::common::game_controller::GenshinGameController;
 use crate::scanner::common::mappings::MappingManager;
 use crate::scanner::common::models::{GoodArtifact, GoodCharacter, GoodWeapon};
 use crate::scanner::common::ocr_pool::SharedOcrPools;
-use crate::scanner::common::progress::ProgressFn;
+use crate::scanner::common::progress::{ProgressFn, ScanPhaseEvent, ScanPhaseFn};
 use crate::scanner::weapon::GoodWeaponScanner;
 
 /// Result of a single scan phase.
@@ -48,9 +48,62 @@ impl<T> ScanPhaseResult<T> {
     }
 }
 
+fn stop_after_failure<T>(stop_on_failure: bool, phase: &ScanPhaseResult<T>) -> bool {
+    stop_on_failure && matches!(phase, ScanPhaseResult::Failed(_))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_on_ocr_failure_preserves_the_failed_phase_before_later_navigation() {
+        let failed = ScanPhaseResult::<()>::Failed(anyhow::anyhow!("OCR error"));
+        assert!(stop_after_failure(true, &failed));
+        assert!(!stop_after_failure(false, &failed));
+        assert!(!stop_after_failure(
+            true,
+            &ScanPhaseResult::<()>::Complete(vec![])
+        ));
+        assert!(!stop_after_failure(
+            true,
+            &ScanPhaseResult::<()>::Incomplete
+        ));
+    }
+
+    #[test]
+    fn lifecycle_never_reports_cancelled_partial_exports_as_complete() {
+        let events = std::sync::Mutex::new(Vec::new());
+        let report = |_: &str, event| events.lock().unwrap().push(event);
+        let token = yas::cancel::CancelToken::new();
+        report_phase(
+            Some(&report),
+            "characters",
+            &ScanPhaseResult::Complete(vec![1, 2]),
+            &token,
+        );
+        token.cancel(yas::cancel::StopReason::UserAbort);
+        report_phase(
+            Some(&report),
+            "weapons",
+            &ScanPhaseResult::Complete(vec![1]),
+            &token,
+        );
+        report_phase(
+            Some(&report),
+            "artifacts",
+            &ScanPhaseResult::<u8>::Incomplete,
+            &token,
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                ScanPhaseEvent::Complete(2),
+                ScanPhaseEvent::Interrupted,
+                ScanPhaseEvent::Interrupted
+            ]
+        );
+    }
 
     #[test]
     fn skipped_due_to_cancel_marks_requested_phases_incomplete() {
@@ -162,9 +215,16 @@ pub fn run_scan_phases(
     config: &ScanCoreConfig,
     progress_fn: Option<&ProgressFn<'_>>,
     status_fn: Option<&dyn Fn(&str)>,
+    phase_fn: Option<&ScanPhaseFn<'_>>,
     cancel_token: yas::cancel::CancelToken,
     options: ScanRunOptions,
 ) -> Result<ScanRunResult> {
+    // Check optional achievement data before any selected scanning phase starts.
+    let achievement_catalog = if config.scan_achievements {
+        Some(Arc::new(AchievementCatalog::new()?))
+    } else {
+        None
+    };
     let scanner_config = config.to_scanner_config();
 
     ctrl.focus_game_window();
@@ -200,34 +260,13 @@ pub fn run_scan_phases(
     let mut characters = ScanPhaseResult::NotAttempted;
     let mut weapons = ScanPhaseResult::NotAttempted;
     let mut artifacts = ScanPhaseResult::NotAttempted;
-    let mut achievements = ScanPhaseResult::NotAttempted;
-
-    // Achievements first: they open the pause menu themselves, then later
-    // phases return to the main UI on their own.
-    if config.scan_achievements {
-        achievements = if scan_cancelled(&cancel_token, ctrl) {
-            ScanPhaseResult::Incomplete
-        } else {
-            report("扫描成就 / Scanning achievements...");
-            log_info!("扫描成就...", "Scanning achievements...");
-            let cfg = GoodScannerApplication::make_achievement_config(&scanner_config, user_config);
-            let scan_result = AchievementCatalog::new().and_then(|catalog| {
-                GoodAchievementScanner::new(cfg, Arc::new(catalog))?.scan(
-                    ctrl,
-                    &pools,
-                    Some(&achievements_progress),
-                )
-            });
-            phase_result(scan_result, &cancel_token, options, "achievement")?
-        };
-    }
 
     if scan_cancelled(&cancel_token, ctrl) {
         return Ok(ScanRunResult {
             characters: skipped_due_to_cancel(config.scan_characters),
             weapons: skipped_due_to_cancel(config.scan_weapons),
             artifacts: skipped_due_to_cancel(config.scan_artifacts),
-            achievements,
+            achievements: skipped_due_to_cancel(config.scan_achievements),
         });
     }
 
@@ -236,13 +275,16 @@ pub fn run_scan_phases(
             ScanPhaseResult::Incomplete
         } else {
             report("扫描角色 / Scanning characters...");
-            log_info!("扫描角色...", "Scanning characters...");
+            if let Some(f) = phase_fn {
+                f("characters", ScanPhaseEvent::Started);
+            }
             let cfg = GoodScannerApplication::make_char_config(&scanner_config, user_config);
             let scan_result = match GoodCharacterScanner::new(cfg, mappings.clone()) {
                 Ok(scanner) => scanner.scan(ctrl, 0, &pools, Some(&chars_progress)),
                 Err(e) => Err(e),
             };
             let phase = phase_result(scan_result, &cancel_token, options, "character")?;
+            report_phase(phase_fn, "characters", &phase, &cancel_token);
             if matches!(phase, ScanPhaseResult::Complete(_)) && !scan_cancelled(&cancel_token, ctrl)
             {
                 ctrl.return_to_main_ui(4);
@@ -251,38 +293,45 @@ pub fn run_scan_phases(
         };
     }
 
-    if scan_cancelled(&cancel_token, ctrl) {
+    if scan_cancelled(&cancel_token, ctrl)
+        || stop_after_failure(config.stop_on_failure, &characters)
+    {
         return Ok(ScanRunResult {
             characters,
             weapons: skipped_due_to_cancel(config.scan_weapons),
             artifacts: skipped_due_to_cancel(config.scan_artifacts),
-            achievements,
+            achievements: skipped_due_to_cancel(config.scan_achievements),
         });
     }
 
     if config.scan_weapons {
         report("扫描武器 / Scanning weapons...");
-        log_info!("扫描武器...", "Scanning weapons...");
+        if let Some(f) = phase_fn {
+            f("weapons", ScanPhaseEvent::Started);
+        }
         let cfg = GoodScannerApplication::make_weapon_config(&scanner_config, user_config);
         let scan_result = match GoodWeaponScanner::new(cfg, mappings.clone()) {
             Ok(scanner) => scanner.scan(ctrl, false, 0, &pools, Some(&weapons_progress)),
             Err(e) => Err(e),
         };
         weapons = phase_result(scan_result, &cancel_token, options, "weapon")?;
+        report_phase(phase_fn, "weapons", &weapons, &cancel_token);
     }
 
-    if scan_cancelled(&cancel_token, ctrl) {
+    if scan_cancelled(&cancel_token, ctrl) || stop_after_failure(config.stop_on_failure, &weapons) {
         return Ok(ScanRunResult {
             characters,
             weapons,
             artifacts: skipped_due_to_cancel(config.scan_artifacts),
-            achievements,
+            achievements: skipped_due_to_cancel(config.scan_achievements),
         });
     }
 
     if config.scan_artifacts {
         report("扫描圣遗物 / Scanning artifacts...");
-        log_info!("扫描圣遗物...", "Scanning artifacts...");
+        if let Some(f) = phase_fn {
+            f("artifacts", ScanPhaseEvent::Started);
+        }
         let cfg = GoodScannerApplication::make_artifact_config(&scanner_config, user_config);
         let skip_open = matches!(weapons, ScanPhaseResult::Complete(_));
         let scan_result = match GoodArtifactScanner::new(cfg, mappings.clone()) {
@@ -290,7 +339,35 @@ pub fn run_scan_phases(
             Err(e) => Err(e),
         };
         artifacts = phase_result(scan_result, &cancel_token, options, "artifact")?;
+        report_phase(phase_fn, "artifacts", &artifacts, &cancel_token);
     }
+
+    if stop_after_failure(config.stop_on_failure, &artifacts) {
+        return Ok(ScanRunResult {
+            characters,
+            weapons,
+            artifacts,
+            achievements: skipped_due_to_cancel(config.scan_achievements),
+        });
+    }
+
+    // Achievements run after all requested roster and inventory scans.
+    let achievements = if !config.scan_achievements {
+        ScanPhaseResult::NotAttempted
+    } else if scan_cancelled(&cancel_token, ctrl) {
+        ScanPhaseResult::Incomplete
+    } else {
+        report("扫描成就 / Scanning achievements...");
+        if let Some(f) = phase_fn {
+            f("achievements", ScanPhaseEvent::Started);
+        }
+        let cfg = GoodScannerApplication::make_achievement_config(&scanner_config, user_config);
+        let scan_result = GoodAchievementScanner::new(cfg, achievement_catalog.unwrap())
+            .and_then(|scanner| scanner.scan(ctrl, &pools, Some(&achievements_progress)));
+        phase_result(scan_result, &cancel_token, options, "achievement")?
+    };
+
+    report_phase(phase_fn, "achievements", &achievements, &cancel_token);
 
     Ok(ScanRunResult {
         characters,
@@ -298,6 +375,23 @@ pub fn run_scan_phases(
         artifacts,
         achievements,
     })
+}
+
+fn report_phase<T>(
+    callback: Option<&ScanPhaseFn<'_>>,
+    key: &str,
+    result: &ScanPhaseResult<T>,
+    cancel: &yas::cancel::CancelToken,
+) {
+    if let Some(f) = callback {
+        match result {
+            ScanPhaseResult::Complete(data) if !cancel.is_cancelled() => {
+                f(key, ScanPhaseEvent::Complete(data.len()))
+            },
+            ScanPhaseResult::NotAttempted => {},
+            _ => f(key, ScanPhaseEvent::Interrupted),
+        }
+    }
 }
 
 fn phase_result<T>(
@@ -317,24 +411,28 @@ fn phase_result<T>(
                 Some(yas::cancel::StopReason::UserAbort)
             ) =>
         {
-            log_info!("阶段被用户中断: {:#}", "Phase aborted by user: {:#}", e);
+            log_info!(
+                "阶段被用户中断: {}",
+                "Phase aborted by user: {}",
+                yas::lang::localize(&format!("{:#}", e))
+            );
             if options.save_on_cancel {
                 Ok(ScanPhaseResult::Complete(Vec::new()))
             } else {
                 Ok(ScanPhaseResult::Incomplete)
             }
         },
-        Err(e) => {
-            log_warn!(
-                "[scan] {}阶段失败: {:#}",
-                "[scan] {} phase failed: {:#}",
-                phase_name,
-                e
-            );
-            match options.failure_policy {
-                ScanFailurePolicy::StopOnError => Err(e),
-                ScanFailurePolicy::ContinueOnError => Ok(ScanPhaseResult::Failed(e)),
-            }
+        Err(e) => match options.failure_policy {
+            ScanFailurePolicy::StopOnError => Err(e),
+            ScanFailurePolicy::ContinueOnError => {
+                log_warn!(
+                    "[scan] {}阶段失败: {}",
+                    "[scan] {} phase failed: {}",
+                    phase_name,
+                    yas::lang::localize(&format!("{:#}", e))
+                );
+                Ok(ScanPhaseResult::Failed(e))
+            },
         },
     }
 }

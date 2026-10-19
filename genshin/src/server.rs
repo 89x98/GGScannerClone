@@ -52,29 +52,12 @@ fn timestamp_string() -> String {
 
 /// Save a request body as a timestamped JSON file in the log/ directory.
 fn save_request(endpoint: &str, body: &str) {
-    let log_dir = std::path::PathBuf::from("log");
-    if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        let zh_hint = format!(
-            "无法保存请求日志，因为无法创建日志文件夹 {}。",
-            log_dir.display()
-        );
-        let en_hint = format!(
-            "The request log could not be saved because its log directory could not be created: {}.",
-            log_dir.display()
-        );
-        log_error_with_diagnostic(&zh_hint, &en_hint, e);
-        return;
-    }
-    let ts = timestamp_string();
-    let filename = format!("{}_{}.json", endpoint, ts);
-    let path = log_dir.join(&filename);
-    if let Err(e) = std::fs::write(&path, body) {
-        let zh_hint = format!("无法保存请求日志文件 {}。", path.display());
-        let en_hint = format!(
-            "The request log file could not be saved: {}.",
-            path.display()
-        );
-        log_error_with_diagnostic(&zh_hint, &en_hint, e);
+    if let Err(error) = yas::utils::request_log::save_request_log(
+        std::path::Path::new("log"),
+        endpoint,
+        body.as_bytes(),
+    ) {
+        log_error_with_diagnostic("无法保存请求日志。", "Could not save request log.", error);
     }
 }
 
@@ -146,6 +129,11 @@ enum JobRequest {
 
 /// Abstraction over game interaction for testability.
 pub trait ManageExecutor {
+    /// Recheck task data even when the game/OCR executor is reused by the server.
+    fn prepare_task(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     fn execute(
         &mut self,
         request: LockManageRequest,
@@ -166,6 +154,16 @@ pub trait ManageExecutor {
         progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
         cancel_token: yas::cancel::CancelToken,
     ) -> anyhow::Result<ScanResult>;
+
+    fn execute_scan_observed(
+        &mut self,
+        request: &ScanRequest,
+        progress_fn: Option<&ProgressFn<'_>>,
+        cancel_token: yas::cancel::CancelToken,
+        _phase_fn: Option<&crate::scanner::common::progress::ScanPhaseFn<'_>>,
+    ) -> anyhow::Result<ScanResult> {
+        self.execute_scan(request, progress_fn, cancel_token)
+    }
 }
 
 /// Real executor: wraps a game controller and artifact manager.
@@ -177,6 +175,14 @@ pub struct GameExecutor {
 }
 
 impl ManageExecutor for GameExecutor {
+    fn prepare_task(&mut self) -> Result<()> {
+        let mappings = crate::scanner::common::mappings::MappingManager::new(
+            &self.user_config.to_overrides(),
+        )?;
+        self.manager.replace_mappings(Arc::new(mappings));
+        Ok(())
+    }
+
     fn execute(
         &mut self,
         request: LockManageRequest,
@@ -203,6 +209,16 @@ impl ManageExecutor for GameExecutor {
         progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
         cancel_token: yas::cancel::CancelToken,
     ) -> anyhow::Result<ScanResult> {
+        self.execute_scan_observed(request, progress_fn, cancel_token, None)
+    }
+
+    fn execute_scan_observed(
+        &mut self,
+        request: &ScanRequest,
+        progress_fn: Option<&ProgressFn<'_>>,
+        cancel_token: yas::cancel::CancelToken,
+        phase_fn: Option<&crate::scanner::common::progress::ScanPhaseFn<'_>>,
+    ) -> anyhow::Result<ScanResult> {
         let mut config = self.scan_defaults.clone();
         config.scan_characters = request.characters;
         config.scan_weapons = request.weapons;
@@ -224,6 +240,7 @@ impl ManageExecutor for GameExecutor {
             &config,
             progress_fn,
             None,
+            phase_fn,
             cancel_token,
             ScanRunOptions {
                 save_on_cancel: false,
@@ -685,9 +702,37 @@ pub fn run_server<F>(
 where
     F: FnMut() -> anyhow::Result<Box<dyn ManageExecutor>>,
 {
+    run_server_observed(
+        port,
+        init_executor,
+        enabled,
+        shutdown,
+        dump_job_data,
+        status_fn,
+        None,
+    )
+}
+
+pub fn run_server_observed<F>(
+    port: u16,
+    init_executor: F,
+    enabled: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
+    dump_job_data: bool,
+    status_fn: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    native_job: Option<Arc<Mutex<JobState>>>,
+) -> Result<()>
+where
+    F: FnMut() -> anyhow::Result<Box<dyn ManageExecutor>>,
+{
     let addr = format!("127.0.0.1:{}", port);
     let server = Server::http(&addr).map_err(|e| contextualize_server_bind_error(port, e))?;
     let server = Arc::new(server);
+    if let Some(f) = &status_fn {
+        f(&format!(
+            "等待网页请求 · 端口 {port} / Waiting for a web request · port {port}"
+        ));
+    }
 
     log_info!(
         "HTTP服务器已启动：http://{}",
@@ -696,7 +741,8 @@ where
     );
 
     // Shared state for async job tracking
-    let job_state: Arc<Mutex<JobState>> = Arc::new(Mutex::new(JobState::idle()));
+    let job_state = native_job.unwrap_or_else(|| Arc::new(Mutex::new(JobState::idle())));
+    *job_state.lock().unwrap() = JobState::idle();
 
     // Per-type data caches (populated by scan/manage jobs).
     let character_cache: Arc<Mutex<ScanDataCache<GoodCharacter>>> =
@@ -787,15 +833,36 @@ where
 
             match (method, url.as_str()) {
                 (Method::Post, "/manage") => {
-                    handle_manage(request, &http_enabled, &http_state, &http_job_tx, cors_ref);
+                    handle_manage(
+                        request,
+                        &http_enabled,
+                        &http_state,
+                        &http_job_tx,
+                        cors_ref,
+                        dump_job_data,
+                    );
                 },
 
                 (Method::Post, "/equip") => {
-                    handle_equip(request, &http_enabled, &http_state, &http_job_tx, cors_ref);
+                    handle_equip(
+                        request,
+                        &http_enabled,
+                        &http_state,
+                        &http_job_tx,
+                        cors_ref,
+                        dump_job_data,
+                    );
                 },
 
                 (Method::Post, "/scan") => {
-                    handle_scan(request, &http_enabled, &http_state, &http_job_tx, cors_ref);
+                    handle_scan(
+                        request,
+                        &http_enabled,
+                        &http_state,
+                        &http_job_tx,
+                        cors_ref,
+                        dump_job_data,
+                    );
                 },
 
                 // Lightweight poll — no result payload.
@@ -991,57 +1058,58 @@ where
         // do NOT poison the server — the next job gets a fresh attempt, since
         // init_executor is FnMut and the user may have just needed to open
         // the game window.
-        if executor.is_none() {
-            match init_executor() {
-                Ok(e) => {
-                    executor = Some(e);
-                },
-                Err(e) => {
-                    log_error!(
-                        "[job {}] 游戏初始化失败:\n{:#}",
-                        "[job {}] Game init failed:\n{:#}",
-                        job_id,
-                        e
-                    );
-                    let mut state = job_state.lock().unwrap();
-                    let total_count = match &request {
-                        JobRequest::Manage(r) => r.lock.len() + r.unlock.len(),
-                        JobRequest::Equip(r) => r.equip.len(),
-                        JobRequest::Scan(r) => {
-                            r.characters as usize
-                                + r.weapons as usize
-                                + r.artifacts as usize
-                                + r.achievements as usize
-                        },
-                    };
-                    let err_results: Vec<_> = (0..total_count)
+        let initialization = (|| -> Result<()> {
+            if executor.is_none() {
+                executor = Some(init_executor()?);
+            }
+            executor.as_mut().unwrap().prepare_task()
+        })();
+        match initialization {
+            Ok(()) => {},
+            Err(e) => {
+                log_error!(
+                    "[job {}] 游戏初始化失败: {}",
+                    "[job {}] Game init failed: {}",
+                    job_id,
+                    yas::lang::localize(&format!("{:#}", e))
+                );
+                let mut state = job_state.lock().unwrap();
+                let total_count = match &request {
+                    JobRequest::Manage(r) => r.lock.len() + r.unlock.len(),
+                    JobRequest::Equip(r) => r.equip.len(),
+                    JobRequest::Scan(r) => {
+                        r.characters as usize
+                            + r.weapons as usize
+                            + r.artifacts as usize
+                            + r.achievements as usize
+                    },
+                };
+                let err_results: Vec<_> = (0..total_count)
                         .map(|idx| {
                             InstructionResult::failure(
                                 format!("item_{}", idx),
                                 InstructionStatus::UiError,
-                                "扫描器无法连接到游戏，因此此操作没有执行。请确认游戏已启动并停留在主界面，然后重试。",
-                                "The scanner could not connect to the game, so this operation was not performed. Make sure the game is running at its main screen, then retry.",
+                                "无法准备游戏或基础数据，因此此操作没有执行。请检查游戏和网络后重试。",
+                                "The game or base data could not be prepared, so this operation was not performed. Check the game and network, then retry.",
                                 Some(&e),
                             )
                         })
                         .collect();
-                    let summary = crate::manager::models::ManageSummary::from_results(&err_results);
-                    let result = crate::manager::models::ManageResult {
-                        results: err_results,
-                        summary,
-                    };
-                    *state = JobState::completed(job_id.clone(), result);
-                    if let Some(ref f) = status_fn {
-                        f(&format!(
-                            "服务器运行中，端口 {} / Server running on port {}",
-                            port, port
-                        ));
-                    }
-                    continue;
-                },
-            }
+                let summary = crate::manager::models::ManageSummary::from_results(&err_results);
+                let result = crate::manager::models::ManageResult {
+                    results: err_results,
+                    summary,
+                };
+                *state = state.finished(job_id.clone(), result);
+                if let Some(ref f) = status_fn {
+                    f(&format!(
+                        "服务器运行中，端口 {} / Server running on port {}",
+                        port, port
+                    ));
+                }
+                continue;
+            },
         }
-
         let exec = executor.as_mut().unwrap();
 
         // Immediately invalidate cached data before execution starts.
@@ -1131,6 +1199,31 @@ where
             }
         };
 
+        let phases_state = job_state.clone();
+        let scan_phase_fn = move |key: &str, event| {
+            use crate::scanner::common::progress::ScanPhaseEvent;
+            if let Ok(mut state) = phases_state.lock() {
+                if let Some(scan) = &mut state.scan_progress {
+                    let slot = match key {
+                        "characters" => &mut scan.characters,
+                        "weapons" => &mut scan.weapons,
+                        "artifacts" => &mut scan.artifacts,
+                        "achievements" => &mut scan.achievements,
+                        _ => return,
+                    };
+                    if let Some(phase) = slot {
+                        phase.state = match event {
+                            ScanPhaseEvent::Started => PhaseState::Running,
+                            ScanPhaseEvent::Complete(count) => {
+                                phase.completed = count;
+                                PhaseState::Complete
+                            },
+                            ScanPhaseEvent::Interrupted => PhaseState::Aborted,
+                        };
+                    }
+                }
+            }
+        };
         let cancel_token = yas::cancel::CancelToken::new();
 
         // Dispatch: manage/equip use ManageResult; scan builds its own ManageResult summary.
@@ -1164,10 +1257,11 @@ where
                         invalidates_cache: true,
                     }
                 },
-                JobRequest::Scan(scan_req) => JobOutcome::Scan(exec.execute_scan(
+                JobRequest::Scan(scan_req) => JobOutcome::Scan(exec.execute_scan_observed(
                     &scan_req,
                     Some(&scan_progress_fn),
                     cancel_token,
+                    Some(&scan_phase_fn),
                 )),
             },
         )) {
@@ -1196,7 +1290,8 @@ where
                     )];
                 let summary = ManageSummary::from_results(&results);
                 let result = ManageResult { results, summary };
-                *job_state.lock().unwrap() = JobState::completed(job_id.clone(), result);
+                let mut state = job_state.lock().unwrap();
+                *state = state.finished(job_id.clone(), result);
                 continue;
             },
         };
@@ -1244,7 +1339,7 @@ where
                     },
                 }
                 let mut state = job_state.lock().unwrap();
-                *state = JobState::completed(job_id.clone(), result);
+                *state = state.finished(job_id.clone(), result);
             },
             JobOutcome::Scan(scan_result) => {
                 match scan_result {
@@ -1322,14 +1417,14 @@ where
                         let summary = ManageSummary::from_results(&results);
                         let result = ManageResult { results, summary };
                         let mut state = job_state.lock().unwrap();
-                        *state = JobState::completed(job_id.clone(), result);
+                        *state = state.finished(job_id.clone(), result);
                     },
                     Err(e) => {
                         log_error!(
-                            "[job {}] 扫描失败: {:#}",
-                            "[job {}] Scan failed: {:#}",
+                            "[job {}] 扫描失败: {}",
+                            "[job {}] Scan failed: {}",
                             job_id,
-                            e
+                            yas::lang::localize(&format!("{:#}", e))
                         );
                         let results = vec![InstructionResult::failure(
                             "scan",
@@ -1341,7 +1436,7 @@ where
                         let summary = ManageSummary::from_results(&results);
                         let result = ManageResult { results, summary };
                         let mut state = job_state.lock().unwrap();
-                        *state = JobState::completed(job_id.clone(), result);
+                        *state = state.finished(job_id.clone(), result);
                     },
                 }
             },
@@ -1553,6 +1648,7 @@ fn handle_manage(
     state: &Arc<Mutex<JobState>>,
     job_tx: &mpsc::Sender<(String, JobRequest)>,
     cors_origin: Option<&str>,
+    dump_job_data: bool,
 ) {
     // Check if manager is enabled
     if !enabled.load(Ordering::Relaxed) {
@@ -1616,7 +1712,9 @@ fn handle_manage(
     }
 
     // Log request body to file
-    save_request("manage", &body);
+    if dump_job_data {
+        save_request("manage", &body);
+    }
 
     // Enforce size limit for chunked transfers (no Content-Length)
     if body.len() > MAX_BODY_SIZE {
@@ -1698,6 +1796,10 @@ fn handle_manage(
     {
         let mut s = state.lock().unwrap();
         *s = JobState::running(job_id.clone(), total);
+        s.ui.kind = Some(crate::manager::models::JobKind::Manage {
+            lock: manage_request.lock.len(),
+            unlock: manage_request.unlock.len(),
+        });
     }
 
     // Send to execution thread
@@ -1727,6 +1829,7 @@ fn handle_equip(
     state: &Arc<Mutex<JobState>>,
     job_tx: &mpsc::Sender<(String, JobRequest)>,
     cors_origin: Option<&str>,
+    dump_job_data: bool,
 ) {
     if !enabled.load(Ordering::Relaxed) {
         log_warn!(
@@ -1786,7 +1889,9 @@ fn handle_equip(
     }
 
     // Log request body to file
-    save_request("equip", &body);
+    if dump_job_data {
+        save_request("equip", &body);
+    }
 
     if body.len() > MAX_BODY_SIZE {
         let message = if yas::lang::is_en() {
@@ -1858,6 +1963,7 @@ fn handle_equip(
     {
         let mut s = state.lock().unwrap();
         *s = JobState::running(job_id.clone(), total);
+        s.ui.kind = Some(crate::manager::models::JobKind::Equip);
     }
 
     if let Err(e) = job_tx.send((job_id.clone(), JobRequest::Equip(equip_request))) {
@@ -1885,6 +1991,7 @@ fn handle_scan(
     state: &Arc<Mutex<JobState>>,
     job_tx: &mpsc::Sender<(String, JobRequest)>,
     cors_origin: Option<&str>,
+    dump_job_data: bool,
 ) {
     if !enabled.load(Ordering::Relaxed) {
         log_warn!(
@@ -1928,7 +2035,9 @@ fn handle_scan(
         return;
     }
 
-    save_request("scan", &body);
+    if dump_job_data {
+        save_request("scan", &body);
+    }
 
     let scan_request: ScanRequest = match serde_json::from_str(&body) {
         Ok(r) => r,
@@ -2264,7 +2373,14 @@ mod tests {
         delay_ms: u64,
     }
 
+    static DATA_PREPARATIONS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
     impl ManageExecutor for FakeExecutor {
+        fn prepare_task(&mut self) -> Result<()> {
+            DATA_PREPARATIONS.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
         fn execute(
             &mut self,
             _request: LockManageRequest,
@@ -3214,6 +3330,33 @@ mod tests {
         stop_server(&shutdown, handle);
     }
 
+    #[test]
+    fn reused_executor_checks_data_before_every_job() {
+        let _guard = SERVER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let initial = DATA_PREPARATIONS.load(Ordering::SeqCst);
+        let responses = VecDeque::from([
+            (make_result(&[("a", InstructionStatus::Success)]), None),
+            (make_result(&[("b", InstructionStatus::Success)]), None),
+        ]);
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+        for (index, id) in ["a", "b"].iter().enumerate() {
+            let response = client
+                .post(format!("http://127.0.0.1:{port}/manage"))
+                .header("Content-Type", "application/json")
+                .body(make_manage_body(&[id]))
+                .send()
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 202);
+            poll_until_completed(port);
+            assert_eq!(
+                DATA_PREPARATIONS.load(Ordering::SeqCst),
+                initial + index + 1
+            );
+        }
+        stop_server(&shutdown, handle);
+    }
+
     /// Game init failure produces ui_error results for all items.
     #[test]
     fn test_game_init_failure_produces_ui_error_results() {
@@ -3267,7 +3410,7 @@ mod tests {
         for result in results {
             let message = result["message"].as_str().unwrap();
             assert!(message.starts_with(
-                "The scanner could not connect to the game, so this operation was not performed."
+                "The game or base data could not be prepared, so this operation was not performed."
             ));
             assert!(message.contains("\n\nFull error details:\n"));
             assert!(message.contains("initializing scanner controller: Game window not found"));

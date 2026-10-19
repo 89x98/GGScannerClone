@@ -13,7 +13,7 @@ use crate::scanner::common::models::{
     GoodArtifact, GoodCharacter, GoodExport, GoodSubStat, GoodTalent, GoodWeapon,
 };
 
-use super::data_types::{to_good_key, DataCache, Property, SkillType};
+use crate::game_data::types::{to_good_key, DataCache, Property, SkillType};
 
 // --- Game-internal property IDs (content IDs, stable within a version) ---
 // These come from the game's `AvatarInfo.prop_map` and may shift across major versions.
@@ -26,8 +26,7 @@ const AVATAR_TYPE_FORMAL: u32 = 1;
 ///
 /// Rarity rules are hardcoded (not user-configurable):
 /// - Weapons: 3★ and above
-/// - Artifacts: 4★ and above, only at their set's max rarity
-///   (e.g. 4★ drops of a 5★ set are excluded)
+/// - Artifacts: 4★ and above, including 4★ drops of 5★ sets
 #[derive(Clone, Debug)]
 pub struct CaptureExportSettings {
     pub include_characters: bool,
@@ -68,27 +67,6 @@ impl Default for CaptureExportSettings {
 const MIN_WEAPON_RARITY: u32 = 3;
 /// Minimum artifact rarity to export (4★+).
 const MIN_ARTIFACT_RARITY: u32 = 4;
-
-/// Artifact sets whose max rarity is 4★ (sourced from mappings.json).
-/// The data_cache incorrectly lists some of these at rarity 5, so we hardcode
-/// the true max rarity to avoid filtering out valid 4★ artifacts.
-const MAX_4STAR_ARTIFACT_SETS: &[&str] = &[
-    "Berserker",
-    "BraveHeart",
-    "DefendersWill",
-    "Gambler",
-    "Instructor",
-    "MartialArtist",
-    "PrayersForDestiny",
-    "PrayersForIllumination",
-    "PrayersForWisdom",
-    "PrayersToSpringtime",
-    "PrayersToTheFirmament",
-    "ResolutionOfSojourner",
-    "Scholar",
-    "TheExile",
-    "TinyMiracle",
-];
 
 /// Accumulates packet data and exports to GOOD format.
 pub struct PlayerData {
@@ -242,15 +220,23 @@ impl PlayerData {
                     return None;
                 }
 
-                let name = self.data_cache.get_character(character.avatar_id)?;
-                let level = character
-                    .prop_map
-                    .get(&PROP_LEVEL)
-                    .map(|prop| prop.val as u32)?;
-                let ascension = character
-                    .prop_map
-                    .get(&PROP_ASCENSION)
-                    .map(|prop| prop.val as u32)?;
+                let name = capture_lookup(
+                    self.data_cache.get_character(character.avatar_id),
+                    "character",
+                    character.avatar_id,
+                )?;
+                let level = capture_lookup(
+                    character.prop_map.get(&PROP_LEVEL),
+                    "character level",
+                    PROP_LEVEL,
+                )?
+                .val as u32;
+                let ascension = capture_lookup(
+                    character.prop_map.get(&PROP_ASCENSION),
+                    "character ascension",
+                    PROP_ASCENSION,
+                )?
+                .val as u32;
                 let constellation = character.talent_id_list.len() as u32;
 
                 let mut auto = 1u32;
@@ -311,13 +297,21 @@ impl PlayerData {
                 if !equip.has_reliquary() {
                     return None;
                 }
-                let artifact_data = self.data_cache.get_artifact(item.item_id)?;
+                let artifact_data = capture_lookup(
+                    self.data_cache.get_artifact(item.item_id),
+                    "artifact",
+                    item.item_id,
+                )?;
                 let artifact = equip.reliquary();
 
                 // Accumulate substats: group by property, sum values, track initial + per-roll
                 let mut substats: IndexMap<Property, (f64, f64, Vec<f64>)> = IndexMap::new();
                 for substat_id in artifact.append_prop_id_list.iter() {
-                    let substat = self.data_cache.get_affix(*substat_id)?;
+                    let substat = capture_lookup(
+                        self.data_cache.get_affix(*substat_id),
+                        "artifact substat",
+                        *substat_id,
+                    )?;
                     let entry = substats.entry(substat.property).or_insert((
                         0.0,
                         substat.value,
@@ -340,7 +334,11 @@ impl PlayerData {
                     .unactivated_prop_id_list
                     .iter()
                     .filter_map(|substat_id| {
-                        let substat = self.data_cache.get_affix(*substat_id)?;
+                        let substat = capture_lookup(
+                            self.data_cache.get_affix(*substat_id),
+                            "artifact substat",
+                            *substat_id,
+                        )?;
                         let rounded = round_stat(substat.property, substat.value);
                         Some(GoodSubStat {
                             key: substat.property.good_name().to_string(),
@@ -352,34 +350,25 @@ impl PlayerData {
                     .collect();
 
                 let total_rolls = artifact.append_prop_id_list.len() as i32;
-                let level = (artifact.level - 1) as i32;
+                let level = capture_lookup(
+                    artifact.level.checked_sub(1),
+                    "artifact level",
+                    artifact.level,
+                )? as i32;
                 let rarity = artifact_data.rarity as i32;
                 let astral_mark = artifact.starred;
                 let elixir_crafted = !artifact.elixer_choices.is_empty();
-                let main_stat_key = self
-                    .data_cache
-                    .get_property(artifact.main_prop_id)?
-                    .good_name()
-                    .to_string();
+                let main_stat_key = capture_lookup(
+                    self.data_cache.get_property(artifact.main_prop_id),
+                    "artifact main stat",
+                    artifact.main_prop_id,
+                )?
+                .good_name()
+                .to_string();
 
                 if (level as u32) < settings.min_artifact_level
                     || (rarity as u32) < MIN_ARTIFACT_RARITY
                 {
-                    return None;
-                }
-
-                // Skip artifacts below their set's max rarity (e.g. 4★ of a 5★ set).
-                // Use the hardcoded MAX_4STAR_ARTIFACT_SETS list as ground truth for
-                // 4★-max sets, since data_cache incorrectly reports some as rarity 5.
-                let good_key = to_good_key(&artifact_data.set);
-                let true_max_rarity = if MAX_4STAR_ARTIFACT_SETS.contains(&good_key.as_str()) {
-                    4u32
-                } else {
-                    self.data_cache
-                        .artifact_set_max_rarity(&artifact_data.set)
-                        .unwrap_or(5)
-                };
-                if (rarity as u32) < true_max_rarity {
                     return None;
                 }
 
@@ -414,7 +403,11 @@ impl PlayerData {
                 if !equip.has_weapon() {
                     return None;
                 }
-                let weapon_data = self.data_cache.get_weapon(item.item_id)?;
+                let weapon_data = capture_lookup(
+                    self.data_cache.get_weapon(item.item_id),
+                    "weapon",
+                    item.item_id,
+                )?;
                 let weapon = equip.weapon();
                 let refinement = weapon
                     .affix_map
@@ -447,6 +440,18 @@ impl PlayerData {
             })
             .collect()
     }
+}
+
+/// Missing reference/protocol fields must not silently discard captured records.
+fn capture_lookup<T>(value: Option<T>, field: &'static str, id: u32) -> Option<T> {
+    if value.is_none() {
+        yas::log_warn!(
+            "部分抓包数据无法转换：缺少字段或映射 {}，ID={}。请更新抓包器和游戏数据，并查看导出数量。",
+            "Some captured data could not be converted: missing field or mapping {}, ID={}. Update the scanner and game data, and check exported counts.",
+            field, id,
+        );
+    }
+    value
 }
 
 /// Round a stat value the same way the game does (f64 half-up rounding).
@@ -535,6 +540,75 @@ mod tests {
         assert_eq!(export.weapons.unwrap().len(), 0);
         assert_eq!(export.artifacts.unwrap().len(), 0);
         assert_eq!(export.achievements.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn export_keeps_all_four_and_five_star_artifacts_and_three_to_five_star_weapons() {
+        use crate::game_data::types::{Artifact, ArtifactSlot, Weapon};
+        use auto_artifactarium::r#gen::protos::{Equip, Reliquary, Weapon as ProtoWeapon};
+
+        let mut cache: DataCache =
+            serde_json::from_str(r#"{"version":1,"git_hash":"test"}"#).unwrap();
+        cache.property_map.insert(1, Property::Hp);
+        let mut items = Vec::new();
+        for rarity in 1..=5 {
+            let mut item = Item::new();
+            item.item_id = rarity;
+            item.guid = u64::from(rarity);
+            cache.artifact_map.insert(
+                rarity,
+                Artifact {
+                    set: "Gladiator's Finale".to_string(),
+                    slot: ArtifactSlot::Flower,
+                    rarity,
+                },
+            );
+            let mut reliquary = Reliquary::new();
+            reliquary.level = 1;
+            reliquary.main_prop_id = 1;
+            let mut equip = Equip::new();
+            equip.set_reliquary(reliquary);
+            item.set_equip(equip);
+            items.push(item);
+
+            let mut item = Item::new();
+            item.item_id = rarity + 10;
+            item.guid = u64::from(rarity + 10);
+            cache.weapon_map.insert(
+                rarity + 10,
+                Weapon {
+                    name: format!("Test Weapon {}", rarity),
+                    rarity,
+                },
+            );
+            let mut weapon = ProtoWeapon::new();
+            weapon.level = 1;
+            let mut equip = Equip::new();
+            equip.set_weapon(weapon);
+            item.set_equip(equip);
+            items.push(item);
+        }
+        let mut player = PlayerData::new(cache);
+        player.process_items(&items);
+        let export = player.export(&CaptureExportSettings::default()).unwrap();
+        assert_eq!(
+            export
+                .artifacts
+                .unwrap()
+                .iter()
+                .map(|a| a.rarity)
+                .collect::<Vec<_>>(),
+            vec![4, 5]
+        );
+        assert_eq!(
+            export
+                .weapons
+                .unwrap()
+                .iter()
+                .map(|w| w.rarity)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
     }
 
     #[test]
