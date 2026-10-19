@@ -11,7 +11,7 @@ pub const TITLEBAR_HEIGHT: f32 = 48.0;
 pub const SIDEBAR_MIN_WIDTH: f32 = 128.0;
 
 pub fn product_name() -> &'static str {
-    if cfg!(feature = "capture") {
+    if cfg!(all(feature = "capture", target_os = "windows")) {
         "GGScanner"
     } else {
         "GGScannerOCR"
@@ -246,7 +246,9 @@ pub fn sidebar(
                         (ToolTab::Scanner, "扫描器", "Scanner", Icon::Scan),
                         (ToolTab::Manager, "管理器", "Manager", Icon::Manager),
                     ] {
-                        if value == ToolTab::Capture && !cfg!(feature = "capture") {
+                        if value == ToolTab::Capture
+                            && !cfg!(all(feature = "capture", target_os = "windows"))
+                        {
                             continue;
                         }
                         let selected = tab == value;

@@ -62,17 +62,13 @@ pub fn local_time_hms() -> Option<String> {
     }
 }
 
-/// No local-time implementation on this platform; callers fall back to UTC.
-#[cfg(not(target_os = "linux"))]
-pub fn local_time_hms() -> Option<String> {
-    None
-}
-
 mod misc;
 pub mod packet_capture;
 pub mod request_log;
 
+#[cfg(target_os = "linux")]
 mod fonts;
+#[cfg(target_os = "linux")]
 pub use fonts::{find_cjk_font, SystemFont};
 
 pub fn sleep(ms: u32) {

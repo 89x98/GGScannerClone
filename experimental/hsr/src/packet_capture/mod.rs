@@ -63,6 +63,7 @@ const WORKER_HINT: LocalizedText = LocalizedText::new(
     "HSR 抓包任务意外停止。请重新抓包；若问题再次出现，请复制完整错误。",
     "The HSR capture task stopped unexpectedly. Capture again; if it recurs, copy the full error.",
 );
+#[cfg(not(target_os = "windows"))]
 const PLATFORM_HINT: LocalizedText = LocalizedText::new(
     "抓包功能目前仅支持 Windows（pktmon）。Linux 后端尚未实现。",
     "Packet capture is currently Windows-only (pktmon). A Linux backend is not implemented yet.",

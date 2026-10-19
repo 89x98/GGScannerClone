@@ -1886,7 +1886,7 @@ impl GoodArtifactScanner {
         drop(item_tx);
 
         // Wait for all OCR work to complete and collect results
-        let outcome = worker_handle.join(|index| {
+        let (artifacts, index_map) = worker_handle.join(|index| {
             crate::scanner::common::backpack_scanner::focus_failed_item(
                 ctrl,
                 visible_layout,
@@ -1894,39 +1894,6 @@ impl GoodArtifactScanner {
                 self.config.panel_timeout + self.config.extra_delay,
             );
         })?;
-        let artifacts = outcome.items;
-        let index_map = outcome.index_map;
-
-        // A worker stop means items kept failing until the scan gave up. Its
-        // partial results are not publishable: reporting them as a completed
-        // scan would overwrite the cached inventory with a truncated list, and
-        // an empty one looks exactly like "this account has no artifacts".
-        if outcome.stopped && !ctrl.cancel_token().is_cancelled() {
-            let elapsed = now.elapsed().unwrap_or_default().as_secs_f64();
-            log_error!(
-                "[artifact] 连续失败后中止：仅识别 {} / {} 个，耗时{:.3}s。\
-                 常见原因：点击未生效（游戏窗口未置顶，或输入注入失准），\
-                 导致背包页签或详情面板没有切换。",
-                "[artifact] aborted after repeated item failures: only {} / {} recognized in {:.3}s. \
-                 The usual cause is that clicks never reached the game (window not raised, or inaccurate \
-                 input injection), so the inventory tab or detail panel never changed.",
-                artifacts.len(),
-                total_count,
-                elapsed
-            );
-            bail!(
-                "圣遗物扫描连续失败后中止（识别 {} / {}）。\
-                 常见原因：点击未生效——游戏窗口未置顶，或输入注入绝对定位失准，\
-                 导致背包页签/详情面板未切换。\n\
-                 / Artifact scan aborted after repeated item failures ({} / {} recognized). The usual \
-                 cause is that clicks never reached the game: the window was not raised, or absolute \
-                 input positioning is inaccurate, so the inventory tab or detail panel never changed.",
-                artifacts.len(),
-                total_count,
-                artifacts.len(),
-                total_count
-            );
-        }
 
         // Write index map for debug image correlation (output position → folder name)
         if self.config.dump_images {

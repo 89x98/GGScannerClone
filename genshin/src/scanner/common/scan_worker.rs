@@ -71,12 +71,9 @@ mod tests {
                 assert_eq!(failed_index, Some(1));
             } else {
                 assert_eq!(failed_index, None);
-                let outcome = result.unwrap();
-                // Continue-on-failure keeps the good items and never asks the
-                // scan to stop: the partial list is publishable.
-                assert_eq!(outcome.items, [0, 2]);
-                assert_eq!(outcome.index_map, [0, 2]);
-                assert!(!outcome.stopped);
+                let (items, indices) = result.unwrap();
+                assert_eq!(items, [0, 2]);
+                assert_eq!(indices, [0, 2]);
             }
         }
     }
@@ -110,18 +107,6 @@ mod tests {
     }
 }
 
-/// Results of a finished worker run.
-#[derive(Debug)]
-pub struct WorkerOutcome<R> {
-    pub items: Vec<R>,
-    pub index_map: Vec<usize>,
-    /// The worker asked the scan to stop (e.g. too many consecutive item
-    /// errors). A caller that cannot publish partial data must treat this as a
-    /// failure: a run where every item failed would otherwise look exactly like
-    /// an empty inventory.
-    pub stopped: bool,
-}
-
 /// Handle to a running worker. Call `join()` to wait for results.
 pub struct WorkerHandle<R> {
     handle: std::thread::JoinHandle<(Vec<R>, Vec<usize>)>,
@@ -134,33 +119,21 @@ pub struct WorkerHandle<R> {
 impl<R> WorkerHandle<R> {
     /// Wait for the worker to finish and return ordered results plus index map.
     ///
-    /// `index_map[i]` is the original work item index that produced
-    /// `items[i]`. This allows correlating output positions with debug image
-    /// folder names.
-    ///
-    /// When the scan was started with `stop_on_failure` and an item failed, the
-    /// controller focuses that item before the error is returned. Otherwise the
-    /// outcome also reports whether the worker asked the scan to stop, so the
-    /// caller can refuse to publish a partial list as a complete one.
-    pub fn join(self, focus_failure: impl FnOnce(usize)) -> anyhow::Result<WorkerOutcome<R>> {
-        let WorkerHandle {
-            handle,
-            should_stop,
-            failure,
-        } = self;
-        let (items, index_map) = handle
+    /// Returns `(items, index_map)` where `index_map[i]` is the original
+    /// work item index that produced `items[i]`. This allows correlating
+    /// output positions with debug image folder names.
+    /// After all OCR completes, let the controller focus the failed item before
+    /// returning the error. This also covers errors arriving after capture ends.
+    pub fn join(self, focus_failure: impl FnOnce(usize)) -> anyhow::Result<(Vec<R>, Vec<usize>)> {
+        let output = self
+            .handle
             .join()
             .expect("工作线程崩溃 / Worker thread panicked");
-        let stopped = should_stop.load(Ordering::Relaxed);
-        if let Some((index, error)) = failure.lock().unwrap().take() {
+        if let Some((index, error)) = self.failure.lock().unwrap().take() {
             focus_failure(index);
             anyhow::bail!("识别失败时停止 / Stopped on OCR error: {error}");
         }
-        Ok(WorkerOutcome {
-            items,
-            index_map,
-            stopped,
-        })
+        Ok(output)
     }
 
     /// Check if the worker has signaled that scanning should stop.

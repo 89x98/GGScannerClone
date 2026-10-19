@@ -247,18 +247,12 @@ All help text is bilingual (Chinese + English). Flags are grouped into four sect
 
 ## Linux Platform Layer
 
-The game runs on Linux only via Wine/Proton and is therefore always an **X11/XWayland window** — one X11 code path covers both X11 sessions and Wayland sessions. Do NOT run the game with the wine-wayland driver (`PROTON_ENABLE_WAYLAND=1` / `Graphics=wayland`): its windows are invisible to X11 and window detection reports this.
-
-- **`yas/src/utils/linux_x11.rs`** — the counterpart of `utils/windows.rs`: x11rb with a thread-local connection; window discovery by title (`_NET_CLIENT_LIST` first, tree-walk fallback), absolute client geometry (`get_client_rect` ≡ GetClientRect+ClientToScreen), EWMH activation, pointer query (RMB cancel), GetImage ZPixmap capture (out-of-window regions padded black, like a clipped BitBlt), XTEST injection + effectiveness self-check
-- **Capture**: `X11Capturer` captures the game window's own pixmap (monitor-layout independent); it is the Linux `GenericCapturer`. `capturer_screenshots` / `capturer_libwayshot` features remain as explicit alternatives
-- **Input** (`system_control/linux/`): backend chosen on first event — X11 session → XTEST while `xtest_effective()` (exact absolute motion); otherwise → **direct `/dev/uinput`** (`uinput_dev.rs` builds the virtual devices through the already-dependency `evdev` crate — no ydotoold daemon, no root: distros ship `80-uinput.rules` making `/dev/uinput` `root:input 0660`, and the user must be in the `input` group). Two virtual devices are created: `GOODScanner virtual pointer` (REL axes + full key range) for hover/wheel/keys, and `GOODScanner virtual touch` (ABS_X/ABS_Y + BTN_TOUCH + INPUT_PROP_DIRECT) for exact absolute clicks (`GOODSCANNER_TOUCH_CLICK=0` falls back to moving the relative pointer and clicking). KWin/Mutter advertise XTEST but ignore fake input — never assume XTEST works on Wayland; use `xtest_effective()` to check. Give both virtual devices a **flat acceleration profile** via per-device `kcminputrc` sections (`[Libinput][6517][1][GOODScanner virtual pointer]` etc., vendor 0x1995) — otherwise the adaptive curve multiplies deltas 0.9–2.5× depending on velocity
-- **uinput absolute positioning** (`PointerState` in `linux_control.rs`): the pointer device injects only *relative* motion, so absolute positioning means slam the pointer into the top-left corner to establish an origin, then move by a relative delta. Three non-obvious requirements: (1) the slam and the delta must land in **separate compositor frames** — sent back-to-back they are coalesced, the delta is swallowed and the pointer stays in the corner (upstream `ydotool mousemove -a` has exactly this flaw, plus it cannot know the scale factor); (2) relative motion is multiplied by the session's pointer-speed factor; (3) the slam is used **only to (re)establish the origin** — every later move is a small relative hop from the last verified position, verified each time. A readback that does not move for a non-trivial delta is stale (the game can hold the pointer): the origin is dropped so the next move re-slams, and it is reported once. On a 1.25×-scaled KDE session the total factor is a stable 1.25 (flat profile) and hops land within ±2 px; `cargo run -p yas_core --example uinput_probe` verifies the whole path against a temporary X11 window
-- **Wheel sign** (`SystemControl::mouse_scroll`): **positive = scroll down** (towards the end of a list) on every platform. enigo's Windows `mouse_scroll_y` negates internally (`length * -120`, enigo 0.1.3) and `macos_control` negates explicitly, so the Linux backend must negate too (X11 button 4 is "up", `REL_WHEEL`'s native sign is "up"). Dropping that negation is silent: each page turn scrolls the inventory *up* instead of down, so a scan past the first page re-reads page 1 forever and reports duplicated artifacts. Measured on the reference KDE setup: one detent = 18 px, so the calibrated 49 ticks ≈ 5 rows.
-- **`GameInfo.window_id`** (u32, `#[cfg(target_os = "linux")]`) is the X11 window — the counterpart of `hwnd`, used by focus/geometry-refresh/alive checks
-- **ORT runtime** detection order (both platforms): `ORT_DYLIB_PATH` env → exe-dir copy → system install (Linux only) → prompt + auto-download (Windows zip / Linux tgz, gh-proxy mirrors first)
-- **Windows-only by design**: self-update (PE assets), packet capture, HSR live capture — each returns a clear bilingual error on Linux instead of compiling out
-- **CJK fonts**: Linux candidates under `/usr/share/fonts` (Noto CJK / WenQuanYi / Droid) for GUI and dump annotations
-- **Diagnostics**: `cargo run -p yas_core --example x11_probe` lists windows/geometry/XTEST status; `cargo run -p yas_core --example uinput_probe` exercises the virtual uinput devices against a temporary X11 window (relative-motion factors + absolute tap routing); `capture <id> <out.png>` grabs a test capture
+- Linux-only code and dependencies must be isolated with `cfg(target_os = "linux")` and target-specific Cargo tables. Compare the Windows dependency package/features set against main before pushing.
+- Build `GGScannerOCR` on Linux. The current shared GUI, Genshin OCR/manager and experimental HSR OCR/attended manager use X11/XWayland windows. Native wine-wayland windows, HDR, packet capture and self-update are unsupported. Do not advertise stubbed capture as available.
+- `yas/src/utils/linux_x11.rs` owns discovery, root-coordinate geometry, focus, TrueColor capture decoding and XTEST; `system_control/linux/` owns XTEST/uinput injection. Linux input access is checked before navigation. No ydotool daemon is used.
+- Wayland uinput needs explicit device permissions; group membership alone does not grant access on every distro. See `docs/LINUX.md` for setup, boundaries and validation evidence.
+- Font discovery and the portal theme watcher compile only on Linux. Keep Windows font selection, system theme handling, scanning timing and stop policy unchanged.
+- Linux CI uploads an experimental build artifact only. Public release assets remain `GOODCapture.exe`, `GOODScanner.exe`, `update.json`.
 
 ## Conventions
 
@@ -301,7 +295,8 @@ Returns `{"status":"ok","enabled":bool,"busy":bool,"gameAlive":bool}`.
 
 Each data type (characters, weapons, artifacts) has an independent `ScanDataCache<T>` storing the latest `(jobId, data)` plus an `incomplete_job_id` slot. All-or-nothing: a scan category populates the cache only if it completes in full during that run; if it aborts/errors/is never reached, the jobId is recorded as incomplete and the cache isn't written — queries for that jobId return 503. Categories the client didn't request leave the cache untouched. Manage/equip jobs that modify in-game state invalidate the artifact cache before execution.
 
-`scan_worker` stops a scan after 10 consecutive item errors. That stop is a failure, not an early finish: the scanners report it via `WorkerHandle::join_with_status()` and `bail!`, so the phase is `Failed` and the (possibly empty) partial list never reaches the cache. Without this, a run where every click missed looked exactly like "this account owns no artifacts".
+`--stop-on-failure` is the only OCR-error stop policy: enabled stops on the first failed item; disabled logs, skips the item, and continues. There is no independent consecutive-error threshold.
+
 
 ### Key config flow
 
@@ -393,19 +388,6 @@ Elixir artifacts display a purple banner ("祝圣之霜定义") that shifts all 
 - **Lock**: Pixel color at `ARTIFACT_LOCK_POS1` (1683, 428)
 - **Elixir**: Purple banner check at (1510–1530, 423)
 - **Astral mark**: Pixel at `ARTIFACT_ASTRAL_POS1`
-
-### Page Turns (vertical scrolling)
-
-The grid scrolls with `mouse_scroll(1)` ticks and `SCROLL_TICKS_PER_PAGE` is calibrated to 5 rows (one detent = 18 px on the reference setup, so 49 ticks ≈ 5 rows; the pacing is not critical, 20–150 ms spacing measures identically). Two traps here, both of which silently corrupt data rather than failing:
-
-- Getting the **wheel sign** backwards (see the platform notes above) scrolls *up*: at the top of the list that is a no-op, so the scan re-reads page 1 for the rest of the run and emits duplicated artifacts.
-- After a scroll the detail panel still shows the *previous* page's last item, and `scan_grid` used to `reset_panel_fingerprint()` — i.e. accept any content as the first item of the new page. A dropped first click therefore recorded that artifact twice and lost the real one. It now re-baselines the panel to the real post-scroll content (`ensure_panel_stable`) and, whenever a click leaves the panel unchanged, re-clicks the cell once (`PANEL_CLICK_ATTEMPTS`) before accepting the capture.
-
-Verify a change here with a multi-page scan (`--artifact-max-count 80`): every page-2 item must be one that was *not* on page 1, and the export must contain no duplicate fingerprints.
-
-### Backpack Tab Verification
-
-`backpack_scanner::select_tab_and_read_count()` OCRs the backpack header — the game draws `"<分类名> <current>/<capacity>"` (e.g. `武器208/2000`) — and requires it to name the requested category. A header naming a *different* known category means the tab click was swallowed (mouse injection broken, or the game window not raised): the click is retried up to 3 times and the scan then fails with a bilingual error instead of reading the wrong inventory. Garbled or unrecognised headers keep the previous lenient behaviour, so an OCR miss on the expected label can never fail an otherwise healthy scan. Only full tab labels are listed in `BACKPACK_TAB_LABELS` — the partial forms (道具/物品) are shared between tabs.
 
 ### Parallelization
 

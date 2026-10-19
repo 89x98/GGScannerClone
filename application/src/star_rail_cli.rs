@@ -2,7 +2,7 @@
 use std::{fs::File, path::PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
-use hsr_scanner::device::{HsrDevice, WindowsHsrDevice};
+use hsr_scanner::device::{HsrDevice, NativeHsrDevice};
 use yas::cancel::CancelToken;
 
 use crate::{
@@ -193,7 +193,7 @@ pub fn run() -> i32 {
                     let method = settings.capture_method.to_yas().unwrap_or_else(|| {
                         yas::capture::CaptureMethod::for_hdr_mode(settings.hdr_mode)
                     });
-                    let mut device = WindowsHsrDevice::locate(method, settings.hdr_mode)?;
+                    let mut device = NativeHsrDevice::locate(method, settings.hdr_mode)?;
                     log::info!("Selected HSR window: {:?}", device.identity());
                     device.focus_and_verify()?;
                     device.wait(std::time::Duration::from_millis(

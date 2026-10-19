@@ -93,26 +93,16 @@ fn locate_cjk_font() -> Option<SystemFont> {
 }
 
 /// Direct paths for environments where the fontdb scan comes up empty.
-fn legacy_fallback_paths() -> &'static [(&'static str, u32)] {    #[cfg(target_os = "windows")]
-    {
-        &[
-            ("C:/Windows/Fonts/msyh.ttc", 0),   // Microsoft YaHei (微软雅黑)
-            ("C:/Windows/Fonts/msyhbd.ttc", 0), // Microsoft YaHei Bold
-            ("C:/Windows/Fonts/simsun.ttc", 0), // SimSun (宋体)
-            ("C:/Windows/Fonts/simhei.ttf", 0), // SimHei (黑体)
-        ]
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        &[
-            ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0),
-            ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
-            ("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", 0),
-            ("/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc", 0),
-            ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
-            ("/usr/share/fonts/gsfonts/DroidSansFallback.ttf", 0),
-        ]
-    }
+fn legacy_fallback_paths() -> &'static [(&'static str, u32)] {
+    &[
+        ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+        (
+            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+            0,
+        ),
+        ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
+    ]
 }
 
 #[cfg(test)]
@@ -124,7 +114,11 @@ mod tests {
     #[test]
     fn cjk_font_discovery_does_not_panic() {
         if let Some(font) = find_cjk_font() {
-            assert!(font.path.is_file(), "discovered font must exist: {}", font.path.display());
+            assert!(
+                font.path.is_file(),
+                "discovered font must exist: {}",
+                font.path.display()
+            );
         }
     }
 }

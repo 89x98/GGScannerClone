@@ -169,13 +169,7 @@ pub fn show_settings(
                     || settings.scan_relics_and_ornaments,
             );
             ui.separator();
-            if ui
-                .checkbox(
-                    &mut settings.hdr_mode,
-                    lang.t("游戏使用 HDR", "Game uses HDR"),
-                )
-                .changed()
-            {
+            if widgets::hdr_checkbox(ui, lang, &mut settings.hdr_mode) {
                 settings.set_hdr_mode(settings.hdr_mode);
             }
         });

@@ -105,6 +105,9 @@ fn ensure_ocr_runtime_with_status(status: Option<&Arc<Mutex<TaskStatus>>>) -> Re
                 &error,
             )
         })?;
+    }
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
         if !genshin_scanner::cli::check_onnxruntime() {
             if let Some(status) = status {
                 *status.lock().unwrap() =

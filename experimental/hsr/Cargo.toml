@@ -65,3 +65,6 @@ required-features = ["capture"]
 [[example]]
 name = "analyze_dump"
 required-features = ["capture"]
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+x11rb = "0.13"

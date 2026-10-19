@@ -6,11 +6,9 @@ use image::RgbImage;
 
 /// Captures the game window's own X pixmap via GetImage (ZPixmap).
 ///
-/// Unlike a root-screen capture this is independent of monitor layout and of
-/// what else is on screen: the X server always has the window's pixels (X11
-/// compositors and XWayland keep a backing pixmap per window). Regions are
-/// given in root (absolute) coordinates and clipped to the window, matching
-/// the semantics of GDI BitBlt on Windows.
+/// Regions use root coordinates and are clipped to the client window. The
+/// window must remain mapped, in front and unobscured: core GetImage does not
+/// guarantee useful pixels for obscured regions on every X server/compositor.
 pub struct X11Capturer {
     window: u32,
 }

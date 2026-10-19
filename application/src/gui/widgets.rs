@@ -520,3 +520,27 @@ pub fn inventory_delays(ui: &mut egui::Ui, state: &mut AppState, l: Lang) {
             l.t("面板加载完成后、截图前的额外等待（通常为0）", "Extra wait after panel loaded before capturing (usually 0)")),
     ]);
 }
+
+/// Keep the Windows control unchanged; Linux capture currently requires SDR.
+pub fn hdr_checkbox(ui: &mut egui::Ui, lang: Lang, hdr: &mut bool) -> bool {
+    #[cfg(not(target_os = "linux"))]
+    {
+        ui.checkbox(hdr, lang.t("游戏使用 HDR", "Game uses HDR"))
+            .changed()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let enabled = *hdr; // allow clearing a setting imported from Windows
+        ui.add_enabled(
+            enabled,
+            egui::Checkbox::new(
+                hdr,
+                lang.t(
+                    "游戏使用 HDR（Linux 暂不支持，请关闭）",
+                    "Game uses HDR (unsupported on Linux; turn off)",
+                ),
+            ),
+        )
+        .changed()
+    }
+}

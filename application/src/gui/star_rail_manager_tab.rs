@@ -115,13 +115,7 @@ pub fn show_settings(
         widgets::form(ui, |ui| {
             super::star_rail_scanner_tab::trailblazer_row(ui, lang, settings, false);
             ui.separator();
-            if ui
-                .checkbox(
-                    &mut settings.hdr_mode,
-                    lang.t("游戏使用 HDR", "Game uses HDR"),
-                )
-                .changed()
-            {
+            if widgets::hdr_checkbox(ui, lang, &mut settings.hdr_mode) {
                 settings.set_hdr_mode(settings.hdr_mode);
             }
         });

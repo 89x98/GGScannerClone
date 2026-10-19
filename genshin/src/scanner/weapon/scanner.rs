@@ -745,7 +745,7 @@ impl GoodWeaponScanner {
         let _ = emit_ready(leftover, &item_tx);
 
         drop(item_tx);
-        let outcome = worker_handle.join(|index| {
+        let (weapons, index_map) = worker_handle.join(|index| {
             crate::scanner::common::backpack_scanner::focus_failed_item(
                 ctrl,
                 visible_layout,
@@ -753,36 +753,6 @@ impl GoodWeaponScanner {
                 self.config.panel_delay,
             );
         })?;
-        let weapons = outcome.items;
-        let index_map = outcome.index_map;
-
-        // Same contract as the artifact scanner: a worker stop means the run
-        // gave up after repeated failures, so its partial list must not be
-        // published as a completed scan.
-        if outcome.stopped && !ctrl.cancel_token().is_cancelled() {
-            log_error!(
-                "[weapon] 连续失败后中止：仅识别 {} / {} 个。\
-                 常见原因：点击未生效（游戏窗口未置顶，或输入注入绝对定位失准），\
-                 导致背包页签或详情面板没有切换。",
-                "[weapon] aborted after repeated item failures: only {} / {} recognized. \
-                 The usual cause is that clicks never reached the game (window not raised, or inaccurate \
-                 absolute input positioning), so the inventory tab or detail panel never changed.",
-                weapons.len(),
-                total
-            );
-            bail!(
-                "武器扫描连续失败后中止（识别 {} / {}）。\
-                 常见原因：点击未生效——游戏窗口未置顶，或输入注入绝对定位失准，\
-                 导致背包页签/详情面板未切换。\n\
-                 / Weapon scan aborted after repeated item failures ({} / {} recognized). The usual \
-                 cause is that clicks never reached the game: the window was not raised, or absolute \
-                 input positioning is inaccurate, so the inventory tab or detail panel never changed.",
-                weapons.len(),
-                total,
-                weapons.len(),
-                total
-            );
-        }
 
         // Write index map for debug image correlation (output position → folder name)
         if self.config.dump_images {

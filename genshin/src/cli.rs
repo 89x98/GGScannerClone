@@ -140,22 +140,6 @@ pub fn check_vcpp_runtime() -> Result<()> {
 /// Also detects corrupted/truncated files by checking the DLL size.
 #[cfg(target_os = "windows")]
 pub fn check_onnxruntime() -> bool {
-    // Explicit override wins (parity with the Linux flow).
-    if let Some(path) = std::env::var_os("ORT_DYLIB_PATH") {
-        if std::path::Path::new(&path).is_file() {
-            log_info!(
-                "使用 ORT_DYLIB_PATH 指定的 ONNX Runtime: {}",
-                "Using ONNX Runtime from ORT_DYLIB_PATH: {}",
-                std::path::Path::new(&path).display()
-            );
-            return true;
-        }
-        log_warn!(
-            "ORT_DYLIB_PATH 已设置但文件不存在，将尝试其他位置",
-            "ORT_DYLIB_PATH is set but the file does not exist; trying other locations"
-        );
-    }
-
     let dll_path = exe_dir().join(ORT_DLL_NAME);
     match std::fs::metadata(&dll_path) {
         Ok(meta) if meta.len() >= ORT_DLL_MIN_SIZE => {
@@ -387,6 +371,47 @@ const ORT_SO_NAME: &str = "libonnxruntime.so";
 #[cfg(target_os = "linux")]
 const ORT_SO_MIN_SIZE: u64 = 5 * 1024 * 1024;
 
+#[cfg(all(test, target_os = "linux"))]
+mod linux_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_versioned_library_instead_of_empty_symlink() {
+        let mut tar = tar::Builder::new(Vec::new());
+        let mut link = tar::Header::new_gnu();
+        link.set_entry_type(tar::EntryType::Symlink);
+        link.set_size(0);
+        link.set_mode(0o755);
+        link.set_link_name("libonnxruntime.so.1.22.0").unwrap();
+        link.set_cksum();
+        tar.append_data(&mut link, "onnxruntime/lib/libonnxruntime.so", &[][..])
+            .unwrap();
+        let library = vec![42; ORT_SO_MIN_SIZE as usize];
+        let mut file = tar::Header::new_gnu();
+        file.set_size(library.len() as u64);
+        file.set_mode(0o755);
+        file.set_cksum();
+        tar.append_data(
+            &mut file,
+            "onnxruntime/lib/libonnxruntime.so.1.22.0",
+            &library[..],
+        )
+        .unwrap();
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut gzip, &tar.into_inner().unwrap()).unwrap();
+        let archive = gzip.finish().unwrap();
+        let dest = std::env::temp_dir().join(format!("ort-extraction-{}.so", std::process::id()));
+        extract_onnxruntime_so(&archive, &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), library);
+        std::fs::remove_file(&dest).unwrap();
+        assert!(extract_onnxruntime_so(&archive[..archive.len() / 2], &dest).is_err());
+        assert!(
+            !dest.exists(),
+            "truncated archives must not install a partial library"
+        );
+    }
+}
+
 /// Mirror URLs to try in order (same policy as the Windows flow).
 #[cfg(target_os = "linux")]
 const ORT_LINUX_DOWNLOAD_URLS: &[&str] = &[
@@ -419,6 +444,7 @@ pub fn check_onnxruntime() -> bool {
             "ORT_DYLIB_PATH is set but the file does not exist ({}); trying other locations",
             path.display()
         );
+        std::env::remove_var("ORT_DYLIB_PATH");
     }
 
     // 2. App-managed copy next to the exe.
@@ -470,6 +496,7 @@ pub fn check_onnxruntime() -> bool {
 /// Download ONNX Runtime without interactive prompts (for GUI mode).
 #[cfg(target_os = "linux")]
 pub fn download_onnxruntime() -> Result<()> {
+    anyhow::ensure!(std::env::consts::ARCH == "x86_64", "Automatic ONNX Runtime download supports Linux x86_64 only; set ORT_DYLIB_PATH to a compatible 1.22 library on this architecture");
     let so_path = exe_dir().join(ORT_SO_NAME);
     log_info!("正在下载 ONNX Runtime...", "Downloading ONNX Runtime...");
     download_onnxruntime_inner(&so_path)
@@ -501,7 +528,11 @@ fn download_onnxruntime_inner(so_path: &std::path::Path) -> Result<()> {
             },
         };
         if !response.status().is_success() {
-            let error = anyhow!("download source {} returned HTTP {}", url, response.status());
+            let error = anyhow!(
+                "download source {} returned HTTP {}",
+                url,
+                response.status()
+            );
             log_warn!(
                 "下载源 {} 无法提供 OCR 运行库。完整错误详情: {:#}",
                 "Download source {} could not provide the OCR runtime. Full error details: {:#}",
@@ -618,17 +649,25 @@ fn extract_onnxruntime_so(tgz_bytes: &[u8], dest: &std::path::Path) -> Result<()
 
     for entry in archive
         .entries()
-        .map_err(|e| anyhow!("无法读取压缩包 / Cannot read tar archive: {}", e))?
+        .map_err(|e| anyhow!("Cannot read tar archive: {e}"))?
     {
-        let mut entry =
-            entry.map_err(|e| anyhow!("无法读取压缩包条目 / Cannot read tar entry: {}", e))?;
+        let mut entry = entry.map_err(|e| anyhow!("Cannot read tar entry: {e}"))?;
         let path = entry
             .path()
-            .map_err(|e| anyhow!("无法读取条目路径 / Cannot read entry path: {}", e))?
+            .map_err(|e| anyhow!("Cannot read entry path: {e}"))?
             .to_path_buf();
-        if path.ends_with("lib/libonnxruntime.so") {
+        if entry.header().entry_type().is_file()
+            && path
+                .file_name()
+                .is_some_and(|n| n == "libonnxruntime.so.1.22.0")
+            && path.parent().is_some_and(|p| p.ends_with("lib"))
+        {
             let mut buf = Vec::new();
             std::io::Read::read_to_end(&mut entry, &mut buf)?;
+            anyhow::ensure!(
+                buf.len() as u64 >= ORT_SO_MIN_SIZE,
+                "ONNX Runtime library is truncated"
+            );
             std::fs::write(dest, &buf)?;
             return Ok(());
         }

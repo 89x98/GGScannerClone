@@ -302,7 +302,7 @@ fn star_rail_exports_need_no_folder_selection_and_preserve_saved_destinations() 
     assert!(!texts.iter().any(|(text, _, _)| text == "Output folder"));
 }
 
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", target_os = "windows"))]
 #[test]
 fn capture_forms_have_no_manual_or_folder_picker_and_start_with_actionable_guidance() {
     use good_tools_app::gui::{
@@ -366,7 +366,7 @@ fn compact_logs_preserve_warning_and_error_emphasis() {
         .any(|(text, _, color)| text.contains("ERROR_MARKER") && *color == theme::ERROR));
 }
 
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", target_os = "windows"))]
 #[test]
 fn failed_capture_write_displays_the_cause_and_never_shows_an_export_path() {
     use good_tools_app::gui::capture_tab::{self, CaptureTabState};

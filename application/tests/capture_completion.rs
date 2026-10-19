@@ -1,4 +1,8 @@
-#![cfg(all(feature = "capture", feature = "test-as-invoker"))]
+#![cfg(all(
+    feature = "capture",
+    feature = "test-as-invoker",
+    target_os = "windows"
+))]
 
 use genshin_scanner::scanner::common::models::GoodExport;
 use good_tools_app::gui::capture_tab::CaptureTabState;

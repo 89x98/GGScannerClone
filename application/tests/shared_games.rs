@@ -838,7 +838,7 @@ fn completed_journal_is_archived_before_a_distinct_plan_uses_the_base_path() {
     remove_test_tree(&root);
 }
 
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", target_os = "windows"))]
 #[test]
 fn stop_before_worker_start_never_opens_capture_boundary() {
     assert!(
@@ -847,7 +847,7 @@ fn stop_before_worker_start_never_opens_capture_boundary() {
     );
 }
 
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", target_os = "windows"))]
 #[test]
 fn genshin_capture_completion_releases_native_boundary_without_recapture_or_rendering() {
     use good_tools_app::gui::capture_tab::{native_boundary_available_for_test, CaptureTabState};
@@ -896,7 +896,7 @@ fn genshin_capture_completion_releases_native_boundary_without_recapture_or_rend
     remove_test_tree(&root);
 }
 
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", target_os = "windows"))]
 #[test]
 fn completed_capture_advances_and_exports_while_its_tab_is_inactive() {
     let root = temp_root("inactive-capture-completion");

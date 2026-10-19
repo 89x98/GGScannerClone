@@ -32,7 +32,7 @@
 - **`GGScanner.exe`（推荐）** — 两款游戏的抓包、OCR 扫描、导出与管理
 - `GGScannerOCR.exe` — OCR 扫描、导出与管理，不包含抓包代码及依赖
 
-旧的 `GOODCapture.exe` 与 `GOODScanner.exe` 下载名称会继续保留，供已安装的旧版程序自动更新。详见[更名发布流程](docs/RENAME_RELEASE.md)。
+旧的 `GOODCapture.exe` 与 `GOODScanner.exe` 下载名称会在新名称首次发布后保留一个月，供已安装的旧版程序自动更新。过渡期结束后，无法自动更新的用户可从网站重新下载。详见[更名发布流程](docs/RENAME_RELEASE.md)。
 
 请从 [Releases](https://github.com/Anyrainel/GGScanner/releases) 页面下载。**无需也不应寻找单独的 HSR 可执行文件。**
 
@@ -73,30 +73,18 @@ GGScannerOCR.exe --characters --weapons  # 组合扫描
 
 ## Linux 支持（实验性）
 
-GOODScanner 可在 Linux 上原生运行 **OCR 扫描与管理器**；抓包（GOODCapture / pktmon）仍仅限 Windows。游戏需通过 **Wine / Proton** 运行。
+Linux 原生程序 `GGScannerOCR` 使用当前共用界面，提供原神 OCR 扫描与管理，以及实验性星穹铁道 OCR 扫描与遗器管理。游戏须通过 Wine/Proton 使用 X11/XWayland 窗口，并关闭 HDR。原生 Wayland 游戏窗口、抓包和自动更新暂不支持。
 
-### 环境要求
-
-- **游戏窗口必须是 X11/XWayland 窗口**（Wine 默认的 winex11 驱动即是）。请勿启用 `PROTON_ENABLE_WAYLAND=1` 或注册表 `Graphics=wayland`——wine-wayland（纯 Wayland）窗口对 X11 不可见，程序会明确提示
-- **X11 会话**：开箱即用（XTEST 注入，无额外依赖）
-- **Wayland 会话（KDE / GNOME 等）**：合成器忽略 XTEST，需要 [ydotool](https://github.com/ReimuNotMoe/ydotool) 注入输入，并把指针加速设为"平坦/无"以保证绝对定位精确：
-  ```shell
-  sudo pacman -S ydotool              # Arch 系；其他发行版用对应包管理器
-  systemctl --user enable --now ydotool
-  ```
-- **OCR 运行时 `libonnxruntime.so`** 按以下顺序查找：`ORT_DYLIB_PATH` 环境变量 → 程序目录 → 系统安装（需 1.22）；都没有时提示自动下载（带镜像加速）
-- 无需 root；libxcb 等系统库主流发行版自带；中文界面使用系统 Noto CJK / 文泉驿字体
-- 自动更新暂不支持 Linux（更新检查会静默跳过）
-
-### 构建与运行
+Ubuntu 构建依赖、XTEST/uinput 输入权限、字体、运行库安装和验证范围见 [Linux 指南](docs/LINUX.md)。无需安装 ydotool。
 
 ```shell
-cargo build --release --bin GOODScanner
-./target/release/GOODScanner          # 图形界面
-./target/release/GOODScanner --all    # 命令行扫描
+cargo build --locked --release --bin GGScannerOCR
+./target/release/GGScannerOCR         # 图形界面
+./target/release/GGScannerOCR --all   # 原神命令行扫描
+./target/release/GGScannerOCR star-rail --help
 ```
 
-环境诊断：`cargo run -p yas_core --example x11_probe` 列出所有 X11/XWayland 窗口、几何与 XTEST 可用性。
+Linux 构建仅上传为 CI 测试产物，不改变正式发布页的 Windows 下载项。当前已验证 Linux 编译、自动测试与隔离图形会话；游戏实机扫描和不同 Wayland 合成器仍需验证。
 
 ## 注意事项
 

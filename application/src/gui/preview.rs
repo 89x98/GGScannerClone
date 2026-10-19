@@ -54,7 +54,14 @@ pub fn run(
                 _ => panic!("unsupported appearance"),
             };
             config.config.navigation.select_tab(tab);
-            let mut app = GuiApp::new(state, config, &cc.egui_ctx, false);
+            let mut app = GuiApp::new(
+                state,
+                config,
+                &cc.egui_ctx,
+                false,
+                #[cfg(target_os = "linux")]
+                None,
+            );
             app.save_settings = false;
             app.data_refresh.preview_age(5 * 3600);
             if tab == ToolTab::Scanner && scenario == "partial" {
@@ -152,7 +159,7 @@ pub fn run(
                 "ready" | "login" | "update" | "done" => {},
                 _ => panic!("unsupported preview scenario"),
             }
-            #[cfg(feature = "capture")]
+            #[cfg(all(feature = "capture", target_os = "windows"))]
             if tab == ToolTab::Capture && !matches!(scenario.as_str(), "ready" | "update") {
                 match game {
                     Game::Genshin => app.capture_tab.preview_feedback(&scenario),
