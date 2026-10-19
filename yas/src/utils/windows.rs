@@ -319,21 +319,21 @@ pub fn show_window_and_set_foreground(hwnd: HWND) -> Result<bool> {
     }
 }
 
-#[allow(static_mut_refs)]
 unsafe fn iterate_window_unsafe() -> Vec<HWND> {
-    static mut ALL_HANDLES: Vec<HWND> = Vec::new();
+    let mut handles: Vec<HWND> = Vec::new();
 
-    extern "system" fn callback(hwnd: HWND, _vec_ptr: LPARAM) -> BOOL {
-        unsafe {
-            ALL_HANDLES.push(hwnd);
-        }
+    extern "system" fn callback(hwnd: HWND, vec_ptr: LPARAM) -> BOOL {
+        // SAFETY: EnumWindows calls back synchronously on the calling thread.
+        // Each invocation owns its buffer, which stays live until enumeration
+        // returns; concurrent health checks and scans never share this state.
+        let handles = unsafe { &mut *(vec_ptr as *mut Vec<HWND>) };
+        handles.push(hwnd);
         1
     }
 
-    ALL_HANDLES.clear();
-    EnumWindows(Some(callback), 0);
+    EnumWindows(Some(callback), &mut handles as *mut Vec<HWND> as LPARAM);
 
-    ALL_HANDLES.clone()
+    handles
 }
 
 pub fn iterate_window() -> Vec<HWND> {
