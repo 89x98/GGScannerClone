@@ -63,6 +63,36 @@ fn window_capture_input_and_cancellation() -> anyhow::Result<()> {
     utils::activate_window(window)?;
     assert!(utils::is_window_foreground(window));
 
+    let child = conn.generate_id()?;
+    conn.create_window(
+        root.root_depth,
+        child,
+        window,
+        120,
+        60,
+        10,
+        10,
+        0,
+        xproto::WindowClass::INPUT_OUTPUT,
+        root.root_visual,
+        &xproto::CreateWindowAux::new().background_pixel(0x123456),
+    )?
+    .check()?;
+    conn.map_window(child)?.check()?;
+    conn.set_input_focus(xproto::InputFocus::PARENT, child, x11rb::CURRENT_TIME)?
+        .check()?;
+    assert!(
+        utils::is_window_foreground(window),
+        "focused child belongs to selected client"
+    );
+    conn.set_input_focus(xproto::InputFocus::PARENT, root.root, x11rb::CURRENT_TIME)?
+        .check()?;
+    assert!(
+        !utils::is_window_foreground(window),
+        "unrelated focus must be rejected"
+    );
+    utils::activate_window(window)?;
+
     let capture = X11Capturer::new(window)?;
     let img = capture.capture_rect(Rect::new(38, 47, 164, 96))?;
     assert_eq!(img.dimensions(), (164, 96));

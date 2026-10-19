@@ -467,8 +467,26 @@ fn decode_zpixmap(
 /// Verify focus rather than assuming an EWMH activation request was granted.
 pub fn is_window_foreground(window: Window) -> bool {
     with_x11(|conn, _| {
-        let focused = conn.get_input_focus()?.reply()?.focus;
-        Ok(focused == window)
+        let mut focused = conn.get_input_focus()?.reply()?.focus;
+        // Wine and toolkits may route keyboard focus to a child of the
+        // discovered client. That still belongs to the selected game window.
+        for _ in 0..32 {
+            if focused == window {
+                return Ok(true);
+            }
+            if focused <= 1 {
+                return Ok(false);
+            }
+            let tree = match conn.query_tree(focused)?.reply() {
+                Ok(tree) => tree,
+                Err(_) => return Ok(false),
+            };
+            if tree.parent == 0 || tree.parent == focused {
+                return Ok(false);
+            }
+            focused = tree.parent;
+        }
+        Ok(false)
     })
     .unwrap_or(false)
 }
