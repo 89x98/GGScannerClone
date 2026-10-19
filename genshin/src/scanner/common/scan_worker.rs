@@ -77,13 +77,41 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn continue_policy_does_not_stop_after_a_run_of_ocr_errors() {
+        let (sender, worker) = start_worker(false, |item: WorkItem<()>| {
+            if item.index < 12 {
+                anyhow::bail!("unreadable item");
+            }
+            Ok(Some(item.index))
+        });
+        let stop = worker.should_stop.clone();
+        for index in 0..14 {
+            sender
+                .send(WorkItem {
+                    index,
+                    frame: CaptureFrame::full(image::RgbImage::new(1, 1)),
+                    metadata: (),
+                    grid_annotation: None,
+                })
+                .unwrap();
+        }
+        drop(sender);
+        let (items, indices) = worker
+            .join(|_| panic!("continue policy focused an error"))
+            .unwrap();
+        assert!(!stop.load(Ordering::Relaxed));
+        assert_eq!(items, [12, 13]);
+        assert_eq!(indices, [12, 13]);
+    }
 }
 
 /// Handle to a running worker. Call `join()` to wait for results.
 pub struct WorkerHandle<R> {
     handle: std::thread::JoinHandle<(Vec<R>, Vec<usize>)>,
-    /// Set to true by the worker when it detects problems (e.g., consecutive
-    /// duplicates). The capture thread should check this periodically and stop.
+    /// Set when an OCR error occurs and stop-on-failure is enabled.
+    /// The capture thread should check this periodically and stop.
     pub should_stop: Arc<AtomicBool>,
     failure: Arc<Mutex<Option<(usize, String)>>>,
 }
@@ -228,7 +256,6 @@ where
         let mut next_index: usize = 0;
         let mut output: Vec<R> = Vec::new();
         let mut index_map: Vec<usize> = Vec::new();
-        let mut consecutive_errors: usize = 0;
         let mut processed: usize = 0;
         let mut capture_total: Option<usize> = None;
 
@@ -251,11 +278,9 @@ where
                             Ok(Some(item)) => {
                                 output.push(item);
                                 index_map.push(current_index);
-                                consecutive_errors = 0;
                             },
                             Ok(None) => {
                                 // Skipped item
-                                consecutive_errors = 0;
                             },
                             Err(e) => {
                                 log_error!(
@@ -264,19 +289,10 @@ where
                                     current_index,
                                     e
                                 );
-                                consecutive_errors += 1;
                                 if stop_on_failure {
                                     worker_failure.lock().unwrap().get_or_insert_with(|| {
                                         (current_index, format!("item {current_index}: {e:#}"))
                                     });
-                                    should_stop_clone.store(true, Ordering::Relaxed);
-                                }
-                                if consecutive_errors >= 10 {
-                                    log_error!(
-                                        "[worker] 连续{}个错误，发送停止信号",
-                                        "[worker] {} consecutive errors, signaling stop",
-                                        consecutive_errors
-                                    );
                                     should_stop_clone.store(true, Ordering::Relaxed);
                                 }
                             },
