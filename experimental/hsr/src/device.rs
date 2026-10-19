@@ -16,6 +16,15 @@ use crate::{
     vision::Point,
 };
 
+const HSR_WINDOW_TITLES: &[&str] = &[
+    "Honkai: Star Rail",
+    "崩坏：星穹铁道",
+    "崩壞：星穹鐵道",
+    "붕괴:\u{00a0}스타레일",
+    "崩壊：スターレイル",
+    "Honkai\u{00a0}: Star Rail",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowIdentity {
     pub title: String,
@@ -128,15 +137,7 @@ impl NativeHsrDevice {
             let windows = yas::utils::enumerate_windows().map_err(device_error)?;
             let candidates: Vec<_> = windows
                 .iter()
-                .filter(|w| {
-                    matches!(
-                        w.title.as_str(),
-                        "崩坏：星穹铁道"
-                            | "崩坏: 星穹铁道"
-                            | "Honkai: Star Rail"
-                            | "崩壊：スターレイル"
-                    )
-                })
+                .filter(|w| HSR_WINDOW_TITLES.contains(&w.title.as_str()))
                 .collect();
             if candidates.len() != 1 {
                 return Err(HsrError::new(
@@ -577,14 +578,6 @@ fn validate_aspect(width: u32, height: u32) -> HsrResult<()> {
 #[cfg(target_os = "windows")]
 fn locate_hsr_window() -> HsrResult<(isize, String, Rect<i32>)> {
     yas::utils::set_dpi_awareness();
-    const TITLES: &[&str] = &[
-        "Honkai: Star Rail",
-        "崩坏：星穹铁道",
-        "崩壞：星穹鐵道",
-        "붕괴:\u{00a0}스타레일",
-        "崩壊：スターレイル",
-        "Honkai\u{00a0}: Star Rail",
-    ];
     let mut matches = Vec::new();
     for hwnd in yas::utils::iterate_window() {
         if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd) } == 0 {
@@ -593,7 +586,10 @@ fn locate_hsr_window() -> HsrResult<(isize, String, Rect<i32>)> {
         let Some(title) = yas::utils::get_window_title(hwnd) else {
             continue;
         };
-        if !TITLES.iter().any(|candidate| title.trim() == *candidate) {
+        if !HSR_WINDOW_TITLES
+            .iter()
+            .any(|candidate| title.trim() == *candidate)
+        {
             continue;
         }
         let class = window_class(hwnd);
