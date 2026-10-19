@@ -673,9 +673,7 @@ fn extract_onnxruntime_so(tgz_bytes: &[u8], dest: &std::path::Path) -> Result<()
         }
     }
 
-    Err(anyhow!(
-        "压缩包中未找到 libonnxruntime.so / libonnxruntime.so not found in tar archive"
-    ))
+    Err(anyhow!("libonnxruntime.so.1.22.0 not found in tar archive"))
 }
 
 // ================================================================

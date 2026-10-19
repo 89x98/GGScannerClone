@@ -207,10 +207,7 @@ impl CaptureMonitor {
     pub fn new(state: Arc<Mutex<CaptureState>>, dump_packets: bool) -> Result<Self> {
         let _ = (&state, dump_packets);
         anyhow::bail!(
-            "抓包功能目前仅支持 Windows（pktmon），当前平台后端尚未实现。\
-             请使用 OCR 扫描，或在 Windows 上运行抓包。\n\
-             / Packet capture is currently Windows-only (pktmon); a backend for this \
-             platform is not implemented yet. Use OCR scanning, or run capture on Windows."
+            "Packet capture is Windows-only (pktmon); use OCR scanning on this platform."
         );
     }
 

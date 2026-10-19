@@ -170,9 +170,7 @@ impl GenshinGameController {
         #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         {
             let _ = (game_info, method);
-            Err(anyhow!(
-                "此平台不支持截图 / capture is not supported on this platform"
-            ))
+            Err(anyhow!("Capture is not supported on this platform"))
         }
     }
 }
