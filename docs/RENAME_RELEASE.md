@@ -21,7 +21,8 @@ Keep the repository name and published executable names unchanged during this
 stage. Website labels and application branding can already use GGScanner.
 
 Publish this bridge before renaming the GitHub repository or public downloads.
-Allow roughly a month for adoption, but do not assume every user will update.
+The bridge has already shipped in v2026.10.16. The rename can proceed before
+every installed copy has adopted it; older users may need a fresh download.
 The bridge updater tries both `Anyrainel/GGScanner` and `Anyrainel/GOODScanner`, follows
 repository-rename redirect chains, and uses stable edition roles in `update.json`:
 
@@ -44,17 +45,27 @@ additional fields.
 
 ## Rename and retain compatibility downloads
 
-After the adoption period, rename the repository in GitHub Settings and update
+At the rename cutoff, rename the repository in GitHub Settings and update
 local remotes to `https://github.com/Anyrainel/GGScanner.git`. Do not reuse the old
 repository name: GitHub's redirect is needed by older installed versions.
 
 At that cutoff, change CI's manifest roles to
 `scanner: GGScannerOCR.exe` and `capture: GGScanner.exe`.
-Every release must continue uploading copies under both old names
-(`GOODScanner.exe`, `GOODCapture.exe`). Users
-can skip the bridge release, so a one-release alias window is insufficient.
-Aliases must preserve edition: old GOODScanner receives the OCR build; old
+For one calendar month after the first release with the new public executable
+names, continue uploading copies under both old names
+(`GOODScanner.exe`, `GOODCapture.exe`). Record the actual first publication
+date and its one-month cutoff in this document when publishing. No cutoff date
+is set until that release exists. These aliases are temporary, not permanent.
+At the cutoff, remove the old-name assets from the transition releases and stop
+uploading them in subsequent releases. Historical pre-rename releases can retain
+their original assets; do not rewrite their manifests or tags.
+During the transition, aliases must preserve edition: old GOODScanner receives the OCR build; old
 GOODCapture receives the capture build.
+
+Users who miss the transition and cannot auto-update should download the current
+edition again from either companion website's `/download-scanner` page. Include
+that manual recovery route in the rename announcement. Automatic updates from
+all historical versions are not a requirement after the compatibility cutoff.
 
 The update replaces the executable at its existing local path and restarts that
 path. It deliberately preserves the installed filename and shortcuts; a fresh
@@ -80,6 +91,18 @@ Old versions whose API access fails may not handle an extra repository-rename
 redirect through a mirror. The bridge fixes this for updated installations;
 legacy asset aliases cannot fix code already installed. If an old version cannot
 discover the renamed repository, a manual download is required once.
+
+## Possible Linux release
+
+Linux support may land before the next release; it is not yet a release promise.
+Before adding Linux downloads, define supported architectures and display/window
+requirements, verify capture/OCR/manager support per game and edition, and choose
+clear platform-specific assets. Extend release metadata and updater asset selection
+to distinguish operating system, architecture, and edition before publication;
+Windows clients must never select a Linux binary. Both websites must show platform
+choices only once corresponding tested assets are available. The old Windows
+filename compatibility window remains one month and does not restart when Linux
+support is added.
 
 ## Validation
 
