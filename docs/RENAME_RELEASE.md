@@ -97,9 +97,10 @@ discover the renamed repository, a manual download is required once.
 Linux support may land before the next release; it is not yet a release promise.
 Before adding Linux downloads, define supported architectures and display/window
 requirements, verify capture/OCR/manager support per game and edition, and choose
-clear platform-specific assets. Extend release metadata and updater asset selection
-to distinguish operating system, architecture, and edition before publication;
-Windows clients must never select a Linux binary. Both websites must show platform
+clear platform-specific assets. Ensure release metadata and updater asset selection
+distinguish operating system, architecture, and edition before publication;
+Windows clients must never select a Linux binary. Linux may initially use manual
+downloads with self-update explicitly disabled. Both websites must show platform
 choices only once corresponding tested assets are available. The old Windows
 filename compatibility window remains one month and does not restart when Linux
 support is added.
