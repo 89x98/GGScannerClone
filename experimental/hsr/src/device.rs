@@ -2,8 +2,6 @@ use std::{collections::VecDeque, rc::Rc, time::Duration};
 
 use enigo::Key;
 use image::RgbImage;
-#[cfg(target_os = "windows")]
-use yas::capture::GenericCapturer;
 use yas::{
     cancel::CancelToken,
     capture::{CaptureMethod, Capturer},
@@ -34,6 +32,19 @@ pub struct WindowIdentity {
     hwnd: isize,
     #[cfg(target_os = "linux")]
     window_id: u32,
+}
+
+impl WindowIdentity {
+    fn native_window(&self) -> yas::window::NativeWindow {
+        #[cfg(target_os = "windows")]
+        {
+            yas::window::NativeWindow(self.hwnd)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            yas::window::NativeWindow(self.window_id)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,100 +107,48 @@ impl NativeHsrDevice {
                 "cancellation token was already active before HSR device discovery",
             ));
         }
-        #[cfg(target_os = "windows")]
-        {
-            let (hwnd, title, client_rect) = locate_hsr_window()?;
-            let capturer: Rc<dyn Capturer<RgbImage>> = match capture_method {
-                CaptureMethod::BitBlt => Rc::new(GenericCapturer::new().map_err(device_error)?),
-                CaptureMethod::Wgc => Rc::new(
-                    yas::capture::WgcCapturer::new(
-                        hwnd,
-                        hdr_mode,
-                        yas::capture::constants::DEFAULT_HDR_WHITE_POINT,
-                    )
-                    .map_err(device_error)?,
-                ),
-            };
-            Ok(Self {
-                identity: WindowIdentity {
-                    title,
-                    width: client_rect.width as u32,
-                    height: client_rect.height as u32,
-                    hwnd,
-                },
-                client_rect,
-                verified_frame_dimensions: None,
-                capturer,
-                control: SystemControl::new(),
-                cancel,
-            })
-        }
         #[cfg(target_os = "linux")]
-        {
-            let _ = capture_method;
-            if hdr_mode {
-                return Err(HsrError::new(
-                    "HSR-DEVICE-HDR",
-                    hints::SCREEN_INVALID,
-                    "Linux capture requires SDR; turn off HDR in the game and scanner settings",
-                ));
-            }
-            let windows = yas::utils::enumerate_windows().map_err(device_error)?;
-            let candidates: Vec<_> = windows
-                .iter()
-                .filter(|w| HSR_WINDOW_TITLES.contains(&w.title.as_str()))
-                .collect();
-            if candidates.len() != 1 {
-                return Err(HsrError::new(
-                    "HSR-DEVICE-WINDOW",
-                    hints::DEVICE_UNAVAILABLE,
-                    format!(
-                        "expected one visible HSR X11/XWayland window, found {}",
-                        candidates.len()
-                    ),
-                ));
-            }
-            let window = candidates[0];
-            let client_rect = yas::utils::get_client_rect(window.window).map_err(device_error)?;
-            validate_aspect(client_rect.width as u32, client_rect.height as u32)?;
-            let mut control = SystemControl::new();
-            control.prepare().map_err(device_error)?;
-            Ok(Self {
-                identity: WindowIdentity {
-                    title: window.title.clone(),
-                    width: client_rect.width as u32,
-                    height: client_rect.height as u32,
-                    window_id: window.window,
-                },
-                client_rect,
-                verified_frame_dimensions: None,
-                capturer: Rc::new(
-                    yas::capture::X11Capturer::new(window.window).map_err(device_error)?,
-                ),
-                control,
-                cancel,
-            })
+        if hdr_mode {
+            return Err(HsrError::new(
+                "HSR-DEVICE-HDR",
+                hints::SCREEN_INVALID,
+                "Linux capture requires SDR; turn off HDR in the game and scanner settings",
+            ));
         }
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        {
-            let _ = (capture_method, hdr_mode, cancel);
-            Err(HsrError::new(
-                "HSR-DEVICE-PLATFORM",
-                hints::DEVICE_UNAVAILABLE,
-                "live HSR capture is currently implemented for Windows only",
-            ))
-        }
+        let (window, title, client_rect) = locate_hsr_window()?;
+        let capturer = yas::capture::create_capturer(
+            window,
+            capture_method,
+            hdr_mode,
+            yas::capture::constants::DEFAULT_HDR_WHITE_POINT,
+        )
+        .map_err(device_error)?;
+        Ok(Self {
+            identity: WindowIdentity {
+                title,
+                width: client_rect.width as u32,
+                height: client_rect.height as u32,
+                #[cfg(target_os = "windows")]
+                hwnd: window,
+                #[cfg(target_os = "linux")]
+                window_id: window,
+            },
+            client_rect,
+            verified_frame_dimensions: None,
+            capturer,
+            control: yas::system_control::prepared_control().map_err(device_error)?,
+            cancel,
+        })
     }
 
     fn refresh_rect(&mut self) -> HsrResult<()> {
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
-            #[cfg(target_os = "windows")]
-            let rect =
-                yas::utils::get_client_rect(self.identity.hwnd as _).map_err(device_error)?;
-            #[cfg(target_os = "linux")]
-            let rect =
-                yas::utils::get_client_rect(self.identity.window_id).map_err(device_error)?;
+            let rect = self
+                .identity
+                .native_window()
+                .client_rect()
+                .map_err(device_error)?;
             if rect.width <= 0 || rect.height <= 0 {
                 return Err(HsrError::new(
                     "HSR-DEVICE-GEOMETRY",
@@ -210,12 +169,11 @@ impl NativeHsrDevice {
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         {
             self.validate_window()?;
-            #[cfg(target_os = "windows")]
-            let current =
-                yas::utils::get_client_rect(self.identity.hwnd as _).map_err(device_error)?;
-            #[cfg(target_os = "linux")]
-            let current =
-                yas::utils::get_client_rect(self.identity.window_id).map_err(device_error)?;
+            let current = self
+                .identity
+                .native_window()
+                .client_rect()
+                .map_err(device_error)?;
             validate_client_geometry(self.client_rect, current, self.verified_frame_dimensions)?;
             Ok(current)
         }
@@ -356,67 +314,29 @@ impl HsrDevice for NativeHsrDevice {
     }
 
     fn focus_and_verify(&mut self) -> HsrResult<()> {
-        #[cfg(target_os = "windows")]
-        {
-            self.validate_window()?;
-            if !yas::utils::is_window_handle_valid(self.identity.hwnd as _) {
-                return Err(HsrError::new(
-                    "HSR-DEVICE-LOST",
-                    hints::DEVICE_UNAVAILABLE,
-                    "the selected HSR window handle is no longer valid",
-                ));
-            }
-            let focused = {
-                // A brief Alt press lets this process call SetForegroundWindow
-                // while another app, such as the editor, is in front.
-                unsafe {
-                    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-                        keybd_event, KEYEVENTF_KEYUP, VK_MENU,
-                    };
-                    keybd_event(VK_MENU as u8, 0, 0, 0);
-                    keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0);
-                }
-                yas::utils::show_window_and_set_foreground(self.identity.hwnd as _)
-                    .map_err(device_error)?
-            };
-            if !focused || !self.is_foreground() {
-                return Err(HsrError::new(
-                    "HSR-DEVICE-FOCUS",
-                    hints::FOCUS_REQUIRED,
-                    "Windows did not grant foreground focus to the selected HSR client",
-                ));
-            }
-            self.refresh_rect()?;
-        }
-        #[cfg(target_os = "linux")]
-        {
-            self.validate_window()?;
-            yas::utils::activate_window(self.identity.window_id).map_err(device_error)?;
+        use yas::window::FocusRequest;
+        self.validate_window()?;
+        let request = self
+            .identity
+            .native_window()
+            .request_focus(true)
+            .map_err(device_error)?;
+        if request == FocusRequest::Pending {
             self.wait(Duration::from_millis(100))?;
-            if !self.is_foreground() {
-                return Err(HsrError::new(
-                    "HSR-DEVICE-FOCUS",
-                    hints::FOCUS_REQUIRED,
-                    "compositor refused to focus the HSR X11 window",
-                ));
-            }
-            self.refresh_rect()?;
         }
+        if request == FocusRequest::Denied || !self.is_foreground() {
+            return Err(HsrError::new(
+                "HSR-DEVICE-FOCUS",
+                hints::FOCUS_REQUIRED,
+                "native window system did not grant foreground focus to the selected HSR client",
+            ));
+        }
+        self.refresh_rect()?;
         Ok(())
     }
 
     fn is_foreground(&self) -> bool {
-        #[cfg(target_os = "windows")]
-        unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() as isize
-                == self.identity.hwnd
-        }
-        #[cfg(target_os = "linux")]
-        {
-            yas::utils::is_window_foreground(self.identity.window_id)
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        false
+        self.identity.native_window().is_foreground()
     }
 
     fn input(&mut self, command: InputCommand) -> HsrResult<()> {
@@ -573,6 +493,29 @@ fn validate_aspect(width: u32, height: u32) -> HsrResult<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn locate_hsr_window() -> HsrResult<(yas::window::NativeWindowHandle, String, Rect<i32>)> {
+    let windows = yas::window::enumerate().map_err(device_error)?;
+    let candidates: Vec<_> = windows
+        .into_iter()
+        .filter(|(_, title)| HSR_WINDOW_TITLES.contains(&title.as_str()))
+        .collect();
+    if candidates.len() != 1 {
+        return Err(HsrError::new(
+            "HSR-DEVICE-WINDOW",
+            hints::DEVICE_UNAVAILABLE,
+            format!(
+                "expected one visible HSR X11/XWayland window, found {}",
+                candidates.len()
+            ),
+        ));
+    }
+    let (window, title) = candidates.into_iter().next().unwrap();
+    let rect = window.client_rect().map_err(device_error)?;
+    validate_aspect(rect.width as u32, rect.height as u32)?;
+    Ok((window.0, title, rect))
 }
 
 #[cfg(target_os = "windows")]

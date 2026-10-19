@@ -44,7 +44,7 @@ jobs:
       - name: Test Linux platform and shared behavior
         run: |
           python3 scripts/check_platform_dependencies.py
-          cargo check --locked --all-targets --features capture,dev-tools,test-as-invoker
+          cargo check --locked --workspace --all-targets --all-features
           cargo test --locked -p yas_core --features ort --lib
           xvfb-run -a cargo test --locked -p yas_core --test linux_x11 -- --ignored
           cargo test --locked -p genshin_scanner --lib

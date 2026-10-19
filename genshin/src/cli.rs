@@ -904,24 +904,6 @@ fn sanitize_config_json(val: &mut serde_json::Value) {
     ] {
         obj.remove(key);
     }
-    // Legacy unversioned good_config.json could store capture_method="print_window".
-    // Both config-loading paths sanitize before deserialization. Replace only
-    // this retired backend with the normal HDR-derived choice.
-    if obj
-        .get("capture_method")
-        .and_then(serde_json::Value::as_str)
-        == Some("print_window")
-    {
-        let hdr_mode = obj
-            .get("hdr_mode")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        obj.insert(
-            "capture_method".to_owned(),
-            serde_json::to_value(CaptureMethod::for_hdr_mode(hdr_mode))
-                .expect("capture method is serializable"),
-        );
-    }
     for &field in U64_FIELDS {
         let should_remove = match obj.get(field) {
             Some(serde_json::Value::Number(_)) => false,
@@ -1130,11 +1112,7 @@ pub struct GoodUserConfig {
     #[serde(default = "default_hdr_white_point")]
     pub hdr_white_point: f32,
     #[serde(default)]
-    pub capture_method: CaptureMethod,
-    #[serde(default)]
     pub dump_job_data: bool,
-    #[serde(default)]
-    pub save_on_cancel: bool,
     #[serde(default = "default_true")]
     pub only_keep_latest_export: bool,
     #[serde(default)]
@@ -1225,9 +1203,7 @@ impl Default for GoodUserConfig {
             dump_images: false,
             hdr_mode: false,
             hdr_white_point: default_hdr_white_point(),
-            capture_method: Default::default(),
             dump_job_data: false,
-            save_on_cancel: false,
             only_keep_latest_export: true,
             char_max_count: 0,
             weapon_max_count: 0,
@@ -1751,7 +1727,6 @@ impl GoodScannerApplication {
             dump_images: config.dump_images || config.debug_ach_scroll,
             hdr_mode: config.hdr_mode || user_config.hdr_mode,
             hdr_white_point: DEFAULT_HDR_WHITE_POINT,
-            capture_method: CaptureMethod::for_hdr_mode(config.hdr_mode || user_config.hdr_mode),
             output_dir: config.output_dir.clone(),
             ocr: config.ocr.clone(),
             char_max_count: config.char_max_count,
@@ -1759,7 +1734,6 @@ impl GoodScannerApplication {
             artifact_max_count: config.artifact_max_count,
             achievement_max_count: config.achievement_max_count,
             artifact_keep_five_star_filter: false,
-            save_on_cancel: false,
             debug_ach_scroll: config.debug_ach_scroll,
         };
 
@@ -1872,7 +1846,6 @@ pub struct ScanCoreConfig {
     pub dump_images: bool,
     pub hdr_mode: bool,
     pub hdr_white_point: f32,
-    pub capture_method: CaptureMethod,
     pub output_dir: String,
     pub ocr: OcrEngineArgs,
     pub char_max_count: usize,
@@ -1881,8 +1854,6 @@ pub struct ScanCoreConfig {
     pub achievement_max_count: usize,
     /// If true, keep the artifact tab's 5-star acquired-time filter enabled.
     pub artifact_keep_five_star_filter: bool,
-    /// Legacy caller option retained for compatibility; user scans now always save partial results.
-    pub save_on_cancel: bool,
     /// Dump one-tick achievement list scrolls, then exit.
     pub debug_ach_scroll: bool,
 }
@@ -1902,7 +1873,6 @@ impl Default for ScanCoreConfig {
             dump_images: false,
             hdr_mode: false,
             hdr_white_point: default_hdr_white_point(),
-            capture_method: CaptureMethod::default(),
             output_dir: ".".to_string(),
             ocr: OcrEngineArgs::default(),
             char_max_count: 0,
@@ -1910,7 +1880,6 @@ impl Default for ScanCoreConfig {
             artifact_max_count: 0,
             achievement_max_count: 0,
             artifact_keep_five_star_filter: false,
-            save_on_cancel: false,
             debug_ach_scroll: false,
         }
     }
@@ -2186,7 +2155,6 @@ pub fn run_server_core_observed(
         scan_artifacts: true,
         dump_images,
         hdr_mode: user_config.hdr_mode,
-        capture_method: CaptureMethod::for_hdr_mode(user_config.hdr_mode),
         ocr: ocr.clone(),
         ..ScanCoreConfig::default()
     };
@@ -2371,19 +2339,18 @@ mod tests {
             let mut saved = serde_json::json!({
                 "capture_method":"print_window", "hdr_mode":hdr_mode,
                 "traveler_name":"Traveler", "char_tab_delay":750,
-                "scan_artifacts":false, "dump_images":true
+                "scan_artifacts":false, "dump_images":true, "save_on_cancel":true
             });
             sanitize_config_json(&mut saved);
             let config: GoodUserConfig = serde_json::from_value(saved).unwrap();
-            assert_eq!(config.capture_method, CaptureMethod::for_hdr_mode(hdr_mode));
             assert_eq!(config.hdr_mode, hdr_mode);
             assert_eq!(config.traveler_name, "Traveler");
             assert_eq!(config.char_tab_delay, 750);
             assert!(!config.scan_artifacts);
             assert!(config.dump_images);
-            assert!(!serde_json::to_string(&config)
-                .unwrap()
-                .contains("print_window"));
+            let saved = serde_json::to_value(&config).unwrap();
+            assert!(saved.get("capture_method").is_none());
+            assert!(saved.get("save_on_cancel").is_none());
         }
     }
 

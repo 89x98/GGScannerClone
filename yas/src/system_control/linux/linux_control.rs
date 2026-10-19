@@ -456,23 +456,18 @@ impl LinuxControl {
     }
 
     pub fn mouse_drag(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) -> anyhow::Result<()> {
-        self.mouse_move_to(x0, y0)?;
-        self.mouse_button(true)?;
-        let result = (|| {
-            for step in 1..=12 {
-                let t = f64::from(step) / 12.0;
-                let eased = t * t * (3.0 - 2.0 * t);
-                self.mouse_move_to(
-                    x0 + (f64::from(x1 - x0) * eased).round() as i32,
-                    y0 + (f64::from(y1 - y0) * eased).round() as i32,
-                )?;
-                utils::sleep(40);
-            }
-            utils::sleep(350);
-            Ok(())
-        })();
-        let release = self.mouse_button(false);
-        result.and(release)
+        crate::system_control::gesture::drag(
+            self,
+            crate::system_control::gesture::DragTiming {
+                steps: 12,
+                move_settle_ms: 0,
+                press_settle_ms: 0,
+            },
+            x0,
+            y0,
+            x1,
+            y1,
+        )
     }
 
     pub fn mouse_move_to(&mut self, x: i32, y: i32) -> anyhow::Result<()> {
@@ -642,5 +637,14 @@ impl LinuxControl {
                 anyhow::Ok(())
             },
         })
+    }
+}
+
+impl crate::system_control::gesture::DragDriver for LinuxControl {
+    fn move_to(&mut self, x: i32, y: i32) -> anyhow::Result<()> {
+        self.mouse_move_to(x, y)
+    }
+    fn left_button(&mut self, pressed: bool) -> anyhow::Result<()> {
+        self.mouse_button(pressed)
     }
 }

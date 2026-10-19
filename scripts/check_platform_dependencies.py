@@ -5,6 +5,18 @@ import subprocess
 from pathlib import Path
 
 
+def canonical_dependency(line):
+    line = re.sub(r" \([^)]*\)", "", line)
+    # These two local switches became unconditional target-selected backends.
+    # Exclude only their names when comparing with pre-cleanup main; every
+    # third-party dependency and feature must still match exactly.
+    if line.split()[0] in {"yas_core", "genshin_scanner"}:
+        package, features = line.split(" features=", 1)
+        retired = {"capturer_wgc", "capturer_screenshots"}
+        line = package + " features=" + ",".join(f for f in features.split(",") if f not in retired)
+    return line
+
+
 def tree(root, target, capture):
     command = ["cargo", "tree", "--locked", "-p", "good_tools_app", "--target", target,
                "-e", "normal,build", "--prefix", "none", "--format", "{p} features={f}"]
@@ -12,7 +24,7 @@ def tree(root, target, capture):
         command += ["--features", "capture"]
     output = subprocess.check_output(command, cwd=root, text=True, encoding="utf-8")
     # Local checkout paths and tree deduplication markers are not dependencies.
-    return {re.sub(r" \([^)]*\)", "", line) for line in output.splitlines()}
+    return {canonical_dependency(line) for line in output.splitlines()}
 
 
 def main():

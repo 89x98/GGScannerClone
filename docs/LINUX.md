@@ -114,7 +114,7 @@ Tests run on Windows x86_64 MSVC and Ubuntu 24.04 WSL2, pinned Rust 1.95.0:
 
 | Regression group | Windows | Linux |
 | --- | --- | --- |
-| Core platform unit tests | 8 passed + concurrent enumeration test | 6 passed + isolated X11 fixture |
+| Core platform unit tests | 9 passed + concurrent enumeration test | 7 passed + isolated X11 fixture |
 | Genshin core/API/runtime | 255 passed | 255 passed (includes archive regression) |
 | Star Rail core | 97 passed | 97 passed + isolated native-device fixture |
 | Application unit tests | 25 passed | 17 passed |
@@ -122,8 +122,8 @@ Tests run on Windows x86_64 MSVC and Ubuntu 24.04 WSL2, pinned Rust 1.95.0:
 | Windows updater restart | 4 passed, 1 subprocess helper ignored by direct runner | Windows-only |
 
 
-- Both Windows edition dependency package/features sets compared exactly to a
-  clean main checkout. Linux-specific dependencies do not enter either set;
+- Both Windows edition third-party dependency package/features sets compared exactly to a
+  clean main checkout (the checker ignores only the retired local capture-switch names). Linux-specific dependencies do not enter either set;
   pktmon does not enter either Linux edition tree. Reproduce with
   `python scripts/check_platform_dependencies.py --baseline-root <main-checkout>`.
 - Windows capture build and both-platform all-target checks, plus scanner,
@@ -151,3 +151,36 @@ No real Genshin/Star Rail Linux game session was available. KWin/Mutter device
 delivery, portal live theme switching, fractional/multi-monitor Wayland input,
 multi-page game scanning and actual manager mutations still require operator
 testing. WSL/Xvfb checks must not be described as game compatibility validation.
+
+## Shared platform boundary and retired options
+
+OS implementation selection uses Rust's built-in compilation target (`target_os`),
+not independently selectable Windows/Linux Cargo features. `yas::window::NativeWindow`
+wraps the native handle without owning/destroying the game window. Private OS
+backends implement geometry, discovery, activation and foreground queries. Activation
+returns `Granted`, `Denied` or `Pending`; shared game code verifies pending compositor
+requests before continuing. Game-specific title/class checks remain game policy.
+
+Both games call `yas::capture::create_capturer` and
+`yas::system_control::prepared_control`; Windows retains BitBlt/WGC and its existing
+input timings, while Linux uses X11/XWayland and input permission preflight. Pointer
+drag sequencing and easing also share one implementation; existing backend pacing
+is passed as data, and failed movement always attempts button release. Shared
+controllers own navigation/retries, and both OS builds use the same ONNX Runtime
+preprocessing/inference/CTC decoder and model-selection settings.
+
+Removed unused paths/options:
+
+- `capturer_wgc`, `capturer_screenshots`: native backends are chosen by target.
+- `capturer_libwayshot`, its unused backend, unused `StreamingCapturer` and the
+  `GenericCapturer` alias whose constructors differed between operating systems.
+- `tract_onnx` and the alternate inference implementation unused by either edition.
+- Genshin's persisted/core `capture_method`, which execution already derived from HDR.
+- Persisted Genshin `save_on_cancel`, Star Rail `scanSaveOnCancel` and GUI state/preview
+  wiring. User scans already save partial results; manager jobs retain their separate
+  complete-result policy. Old JSON keys are accepted as unknown fields and disappear
+  on the next save, preserving other settings.
+
+Live CLI diagnostics, Star Rail's explicit diagnostic capture override, `capture`,
+`dev-tools`, `test-as-invoker` and `ort` remain supported. A missing GUI control alone
+is not grounds to delete a working CLI or internal manager policy.

@@ -88,7 +88,10 @@ fn old_configs_gain_system_theme_without_changing_saved_task_settings() {
         assert!(!store.config.star_rail.scan_characters);
         assert!(!store.config.star_rail.capture_only_keep_latest_export);
         assert!(store.config.star_rail.hdr_mode);
-        assert!(store.config.star_rail.scan_save_on_cancel);
+        assert!(serde_json::to_value(&store.config.star_rail)
+            .unwrap()
+            .get("scanSaveOnCancel")
+            .is_none());
         assert_eq!(store.config.star_rail.manager_port, 9123);
         assert_eq!(store.config.star_rail.trailblazer_name, "Player");
         assert_eq!(store.config.star_rail.output_dir, "D:/exports");

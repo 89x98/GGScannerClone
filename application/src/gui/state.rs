@@ -678,7 +678,6 @@ pub struct AppState {
     pub hdr_mode: bool,
     pub dump_job_data: bool,
     // Retained for old saved preferences and previews; scans always save on stop.
-    pub save_on_cancel: bool,
     pub only_keep_latest_export: bool,
     pub output_dir: String,
     pub char_max_count: usize,
@@ -733,7 +732,6 @@ impl AppState {
             dump_images: user_config.dump_images,
             hdr_mode: user_config.hdr_mode,
             dump_job_data: user_config.dump_job_data,
-            save_on_cancel: user_config.save_on_cancel,
             only_keep_latest_export: user_config.only_keep_latest_export,
             char_max_count: user_config.char_max_count,
             weapon_max_count: user_config.weapon_max_count,
@@ -785,9 +783,7 @@ impl AppState {
         self.user_config.dump_images = self.dump_images;
         self.user_config.hdr_mode = self.hdr_mode;
         self.user_config.hdr_white_point = yas::capture::constants::DEFAULT_HDR_WHITE_POINT;
-        self.user_config.capture_method = yas::capture::CaptureMethod::for_hdr_mode(self.hdr_mode);
         self.user_config.dump_job_data = self.dump_job_data;
-        self.user_config.save_on_cancel = self.save_on_cancel;
         self.user_config.only_keep_latest_export = self.only_keep_latest_export;
         self.user_config.char_max_count = self.char_max_count;
         self.user_config.weapon_max_count = self.weapon_max_count;
@@ -832,8 +828,6 @@ impl AppState {
             dump_images: self.dump_images,
             hdr_mode: self.hdr_mode,
             hdr_white_point: yas::capture::constants::DEFAULT_HDR_WHITE_POINT,
-            capture_method: yas::capture::CaptureMethod::for_hdr_mode(self.hdr_mode),
-            save_on_cancel: true,
             output_dir: self.output_dir.clone(),
             ocr: OcrEngineArgs::default(),
             char_max_count: self.char_max_count,

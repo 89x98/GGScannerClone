@@ -245,9 +245,33 @@ All help text is bilingual (Chinese + English). Flags are grouped into four sect
 - **Windows only**: Requires admin, uses Win32 APIs for window detection; packet capture (`capture` feature) is Windows-only (pktmon)
 - **Linux** (experimental): native build supports OCR scanning + manager. See "Linux Platform Layer" below.
 
+## Platform Architecture
+
+- Select the OS once through Rust's built-in `cfg(target_os)` and target-specific
+  Cargo dependency tables. Do not add combinable `windows`/`linux` Cargo features
+  or duplicate scanners/controllers for each OS.
+- `yas::window::NativeWindow` is the non-owning native window boundary. Its private
+  Windows/Linux backends implement geometry, liveness, foreground checks and
+  activation. `FocusRequest::Pending` requires later foreground verification;
+  a compositor accepting an activation request does not mean focus was granted.
+- `yas::capture::create_capturer` owns native capture construction and HDR support.
+  `yas::system_control::prepared_control` owns input initialization/preflight.
+  Pointer drag sequencing/easing lives once in `system_control/gesture.rs`; OS
+  backends provide primitives and validated timing data only.
+  Shared game code owns navigation, focus retry policy, OCR, matching and export.
+  Keep game-specific window identity checks in the respective game module.
+- Both OS builds use the same ONNX Runtime model loading, preprocessing, inference
+  and CTC decoding. Model choices are recognition settings, not OS implementations.
+- Cargo features represent real product/development capabilities: `capture`,
+  `dev-tools`, `test-as-invoker`, and core `ort`. Retired capture backend switches,
+  Tract inference and unused streaming/libwayshot capture paths are removed.
+- User scans always retain partial results; manager scans require complete data.
+  Do not restore the retired persisted `save_on_cancel` / `scanSaveOnCancel`
+  preferences or a second Genshin capture-method option derived from HDR.
+
 ## Linux Platform Layer
 
-- Linux-only code and dependencies must be isolated with `cfg(target_os = "linux")` and target-specific Cargo tables. Compare the Windows dependency package/features set against main before pushing.
+- Linux-only code and dependencies must be isolated with `cfg(target_os = "linux")` and target-specific Cargo tables. Compare the Windows third-party dependency package/features set against main before pushing; the checker normalizes only the two retired local capture switches.
 - Build `GGScannerOCR` on Linux. The current shared GUI, Genshin OCR/manager and experimental HSR OCR/attended manager use X11/XWayland windows. Native wine-wayland windows, HDR, packet capture and self-update are unsupported. Do not advertise stubbed capture as available.
 - `yas/src/utils/linux_x11.rs` owns discovery, root-coordinate geometry, focus, TrueColor capture decoding and XTEST; `system_control/linux/` owns XTEST/uinput injection. Linux input access is checked before navigation. No ydotool daemon is used.
 - Wayland uinput needs explicit device permissions; group membership alone does not grant access on every distro. See `docs/LINUX.md` for setup, boundaries and validation evidence.

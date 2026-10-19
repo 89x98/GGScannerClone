@@ -1,24 +1,15 @@
 pub use capture_method::CaptureMethod;
 pub use capturer::Capturer;
-pub use generic_capturer::GenericCapturer;
-
-// StreamingCapturer's default constructor builds a Windows capturer; the type
-// is currently unused elsewhere, so it stays Windows-only.
-#[cfg(target_os = "windows")]
-pub use stream_capturer::StreamingCapturer;
 
 mod capture_method;
 mod capturer;
 pub mod constants;
-mod generic_capturer;
-#[cfg(target_os = "windows")]
-mod stream_capturer;
 
 // windows
 
 #[cfg(target_os = "windows")]
 mod screenshots_capturer;
-#[cfg(all(target_os = "windows", feature = "capturer_wgc"))]
+#[cfg(target_os = "windows")]
 mod wgc_capturer;
 #[cfg(target_os = "windows")]
 mod winapi_capturer;
@@ -27,7 +18,7 @@ mod windows_capturer;
 
 #[cfg(target_os = "windows")]
 pub use screenshots_capturer::ScreenshotsCapturer;
-#[cfg(all(target_os = "windows", feature = "capturer_wgc"))]
+#[cfg(target_os = "windows")]
 pub use wgc_capturer::WgcCapturer;
 #[cfg(target_os = "windows")]
 pub use winapi_capturer::WinapiCapturer;
@@ -41,14 +32,5 @@ mod x11_capturer;
 #[cfg(target_os = "linux")]
 pub use x11_capturer::X11Capturer;
 
-#[cfg(all(target_os = "linux", feature = "capturer_libwayshot"))]
-mod libwayshot_capturer;
-
-#[cfg(all(target_os = "linux", feature = "capturer_libwayshot"))]
-pub use libwayshot_capturer::LibwayshotCapturer;
-
-#[cfg(all(target_os = "linux", feature = "capturer_screenshots"))]
-mod screenshots_capturer;
-
-#[cfg(all(target_os = "linux", feature = "capturer_screenshots"))]
-pub use screenshots_capturer::ScreenshotsCapturer;
+mod native;
+pub use native::create_capturer;
