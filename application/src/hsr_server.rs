@@ -239,10 +239,30 @@ fn handle(
         }
     }
     let job = if manage {
-        std::str::from_utf8(&bytes)
-            .ok()
-            .and_then(|text| ManagerInstructionsEnvelope::parse_json(text).ok())
-            .map(Job::Manage)
+        let text = match std::str::from_utf8(&bytes) {
+            Ok(text) => text,
+            Err(_) => {
+                reply(request, 400, json!({"error":"invalid_utf8"}), origin);
+                return;
+            },
+        };
+        match ManagerInstructionsEnvelope::parse_json(text) {
+            Ok(envelope) => Some(Job::Manage(envelope)),
+            Err(error) => {
+                let hint = error.hint();
+                reply(
+                    request,
+                    400,
+                    json!({"error": {
+                        "zh": hint.select(hsr_scanner::localization::Language::ZhCn),
+                        "en": hint.select(hsr_scanner::localization::Language::En),
+                        "details": error.localized_message(hsr_scanner::localization::Language::En),
+                    }}),
+                    origin,
+                );
+                return;
+            },
+        }
     } else {
         serde_json::from_slice::<ScanRequest>(&bytes)
             .ok()

@@ -24,6 +24,10 @@ bodies are bounded to 16 MiB. Browser local-network permission may be required.
   v1 envelope. Requires exact reference identity, the privacy literals, safe
   IDs, and correct semantic SHA-256 idempotency. The explicit website Apply is
   consent for the submitted desired states; it does not grant other operations.
+  A visible matcher may occur only once per envelope. GGStarRail keeps repeated
+  matchers in its preview counts and omits them from the submitted batch.
+  Validation failures return 400 `{error:{zh,en,details}}` before queuing a job;
+  details retain the validation code and reason without echoing request data.
 - `POST /scan`: `{characters:boolean,lightCones:boolean,relics:boolean}`;
   at least one true. Uses the same settings/runtime/export as local scanning.
   Character requests require the configured Trailblazer nickname and gender.

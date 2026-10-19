@@ -1,0 +1,84 @@
+{
+  "schema": "goodscanner.hsr.manager-instructions",
+  "schemaVersion": 1,
+  "requestId": "website-mixed-batch",
+  "idempotencyKey": "sha256:05d2f89a5a278508351da04502a7dc97576cab3321da2bb9cfa18bb7d993f59e",
+  "reference": {
+    "schemaVersion": 1,
+    "provider": "gilore.ggstarrail-reference",
+    "revision": "014e33e2404f8cd668bf06fc2ea6db53b6bc3992"
+  },
+  "privacy": {
+    "accountIdentifiersIncluded": false,
+    "rawPacketDataIncluded": false,
+    "serverItemIdentifiersIncluded": false
+  },
+  "instructions": [
+    {
+      "id": "hsr-manager-0003-discard",
+      "matcher": {
+        "key": "61011",
+        "gameId": 61011,
+        "setKey": "101",
+        "locationKey": null,
+        "rarity": 5,
+        "slot": "Head",
+        "level": 15,
+        "mainStat": {
+          "key": "HPDelta",
+          "value": 705.6
+        },
+        "substats": [
+          {
+            "key": "CriticalChanceBase",
+            "value": 8.7
+          },
+          {
+            "key": "SpeedDelta",
+            "value": 4
+          }
+        ]
+      },
+      "before": {
+        "lock": false,
+        "discard": false
+      },
+      "desired": {
+        "discard": true
+      }
+    },
+    {
+      "id": "hsr-manager-0004-lock",
+      "matcher": {
+        "key": "61011",
+        "gameId": 61011,
+        "setKey": "101",
+        "locationKey": null,
+        "rarity": 5,
+        "slot": "Head",
+        "level": 15,
+        "mainStat": {
+          "key": "HPDelta",
+          "value": 705.6
+        },
+        "substats": [
+          {
+            "key": "CriticalChanceBase",
+            "value": 8.7
+          },
+          {
+            "key": "SpeedDelta",
+            "value": 5
+          }
+        ]
+      },
+      "before": {
+        "lock": false,
+        "discard": false
+      },
+      "desired": {
+        "lock": true
+      }
+    }
+  ]
+}
