@@ -399,9 +399,7 @@ pub fn check_for_update(asset_name: &str) -> Result<UpdateStatus> {
     // Release assets are Windows executables; there is nothing to
     // self-update from on other platforms yet.
     let _ = asset_name;
-    Err(anyhow!(
-        "自动更新目前仅支持 Windows / Self-update is currently Windows-only"
-    ))
+    Err(anyhow!("Self-update is currently Windows-only"))
 }
 
 #[cfg(target_os = "windows")]

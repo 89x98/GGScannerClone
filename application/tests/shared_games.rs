@@ -476,7 +476,6 @@ fn obsolete_archive_import_path_is_removed_without_changing_saved_preferences() 
             saved["starRail"]["hdrMode"] = false.into();
             saved["starRail"]["managerPort"] = 8765.into();
             saved["starRail"]["scanOnlyKeepLatestExport"] = true.into();
-            saved["starRail"]["scanSaveOnCancel"] = false.into();
             saved["starRail"]["verbose"] = false.into();
             saved["starRail"]["stopOnFailure"] = false.into();
             saved["starRail"]["dumpJobData"] = false.into();
@@ -693,12 +692,10 @@ fn scan_export_preferences_load_old_configs_and_preserve_explicit_choices() {
         .unwrap();
         let mut store = ApplicationConfigStore::load(&path).unwrap();
         assert!(store.config.star_rail.scan_only_keep_latest_export);
-        assert!(!store.config.star_rail.scan_save_on_cancel);
         assert!(!store.config.star_rail.scan_characters);
         assert_eq!(store.config.star_rail.manager_port, 8766);
         assert_eq!(store.config.star_rail.output_dir, "D:\\exports");
         store.config.star_rail.scan_only_keep_latest_export = false;
-        store.config.star_rail.scan_save_on_cancel = true;
         store.persist_now().unwrap();
         assert_eq!(
             ApplicationConfigStore::load(&path).unwrap().config,
@@ -838,7 +835,7 @@ fn completed_journal_is_archived_before_a_distinct_plan_uses_the_base_path() {
     remove_test_tree(&root);
 }
 
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", target_os = "windows"))]
 #[test]
 fn stop_before_worker_start_never_opens_capture_boundary() {
     assert!(
@@ -847,7 +844,7 @@ fn stop_before_worker_start_never_opens_capture_boundary() {
     );
 }
 
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", target_os = "windows"))]
 #[test]
 fn genshin_capture_completion_releases_native_boundary_without_recapture_or_rendering() {
     use good_tools_app::gui::capture_tab::{native_boundary_available_for_test, CaptureTabState};
@@ -896,7 +893,7 @@ fn genshin_capture_completion_releases_native_boundary_without_recapture_or_rend
     remove_test_tree(&root);
 }
 
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", target_os = "windows"))]
 #[test]
 fn completed_capture_advances_and_exports_while_its_tab_is_inactive() {
     let root = temp_root("inactive-capture-completion");

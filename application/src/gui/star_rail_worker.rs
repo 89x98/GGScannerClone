@@ -871,7 +871,6 @@ mod feedback_tests {
     #[test]
     fn manager_scan_cannot_inherit_partial_export_or_sample_preferences() {
         let settings = StarRailSettings {
-            scan_save_on_cancel: true,
             max_gear: 12,
             ..Default::default()
         };

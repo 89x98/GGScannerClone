@@ -6,9 +6,7 @@ use image::RgbImage;
 use yas::{log_debug, log_info, log_warn};
 
 use yas::cancel::CancelToken;
-#[cfg(all(target_os = "windows", feature = "capturer_wgc"))]
-use yas::capture::WgcCapturer;
-use yas::capture::{CaptureMethod, Capturer, GenericCapturer};
+use yas::capture::{CaptureMethod, Capturer};
 use yas::game_info::GameInfo;
 use yas::ocr::ImageToText;
 use yas::positioning::Rect;
@@ -54,6 +52,7 @@ const PANEL_FRAME_MAX_MEAN_EXCESS_DIFF: f64 = 0.20;
 const PANEL_FRAME_MAX_CHANGED_BYTE_RATIO: f64 = 0.01;
 /// Byte deltas above this are counted by the ratio guard.
 const PANEL_FRAME_CHANGED_BYTE_DIFF: u8 = 16;
+
 pub(crate) fn panel_frames_similar(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -106,19 +105,15 @@ impl GenshinGameController {
             ),
         }
 
-        let capturer: Rc<dyn Capturer<RgbImage>> =
-            Self::create_capturer(&game_info, capture_method)?;
-
-        let mut system_control = SystemControl::new();
+        let capturer = yas::capture::create_capturer(
+            game_info.native_window_handle(),
+            capture_method,
+            hdr_mode,
+            super::pixel_profile::hdr_white_point(),
+        )?;
+        let system_control = yas::system_control::prepared_control()?;
         #[cfg(target_os = "linux")]
-        {
-            anyhow::ensure!(
-                !hdr_mode,
-                "Linux capture requires SDR; turn off HDR in the game and scanner settings"
-            );
-            log_info!("截图方式: X11/XWayland", "Capture method: X11/XWayland");
-            system_control.prepare()?;
-        }
+        log_info!("截图方式: X11/XWayland", "Capture method: X11/XWayland");
         Ok(Self {
             game_info,
             scaler,
@@ -127,48 +122,6 @@ impl GenshinGameController {
             panel_snapshot: Vec::new(),
             cancel: CancelToken::new(),
         })
-    }
-
-    fn create_capturer(
-        game_info: &GameInfo,
-        method: CaptureMethod,
-    ) -> Result<Rc<dyn Capturer<RgbImage>>> {
-        #[cfg(target_os = "windows")]
-        {
-            let hwnd = game_info.hwnd;
-            return match method {
-                CaptureMethod::BitBlt => Ok(Rc::new(GenericCapturer::new()?)),
-                CaptureMethod::Wgc => {
-                    #[cfg(feature = "capturer_wgc")]
-                    {
-                        let hdr = super::pixel_profile::is_hdr_mode();
-                        let wp = super::pixel_profile::hdr_white_point();
-                        Ok(Rc::new(WgcCapturer::new(hwnd, hdr, wp)?))
-                    }
-                    #[cfg(not(feature = "capturer_wgc"))]
-                    {
-                        Err(anyhow!(
-                            "WGC capture not compiled in (enable capturer_wgc feature)"
-                        ))
-                    }
-                },
-            };
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let _ = method;
-            Ok(Rc::new(yas::capture::X11Capturer::new(
-                game_info.window_id,
-            )?))
-        }
-
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        {
-            let _ = (game_info, method);
-            Err(anyhow!(
-                "此平台不支持截图 / capture is not supported on this platform"
-            ))
-        }
     }
 }
 
@@ -234,37 +187,25 @@ impl GenshinGameController {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    fn refresh_window_geometry(&mut self, hwnd: windows_sys::Win32::Foundation::HWND) {
-        self.apply_window_rect(utils::get_client_rect(hwnd));
-    }
-
-    #[cfg(target_os = "linux")]
-    fn refresh_window_geometry(&mut self, window_id: u32) {
-        self.apply_window_rect(utils::get_client_rect(window_id));
-    }
-
-    #[cfg(target_os = "windows")]
-    fn focus_hwnd(&mut self, hwnd: windows_sys::Win32::Foundation::HWND, settle_ms: u32) -> bool {
-        if !utils::is_window_handle_valid(hwnd) {
+    fn focus_window(&mut self, window: yas::window::NativeWindow, settle_ms: u32) -> bool {
+        use yas::window::FocusRequest;
+        if !window.is_valid() {
             return false;
         }
-
-        match utils::show_window_and_set_foreground(hwnd) {
-            Ok(true) => {
-                self.refresh_window_geometry(hwnd);
+        match window.request_focus(false) {
+            Ok(request) => {
+                self.apply_window_rect(window.client_rect());
+                if request == FocusRequest::Denied {
+                    yas::log_error!(
+                        "游戏窗口已恢复但未获得前台焦点；请手动点击游戏窗口后重试",
+                        "Game window was restored but did not become foreground; click the game window and retry"
+                    );
+                    return false;
+                }
                 if settle_ms > 0 {
                     utils::sleep(settle_ms);
                 }
-                true
-            },
-            Ok(false) => {
-                self.refresh_window_geometry(hwnd);
-                yas::log_error!(
-                    "游戏窗口已恢复但未获得前台焦点；请手动点击游戏窗口后重试",
-                    "Game window was restored but did not become foreground; click the game window and retry"
-                );
-                false
+                request == FocusRequest::Granted || window.is_foreground()
             },
             Err(e) => {
                 log_warn!(
@@ -277,34 +218,7 @@ impl GenshinGameController {
         }
     }
 
-    /// Linux counterpart of `focus_hwnd`: EWMH activation is best-effort —
-    /// under XWayland the compositor decides whether the window is raised.
-    #[cfg(target_os = "linux")]
-    fn focus_window_id(&mut self, window_id: u32, settle_ms: u32) -> bool {
-        if !utils::is_window_handle_valid(window_id) {
-            return false;
-        }
-
-        match utils::activate_window(window_id) {
-            Ok(()) => {
-                self.refresh_window_geometry(window_id);
-                if settle_ms > 0 {
-                    utils::sleep(settle_ms);
-                }
-                utils::is_window_foreground(window_id)
-            },
-            Err(e) => {
-                log_warn!(
-                    "[controller] 切换游戏窗口焦点失败: {}",
-                    "[controller] failed to focus game window: {}",
-                    e
-                );
-                false
-            },
-        }
-    }
-
-    /// Focus the game window using Win32 SetForegroundWindow.
+    /// Focus the selected native game window.
     /// Ensures subsequent keyboard events go to Genshin, not the terminal.
     ///
     /// If the window isn't found, logs an error and returns WITHOUT moving
@@ -323,74 +237,40 @@ impl GenshinGameController {
     }
 
     fn focus_game_window_settle(&mut self, settle_ms: u32) {
-        #[cfg(target_os = "windows")]
-        {
-            let selected_hwnd = self.game_info.hwnd as windows_sys::Win32::Foundation::HWND;
-            if self.focus_hwnd(selected_hwnd, settle_ms) {
-                return;
-            }
-
-            let window_names = ["\u{539F}\u{795E}", "Genshin Impact"]; // 原神
-            let handles = utils::iterate_window();
-            for hwnd in &handles {
-                if *hwnd == selected_hwnd {
+        let selected = self.game_info.native_window();
+        if self.focus_window(selected, settle_ms) {
+            return;
+        }
+        let window_names = ["原神", "Genshin Impact"];
+        if let Ok(windows) = yas::window::enumerate() {
+            for (window, title) in windows {
+                if window == selected || !window_names.contains(&title.trim()) {
                     continue;
                 }
-                if let Some(title) = utils::get_window_title(*hwnd) {
-                    let trimmed = title.trim();
-                    if window_names.iter().any(|n| trimmed == *n) {
-                        if self.focus_hwnd(*hwnd, settle_ms) {
-                            self.game_info.hwnd = *hwnd as isize;
-                            return;
-                        }
+                if self.focus_window(window, settle_ms) {
+                    self.game_info.set_native_window(window);
+                    // X11 capture is bound to the selected client. Rebind it
+                    // if the game recreated its window, rather than capturing a stale id.
+                    #[cfg(target_os = "linux")]
+                    match yas::capture::create_capturer(
+                        window.0,
+                        CaptureMethod::BitBlt,
+                        false,
+                        super::pixel_profile::hdr_white_point(),
+                    ) {
+                        Ok(capturer) => self.capturer = capturer,
+                        Err(_) => self.cancel.cancel(yas::cancel::StopReason::GameLost),
                     }
+                    return;
                 }
             }
-            self.cancel.cancel(yas::cancel::StopReason::GameLost);
-            yas::log_error!(
-                "游戏窗口不可用或无法获得焦点，已停止操作。",
-                "Game window unavailable or focus denied; operation stopped."
-            );
-            return;
         }
         #[cfg(target_os = "linux")]
-        {
-            let selected = self.game_info.window_id;
-            if self.focus_window_id(selected, settle_ms) {
-                return;
-            }
-
-            // The stored window id may be stale (game restarted) — re-find by
-            // title and update the handle, mirroring the Windows flow.
-            let window_names = ["\u{539F}\u{795E}", "Genshin Impact"]; // 原神
-            if let Ok(windows) = utils::enumerate_windows() {
-                for w in &windows {
-                    if w.window == selected {
-                        continue;
-                    }
-                    if window_names.iter().any(|n| w.title == *n) {
-                        if self.focus_window_id(w.window, settle_ms) {
-                            self.game_info.window_id = w.window;
-                            match yas::capture::X11Capturer::new(w.window) {
-                                Ok(capturer) => self.capturer = Rc::new(capturer),
-                                Err(_) => self.cancel.cancel(yas::cancel::StopReason::GameLost),
-                            }
-                            return;
-                        }
-                    }
-                }
-            }
-            self.cancel.cancel(yas::cancel::StopReason::GameLost);
-            yas::log_error!(
-                "游戏窗口不可用或无法获得焦点，已停止操作。",
-                "Game window unavailable or focus denied; operation stopped."
-            );
-            return;
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-        {
-            let _ = settle_ms;
-        }
+        self.cancel.cancel(yas::cancel::StopReason::GameLost);
+        yas::log_error!(
+            "游戏窗口不可用或无法获得焦点，请点击游戏窗口后重试。",
+            "Game window unavailable or focus denied; click the game window and retry."
+        );
     }
 }
 
@@ -809,6 +689,7 @@ impl GenshinGameController {
                     utils::sleep(18 - cap_ms);
                 }
             }
+            // else: still showing the previous item's content, keep waiting
         }
 
         // Timeout — store whatever we have and proceed

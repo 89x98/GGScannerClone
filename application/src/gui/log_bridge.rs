@@ -298,6 +298,7 @@ fn format_timestamp() -> String {
     // Local wall-clock time, matching the Windows `GetLocalTime` path. The
     // previous `epoch % 86400` arithmetic printed UTC on Linux, so every line
     // of a run log was offset from the file's own modification time.
+    #[cfg(target_os = "linux")]
     if let Some(local) = yas::utils::local_time_hms() {
         return local;
     }

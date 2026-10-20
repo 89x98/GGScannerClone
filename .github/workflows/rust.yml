@@ -61,7 +61,7 @@ jobs:
 
       - name: Test user-facing error diagnostics
         run: |
-          cargo test -p yas_core --features ort,capturer_wgc --lib --test window_enumeration
+          cargo test -p yas_core --features ort --lib --test window_enumeration
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p genshin_scanner --lib scan_worker::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

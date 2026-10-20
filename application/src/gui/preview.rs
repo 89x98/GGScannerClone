@@ -64,12 +64,6 @@ pub fn run(
             );
             app.save_settings = false;
             app.data_refresh.preview_age(5 * 3600);
-            if tab == ToolTab::Scanner && scenario == "partial" {
-                match game {
-                    Game::Genshin => app.state.save_on_cancel = true,
-                    Game::StarRail => app.app_config.config.star_rail.scan_save_on_cancel = true,
-                }
-            }
             if completed {
                 app.app_config.config.star_rail.trailblazer_name =
                     lang.t("开拓者", "Trailblazer").into();
@@ -159,7 +153,7 @@ pub fn run(
                 "ready" | "login" | "update" | "done" => {},
                 _ => panic!("unsupported preview scenario"),
             }
-            #[cfg(feature = "capture")]
+            #[cfg(all(feature = "capture", target_os = "windows"))]
             if tab == ToolTab::Capture && !matches!(scenario.as_str(), "ready" | "update") {
                 match game {
                     Game::Genshin => app.capture_tab.preview_feedback(&scenario),

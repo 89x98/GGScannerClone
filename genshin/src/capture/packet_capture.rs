@@ -110,8 +110,7 @@ impl PacketCapture {
         Err(CaptureError::Capture {
             has_captured: false,
             error: Error::msg(
-                "抓包功能目前仅支持 Windows（pktmon），Linux 抓包后端尚未实现。\n\
-                 Packet capture is currently Windows-only (pktmon); a Linux backend is not implemented yet.",
+                "Packet capture is Windows-only (pktmon); a Linux backend is not implemented.",
             ),
         })
     }

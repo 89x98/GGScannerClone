@@ -9,7 +9,7 @@ use yas::{cancel::CancelToken, capture::CaptureMethod};
 
 use crate::{
     annotator,
-    device::{HsrDevice, InputCommand, WindowsHsrDevice},
+    device::{HsrDevice, InputCommand, NativeHsrDevice},
     error::{hints, HsrError, HsrResult},
     layout,
     manager::{
@@ -240,7 +240,7 @@ pub struct HsrScanner<D, R> {
     inventory_frame_after_owner: Option<RgbImage>,
 }
 
-impl HsrScanner<WindowsHsrDevice, PaddleOcrReader> {
+impl HsrScanner<NativeHsrDevice, PaddleOcrReader> {
     pub fn live(references: ReferenceCache, config: ScanConfig) -> HsrResult<Self> {
         Self::live_with_cancel(references, config, CancelToken::new())
     }
@@ -252,7 +252,7 @@ impl HsrScanner<WindowsHsrDevice, PaddleOcrReader> {
         config: ScanConfig,
         cancel: CancelToken,
     ) -> HsrResult<Self> {
-        let device = WindowsHsrDevice::locate_with_cancel(
+        let device = NativeHsrDevice::locate_with_cancel(
             config.effective_capture_method(),
             config.hdr_mode,
             cancel,
@@ -2238,7 +2238,7 @@ impl<D: HsrDevice, R: OcrReader> HsrScanner<D, R> {
         // both confidently known icon states without opening another OCR gap.
         let button = self.recapture_and_validate_pre_click(&selected, target, field)?;
 
-        // This is the sole state-changing input. WindowsHsrDevice additionally
+        // This is the sole state-changing input. NativeHsrDevice additionally
         // rechecks cancellation, foreground ownership, and client geometry
         // immediately before issuing the button event.
         self.issue_input(InputCommand::Click(button.center()))?;

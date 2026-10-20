@@ -13,21 +13,25 @@ const COLOR_SCHEME_KEY: &str = "color-scheme";
 
 /// Spawn the detection thread; each resolved theme is sent through the
 /// channel (initial value first, then live desktop switches). Returns `None`
-/// on platforms where winit already follows the system theme.
+/// if the Linux watcher thread cannot start.
 #[cfg(target_os = "linux")]
-pub fn spawn_theme_watcher() -> Option<Receiver<Option<Theme>>> {
+pub fn spawn_theme_watcher(ctx: egui::Context) -> Option<Receiver<Option<Theme>>> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("theme-watcher".to_owned())
-        .spawn(move || watch_desktop_theme(&tx))
+        .spawn(move || watch_desktop_theme(&tx, &ctx))
         .ok()?;
     Some(rx)
 }
 
 #[cfg(target_os = "linux")]
-fn watch_desktop_theme(tx: &std::sync::mpsc::Sender<Option<Theme>>) {
+fn watch_desktop_theme(tx: &std::sync::mpsc::Sender<Option<Theme>>, ctx: &egui::Context) {
     let send = |theme: Option<Theme>| {
-        let _ = tx.send(theme);
+        let sent = tx.send(theme).is_ok();
+        if sent {
+            ctx.request_repaint();
+        }
+        sent
     };
 
     let conn = match zbus::blocking::Connection::session() {
@@ -57,7 +61,9 @@ fn watch_desktop_theme(tx: &std::sync::mpsc::Sender<Option<Theme>>) {
                     continue;
                 };
                 if namespace == APPEARANCE_NS && key == COLOR_SCHEME_KEY {
-                    send(color_scheme_value_to_theme(&value));
+                    if !send(color_scheme_value_to_theme(&value)) {
+                        break;
+                    }
                 }
             }
         },

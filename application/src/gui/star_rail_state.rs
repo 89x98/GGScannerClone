@@ -24,13 +24,13 @@ pub struct StarRailState {
     pub scan_handle: Option<TaskHandle>,
     pub manager_handle: Option<TaskHandle>,
     pub manager_job: Arc<Mutex<crate::hsr_server::JobState>>,
-    #[cfg(feature = "capture")]
+    #[cfg(all(feature = "capture", target_os = "windows"))]
     pub capture: super::star_rail_capture_tab::StarRailCaptureState,
 }
 
 impl StarRailState {
     pub fn new(output_dir: String) -> Self {
-        #[cfg(not(feature = "capture"))]
+        #[cfg(not(all(feature = "capture", target_os = "windows")))]
         let _ = output_dir;
         Self {
             scan_status: Arc::new(Mutex::new(TaskStatus::Idle)),
@@ -40,7 +40,7 @@ impl StarRailState {
             scan_handle: None,
             manager_handle: None,
             manager_job: Arc::new(Mutex::new(Default::default())),
-            #[cfg(feature = "capture")]
+            #[cfg(all(feature = "capture", target_os = "windows"))]
             capture: super::star_rail_capture_tab::StarRailCaptureState::new(output_dir),
         }
     }
@@ -59,7 +59,7 @@ impl StarRailState {
 
     pub fn is_busy(&self) -> bool {
         let busy = self.scan_running() || self.manager_running();
-        #[cfg(feature = "capture")]
+        #[cfg(all(feature = "capture", target_os = "windows"))]
         let busy = busy || self.capture.is_busy();
         busy
     }
@@ -73,7 +73,7 @@ impl StarRailState {
                 .manager_handle
                 .as_ref()
                 .is_some_and(TaskHandle::requires_restart);
-        #[cfg(feature = "capture")]
+        #[cfg(all(feature = "capture", target_os = "windows"))]
         let required = required || self.capture.requires_restart();
         required
     }

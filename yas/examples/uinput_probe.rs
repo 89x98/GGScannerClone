@@ -17,18 +17,17 @@ mod linux {
     use anyhow::{Context, Result};
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{
-        ButtonMask, ConfigureWindowAux, ConnectionExt, CreateWindowAux, EventMask, WindowClass,
+        ConfigureWindowAux, ConnectionExt, CreateWindowAux, EventMask, WindowClass,
     };
 
     use yas_core::system_control::linux::uinput_dev::UinputDevices;
-    use yas_core::utils;
 
     fn pointer_pos<C: Connection>(conn: &C, root: u32) -> Result<(i32, i32)> {
         let reply = conn.query_pointer(root)?.reply()?;
         Ok((reply.root_x as i32, reply.root_y as i32))
     }
 
-    fn main() -> Result<()> {
+    pub fn run() -> Result<()> {
         let mut devices = UinputDevices::create().context("creating the virtual input devices")?;
         println!(
             "virtual devices created (touchscreen: {})",
@@ -126,8 +125,8 @@ mod linux {
     }
 }
 #[cfg(target_os = "linux")]
-fn main() {
-    linux::run();
+fn main() -> anyhow::Result<()> {
+    linux::run()
 }
 #[cfg(not(target_os = "linux"))]
 fn main() {

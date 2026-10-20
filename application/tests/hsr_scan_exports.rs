@@ -207,7 +207,6 @@ fn a_write_failure_after_stop_is_reported_and_keeps_previous_results() {
     // before cleanup, even when this was a user-cancelled partial scan.
     let settings = StarRailSettings {
         output_dir: old.display().to_string(),
-        scan_save_on_cancel: true,
         ..Default::default()
     };
     let (scanned, refs) = result(false, false);

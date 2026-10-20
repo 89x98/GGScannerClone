@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-use hsr_scanner::device::{HsrDevice, InputCommand, WindowsHsrDevice};
+use hsr_scanner::device::{HsrDevice, InputCommand, NativeHsrDevice};
 use x11rb::{
     connection::Connection,
     protocol::xproto::{self, ConnectionExt as _},
@@ -45,7 +45,7 @@ fn hsr_device_uses_real_linux_capture_and_rejects_geometry_drift() {
     std::env::remove_var("WAYLAND_DISPLAY");
     let cancel = CancelToken::new();
     let mut device =
-        WindowsHsrDevice::locate_with_cancel(CaptureMethod::BitBlt, false, cancel.clone()).unwrap();
+        NativeHsrDevice::locate_with_cancel(CaptureMethod::BitBlt, false, cancel.clone()).unwrap();
     device.focus_and_verify().unwrap();
     assert!(device.is_foreground());
     assert_eq!(device.capture_client().unwrap().dimensions(), (960, 540));

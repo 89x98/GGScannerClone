@@ -151,11 +151,6 @@ fn run_gui_with_agent_mode(agent_mode: bool) {
         ..Default::default()
     };
 
-    // Linux: winit cannot detect the desktop theme, so a watcher thread feeds
-    // it to egui (initial value + live switches). On other platforms winit
-    // follows the system theme natively and this returns None.
-    #[cfg(target_os = "linux")]
-    let theme_rx = linux_theme::spawn_theme_watcher();
     // Cloned before `state` moves into `GuiApp`: an update-triggered restart is
     // detected after `run_native` returns.
     let update_state = state.update_state.clone();
@@ -170,7 +165,7 @@ fn run_gui_with_agent_mode(agent_mode: bool) {
                 &cc.egui_ctx,
                 agent_mode,
                 #[cfg(target_os = "linux")]
-                theme_rx,
+                linux_theme::spawn_theme_watcher(cc.egui_ctx.clone()),
             )))
         }),
     ) {

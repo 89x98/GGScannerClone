@@ -162,8 +162,6 @@ pub struct StarRailSettings {
     #[serde(default = "default_true")]
     pub scan_only_keep_latest_export: bool,
     #[serde(default)]
-    pub scan_save_on_cancel: bool,
-    #[serde(default)]
     pub manager_instructions_path: String,
     #[serde(default = "default_manager_port")]
     pub manager_port: u16,
@@ -203,7 +201,6 @@ impl Default for StarRailSettings {
             stop_on_failure: false,
             dump_job_data: false,
             scan_only_keep_latest_export: true,
-            scan_save_on_cancel: false,
             manager_instructions_path: String::new(),
             manager_port: default_manager_port(),
             manager_journal_path: String::new(),

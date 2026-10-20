@@ -28,7 +28,6 @@ fn both_games_expose_and_toggle_the_same_scan_export_preferences() {
             genshin.lang = lang;
             genshin.scan_characters = false;
             genshin.only_keep_latest_export = true;
-            genshin.save_on_cancel = false;
             let mut settings = StarRailSettings {
                 scan_characters: false,
                 ..Default::default()
@@ -95,10 +94,8 @@ fn both_games_expose_and_toggle_the_same_scan_export_preferences() {
             }
             if star_rail {
                 assert!(!settings.scan_only_keep_latest_export);
-                assert!(!settings.scan_save_on_cancel);
             } else {
                 assert!(!genshin.only_keep_latest_export);
-                assert!(!genshin.save_on_cancel);
             }
         }
     }

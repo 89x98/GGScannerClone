@@ -10,9 +10,8 @@ use x11rb::{
 };
 use yas_core::{
     cancel::{CancelToken, StopReason},
-    capture::{Capturer, X11Capturer},
+    capture::{create_capturer, CaptureMethod},
     positioning::Rect,
-    system_control::SystemControl,
     utils,
 };
 
@@ -60,10 +59,50 @@ fn window_capture_input_and_cancellation() -> anyhow::Result<()> {
         .iter()
         .any(|w| w.window == window && w.title == "原神"));
     assert_eq!(utils::get_client_rect(window)?, Rect::new(40, 50, 160, 90));
-    utils::activate_window(window)?;
-    assert!(utils::is_window_foreground(window));
+    let native = yas_core::window::NativeWindow(window);
+    assert!(native.is_valid());
+    assert_eq!(native.client_rect()?, Rect::new(40, 50, 160, 90));
+    assert!(yas_core::window::enumerate()?
+        .iter()
+        .any(|(w, title)| *w == native && title == "原神"));
+    assert_eq!(
+        native.request_focus(false)?,
+        yas_core::window::FocusRequest::Pending
+    );
+    assert!(native.is_foreground());
 
-    let capture = X11Capturer::new(window)?;
+    let child = conn.generate_id()?;
+    conn.create_window(
+        root.root_depth,
+        child,
+        window,
+        120,
+        60,
+        10,
+        10,
+        0,
+        xproto::WindowClass::INPUT_OUTPUT,
+        root.root_visual,
+        &xproto::CreateWindowAux::new().background_pixel(0x123456),
+    )?
+    .check()?;
+    conn.map_window(child)?.check()?;
+    conn.set_input_focus(xproto::InputFocus::PARENT, child, x11rb::CURRENT_TIME)?
+        .check()?;
+    assert!(
+        utils::is_window_foreground(window),
+        "focused child belongs to selected client"
+    );
+    conn.set_input_focus(xproto::InputFocus::PARENT, root.root, x11rb::CURRENT_TIME)?
+        .check()?;
+    assert!(
+        !utils::is_window_foreground(window),
+        "unrelated focus must be rejected"
+    );
+    utils::activate_window(window)?;
+
+    let capture = create_capturer(window, CaptureMethod::BitBlt, false, 1.0)?;
+    assert!(create_capturer(window, CaptureMethod::Wgc, true, 1.0).is_err());
     let img = capture.capture_rect(Rect::new(38, 47, 164, 96))?;
     assert_eq!(img.dimensions(), (164, 96));
     assert_eq!(img.get_pixel(0, 0).0, [0, 0, 0]);
@@ -75,8 +114,7 @@ fn window_capture_input_and_cancellation() -> anyhow::Result<()> {
 
     // Force the XTEST path without requiring access to /dev/uinput.
     std::env::remove_var("WAYLAND_DISPLAY");
-    let mut control = SystemControl::new();
-    control.prepare()?;
+    let mut control = yas_core::system_control::prepared_control()?;
     control.mouse_click_at(80, 80)?;
     control.mouse_scroll(1, false)?;
     control.mouse_scroll_wheel_delta(120)?;
@@ -92,7 +130,11 @@ fn window_capture_input_and_cancellation() -> anyhow::Result<()> {
             _ => {},
         }
     }
-    assert_eq!(buttons, [1, 5, 4, 1], "click, downward wheel, raw upward wheel, drag");
+    assert_eq!(
+        buttons,
+        [1, 5, 4, 1],
+        "click, downward wheel, raw upward wheel, drag"
+    );
     assert_eq!(keys, 1);
     let pointer = utils::query_pointer()?;
     assert_eq!((pointer.root_x, pointer.root_y), (100, 90));
