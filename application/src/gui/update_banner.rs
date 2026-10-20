@@ -168,8 +168,8 @@ pub fn spawn_check(asset_name: &'static str, update_state: &Arc<Mutex<UpdateStat
     #[cfg(target_os = "windows")]
     {
         let state = update_state.clone();
-    let spawn_failure_state = state.clone();
-    let spawn_result = std::thread::Builder::new()
+        let spawn_failure_state = state.clone();
+        let spawn_result = std::thread::Builder::new()
         .name("update-check".to_owned())
         .spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -224,15 +224,15 @@ pub fn spawn_check(asset_name: &'static str, update_state: &Arc<Mutex<UpdateStat
             },
         }
     });
-    if let Err(error) = spawn_result {
-        *spawn_failure_state.lock().unwrap() = UpdateState::Failed(UiError::from_error(
+        if let Err(error) = spawn_result {
+            *spawn_failure_state.lock().unwrap() = UpdateState::Failed(UiError::from_error(
             UiText::new(
                 "检查更新的后台任务无法启动。当前版本仍可继续使用；请检查系统资源后重启程序。",
                 "The background update check could not start. You can keep using the current version; check system resources, then restart the application.",
             ),
             error,
         ));
-    }
+        }
     } // cfg(windows)
 }
 

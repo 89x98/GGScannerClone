@@ -5,7 +5,7 @@
 //! - **uinput** (Wayland sessions, X11 fallback): compositors such as KWin
 //!   ignore XTEST fake input, so the scanner creates its own virtual pointer
 //!   and touchscreen directly on `/dev/uinput` (see `uinput_dev.rs`) — no
-//!   ydotoold daemon required.
+//!   uinput daemon required.
 //!
 //! The backend is picked on first use: an X11 session prefers XTEST (with a
 //! live effectiveness check, exact absolute positioning), then falls back to
@@ -47,8 +47,9 @@ impl InputBackend {
     /// is typically swallowed) and only try XTEST if `/dev/uinput` is
     /// inaccessible.
     fn select() -> anyhow::Result<Self> {
-        let wayland_session =
-            std::env::var("WAYLAND_DISPLAY").map(|v| !v.is_empty()).unwrap_or(false);
+        let wayland_session = std::env::var("WAYLAND_DISPLAY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
 
         if !wayland_session && utils::xtest_available() && utils::xtest_effective() {
             log_info!(
@@ -64,7 +65,7 @@ impl InputBackend {
                     "输入后端: uinput（直连 /dev/uinput{}）",
                     "input backend: uinput (direct /dev/uinput{})",
                     if wayland_session {
-                        "，Wayland 会话"
+                        "; Wayland"
                     } else {
                         "; XTEST ineffective"
                     }
@@ -79,20 +80,9 @@ impl InputBackend {
                     );
                     return Ok(Self::XTest);
                 }
-                if wayland_session {
-                    return Err(anyhow::Error::msg(format!(
-                        "无法创建虚拟输入设备（{uinput_err}）。\n\
-                         请把用户加入 input 组（sudo gpasswd -a $USER input）后重新登录，\
-                         或安装 udev 规则 80-uinput.rules，或改用 X11 会话。\n\
-                         / Cannot create the virtual input devices ({uinput_err}).\n\
-                         Add your user to the `input` group (sudo gpasswd -a $USER input) and log out/in,\
-                         install the 80-uinput.rules udev rule, or use an X11 session instead."
-                    )));
-                }
-                return Err(anyhow::Error::msg(format!(
-                    "无法创建虚拟输入设备，且 XTEST 注入无效（{uinput_err}）。\n\
-                     / Cannot create the virtual input devices and XTEST injection is ineffective ({uinput_err})."
-                )));
+                return Err(anyhow::anyhow!(
+                    "Input unavailable: cannot create /dev/uinput devices ({uinput_err}) and XTEST injection is ineffective. Configure a udev rule granting your user access to /dev/uinput, reload it, and log in again, or use an X11 session. See docs/LINUX.md."
+                ));
             },
         }
     }
@@ -148,7 +138,7 @@ fn key_to_codes(key: &Key) -> Result<Option<(Keysym, Option<KeyCode>, Option<cha
 }
 
 // ---------------------------------------------------------------------------
-// Absolute pointer positioning (ydotool)
+// Absolute pointer positioning (uinput)
 // ---------------------------------------------------------------------------
 
 /// Residual error (px) accepted before another positioning attempt is made.
@@ -197,7 +187,7 @@ static POINTER_SELF_CHECK_REPORTED: AtomicBool = AtomicBool::new(false);
 /// Whether this process already warned that the pointer readback is frozen.
 static POINTER_FROZEN_REPORTED: AtomicBool = AtomicBool::new(false);
 
-/// Positioning state of the ydotool backend.
+/// Positioning state of the uinput backend.
 #[derive(Default)]
 struct PointerState {
     /// Compositor pointer-speed multiplier learned from a live move.
@@ -213,7 +203,7 @@ struct PointerState {
 
 /// Move the pointer to `(x, y)` in root coordinates.
 ///
-/// ydotoold can only inject *relative* motion, so absolute positioning needs a
+/// uinput can only inject *relative* motion, so absolute positioning needs a
 /// known origin: the pointer is slammed into the top-left corner once and every
 /// later move is a relative hop from the last verified position. Three
 /// environment facts shape this:
@@ -289,12 +279,9 @@ fn move_pointer_absolute(
         }
         // The readback is live: re-anchor on it (this absorbs a user moving the
         // physical mouse mid-scan) and refine the speed multiplier.
-        if let Some(measured) = measure_pointer_scale(
-            requested_x,
-            requested_y,
-            pos.0 - origin.0,
-            pos.1 - origin.1,
-        ) {
+        if let Some(measured) =
+            measure_pointer_scale(requested_x, requested_y, pos.0 - origin.0, pos.1 - origin.1)
+        {
             state.scale = Some(measured);
         }
         state.known = Some(pos);
@@ -304,14 +291,15 @@ fn move_pointer_absolute(
     if stale_readback {
         report_frozen_readback();
     }
+    anyhow::ensure!(last_pos.is_some_and(|p|
+        (p.0 - x).abs().max((p.1 - y).abs()) <= POINTER_TOLERANCE_PX),
+        "uinput pointer positioning could not be verified; requested ({x}, {y}), observed {last_pos:?}");
     Ok(())
 }
 
 /// Read the pointer position, or `None` when X11 is unavailable.
 fn read_pointer() -> Option<(i32, i32)> {
-    utils::query_pointer()
-        .ok()
-        .map(|p| (p.root_x, p.root_y))
+    utils::query_pointer().ok().map(|p| (p.root_x, p.root_y))
 }
 
 /// Derive the compositor's pointer-speed multiplier from one measured move.
@@ -368,8 +356,8 @@ fn report_pointer_self_check(
     match pos {
         Some(pos) if (pos.0 - x).abs().max((pos.1 - y).abs()) <= POINTER_WARN_PX => {
             log_debug!(
-                "[input] ydotool 定位自检：请求 ({}, {})，实际 ({}, {})，尝试 {} 次，指针速度倍率 {}",
-                "[input] ydotool positioning self-check: asked for ({}, {}), landed at ({}, {}), {} attempt(s), pointer-speed factor {}",
+                "[input] uinput 定位自检：请求 ({}, {})，实际 ({}, {})，尝试 {} 次，指针速度倍率 {}",
+                "[input] uinput positioning self-check: asked for ({}, {}), landed at ({}, {}), {} attempt(s), pointer-speed factor {}",
                 x,
                 y,
                 pos.0,
@@ -380,9 +368,9 @@ fn report_pointer_self_check(
         },
         Some(pos) => {
             log_warn!(
-                "[input] ydotool 定位自检未通过：请求 ({}, {})，实际 ({}, {})，偏差 {}px（指针速度倍率 {}）。\
+                "[input] uinput 定位自检未通过：请求 ({}, {})，实际 ({}, {})，偏差 {}px（指针速度倍率 {}）。\
                  系统设置 → 鼠标 里把指针速度调回中间值会让定位更准。",
-                "[input] ydotool positioning self-check failed: asked for ({}, {}), landed at ({}, {}), {}px off (pointer-speed factor {}). \
+                "[input] uinput positioning self-check failed: asked for ({}, {}), landed at ({}, {}), {}px off (pointer-speed factor {}). \
                  Moving the pointer-speed slider back to its centre in System Settings -> Mouse makes this exact.",
                 x,
                 y,
@@ -394,9 +382,9 @@ fn report_pointer_self_check(
         },
         None => {
             log_warn!(
-                "[input] ydotool 定位自检：无法读取鼠标位置，请求 ({}, {}) 已按指针速度倍率 {} 补偿。\
+                "[input] uinput 定位自检：无法读取鼠标位置，请求 ({}, {}) 已按指针速度倍率 {} 补偿。\
                  若点击落到错误位置，请把系统设置 → 鼠标 的指针速度调回中间值。",
-                "[input] ydotool positioning self-check: the pointer position is unreadable; ({}, {}) was injected with pointer-speed factor {}. \
+                "[input] uinput positioning self-check: the pointer position is unreadable; ({}, {}) was injected with pointer-speed factor {}. \
                  If clicks land in the wrong place, move the pointer-speed slider back to its centre in System Settings -> Mouse.",
                 x,
                 y,
@@ -444,6 +432,47 @@ impl LinuxControl {
         f(self.backend.as_mut().expect("backend was just initialized"))
     }
 
+    /// Validate input access before scan navigation can start.
+    pub fn prepare(&mut self) -> anyhow::Result<()> {
+        self.with_backend(|_| Ok(()))
+    }
+
+    fn mouse_button(&mut self, pressed: bool) -> anyhow::Result<()> {
+        self.with_backend(|backend| match backend {
+            InputBackend::XTest => utils::fake_input(
+                if pressed {
+                    BUTTON_PRESS_EVENT
+                } else {
+                    BUTTON_RELEASE_EVENT
+                },
+                BUTTON_LEFT,
+                0,
+                0,
+            ),
+            InputBackend::Uinput(devices) => devices.pointer_button(pressed),
+        })
+    }
+
+    pub fn mouse_drag(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) -> anyhow::Result<()> {
+        self.mouse_move_to(x0, y0)?;
+        self.mouse_button(true)?;
+        let result = (|| {
+            for step in 1..=12 {
+                let t = f64::from(step) / 12.0;
+                let eased = t * t * (3.0 - 2.0 * t);
+                self.mouse_move_to(
+                    x0 + (f64::from(x1 - x0) * eased).round() as i32,
+                    y0 + (f64::from(y1 - y0) * eased).round() as i32,
+                )?;
+                utils::sleep(40);
+            }
+            utils::sleep(350);
+            Ok(())
+        })();
+        let release = self.mouse_button(false);
+        result.and(release)
+    }
+
     pub fn mouse_move_to(&mut self, x: i32, y: i32) -> anyhow::Result<()> {
         // The positioning state is moved out so the backend borrow of `self`
         // does not overlap the field borrow.
@@ -483,7 +512,11 @@ impl LinuxControl {
         self.with_backend(|backend| match backend {
             InputBackend::XTest => {
                 // X11 buttons: 4 = wheel up, 5 = wheel down.
-                let button = if amount >= 0 { BUTTON_WHEEL_DOWN } else { BUTTON_WHEEL_UP };
+                let button = if amount >= 0 {
+                    BUTTON_WHEEL_DOWN
+                } else {
+                    BUTTON_WHEEL_UP
+                };
                 for _ in 0..amount.abs() {
                     utils::fake_input(BUTTON_PRESS_EVENT, button, 0, 0)?;
                     utils::fake_input(BUTTON_RELEASE_EVENT, button, 0, 0)?;
@@ -495,7 +528,7 @@ impl LinuxControl {
     }
 
     pub fn mouse_scroll_wheel_delta(&mut self, delta: i32) -> anyhow::Result<()> {
-        let notches = if delta.abs() >= 120 {
+        let notches = if delta.unsigned_abs() >= 120 {
             delta / 120
         } else if delta == 0 {
             0
@@ -503,7 +536,8 @@ impl LinuxControl {
             delta.signum()
         };
         if notches != 0 {
-            self.mouse_scroll(notches, false)?;
+            // Raw wheel delta follows WM_MOUSEWHEEL: positive means up.
+            self.mouse_scroll(-notches, false)?;
         }
         anyhow::Ok(())
     }
@@ -554,7 +588,9 @@ impl LinuxControl {
             InputBackend::XTest => {
                 let (keycode, needs_shift) = utils::keysym_to_keycode(keysym.raw())?;
                 let shift = if needs_shift {
-                    utils::keysym_to_keycode(xk::Shift_L).ok().map(|(code, _)| code)
+                    utils::keysym_to_keycode(xk::Shift_L)
+                        .ok()
+                        .map(|(code, _)| code)
                 } else {
                     None
                 };
@@ -571,24 +607,36 @@ impl LinuxControl {
                 anyhow::Ok(())
             },
             InputBackend::Uinput(devices) => {
-                let resolved: Option<u16> = match named_evdev {
-                    Some(code) => Some(code.0),
-                    // Layout-aware resolution: the X/Wayland-session keymap
-                    // knows where the keysym lives (X keycode = evdev + 8).
+                let resolved: Option<(u16, bool)> = match named_evdev {
+                    Some(code) => Some((code.0, false)),
                     None => utils::keysym_to_keycode(keysym.raw())
                         .ok()
                         .filter(|(k, _)| *k >= 8)
-                        .map(|(k, _)| u16::from(k) - 8)
-                        .or_else(|| layout_char.and_then(qwerty_evdev_code).map(|kc| kc.code())),
+                        .map(|(k, shift)| (u16::from(k) - 8, shift))
+                        .or_else(|| {
+                            layout_char.and_then(|ch| {
+                                qwerty_evdev_code(ch.to_ascii_lowercase())
+                                    .map(|kc| (kc.code(), ch.is_ascii_uppercase()))
+                            })
+                        }),
                 };
-                let Some(code) = resolved else {
-                    return Err(anyhow::anyhow!(
-                        "keysym {keysym:?} has no evdev keycode"
-                    ));
+                let Some((code, shift)) = resolved else {
+                    return Err(anyhow::anyhow!("keysym {keysym:?} has no evdev keycode"));
                 };
-                devices.key(code, true)?;
-                utils::sleep(10);
-                devices.key(code, false)?;
+                if shift {
+                    devices.key(KeyCode::KEY_LEFTSHIFT.0, true)?;
+                }
+                let result = (|| {
+                    devices.key(code, true)?;
+                    utils::sleep(10);
+                    devices.key(code, false)
+                })();
+                let release = if shift {
+                    devices.key(KeyCode::KEY_LEFTSHIFT.0, false)
+                } else {
+                    Ok(())
+                };
+                result.and(release)?;
                 anyhow::Ok(())
             },
         })

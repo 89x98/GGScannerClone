@@ -1,0 +1,60 @@
+name: Linux platform validation
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Cache Cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: Linux-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            Linux-cargo-
+
+      - name: Setup Toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+
+      - name: Install Linux build and test dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev libxdo-dev libxcb1-dev libxrandr-dev libwayland-dev libxkbcommon-dev xvfb fonts-noto-cjk
+
+      - name: Build GGScannerOCR (Release)
+        run: cargo build --locked --release --bin GGScannerOCR
+
+      - name: Test Linux platform and shared behavior
+        run: |
+          python3 scripts/check_platform_dependencies.py
+          cargo test --locked -p yas_core --features ort --lib
+          xvfb-run -a cargo test --locked -p yas_core --test linux_x11 -- --ignored
+          cargo test --locked -p genshin_scanner --lib
+          cargo test --locked -p hsr_scanner --lib
+          xvfb-run -a cargo test --locked -p hsr_scanner --test linux_device -- --ignored
+          cargo test --locked -p good_tools_app --features test-as-invoker --lib
+          cargo test --locked -p good_tools_app --features test-as-invoker --test appearance --test gui_layout --test gui_feedback --test shared_games
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GGScannerOCR_linux_x64
+          path: target/release/GGScannerOCR
+

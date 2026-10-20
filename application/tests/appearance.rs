@@ -201,21 +201,38 @@ fn sidebar_theme_toggle_switches_on_one_click_in_its_own_row() {
     assert_eq!(appearance, Appearance::Light);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn explicit_theme_choice_is_not_overridden_by_the_desktop_theme() {
     // Linux has no winit-reported system theme, so the portal watcher supplies
     // one. That must refine `System` only — a user's explicit Light/Dark pick
     // has to survive a desktop theme that disagrees.
     for (appearance, desktop, expected) in [
-        (Appearance::System, Some(egui::Theme::Dark), egui::ThemePreference::Dark),
-        (Appearance::System, Some(egui::Theme::Light), egui::ThemePreference::Light),
+        (
+            Appearance::System,
+            Some(egui::Theme::Dark),
+            egui::ThemePreference::Dark,
+        ),
+        (
+            Appearance::System,
+            Some(egui::Theme::Light),
+            egui::ThemePreference::Light,
+        ),
         (Appearance::System, None, egui::ThemePreference::System),
-        (Appearance::Light, Some(egui::Theme::Dark), egui::ThemePreference::Light),
-        (Appearance::Dark, Some(egui::Theme::Light), egui::ThemePreference::Dark),
+        (
+            Appearance::Light,
+            Some(egui::Theme::Dark),
+            egui::ThemePreference::Light,
+        ),
+        (
+            Appearance::Dark,
+            Some(egui::Theme::Light),
+            egui::ThemePreference::Dark,
+        ),
         (Appearance::Dark, None, egui::ThemePreference::Dark),
     ] {
         assert_eq!(
-            theme::effective_preference(appearance, desktop),
+            good_tools_app::gui::linux_theme::effective_preference(appearance, desktop),
             expected,
             "appearance={appearance:?} desktop={desktop:?}"
         );
@@ -224,7 +241,10 @@ fn explicit_theme_choice_is_not_overridden_by_the_desktop_theme() {
     // And the resolved preference actually drives the applied style.
     let ctx = egui::Context::default();
     theme::setup(&ctx);
-    ctx.set_theme(theme::effective_preference(Appearance::Light, Some(egui::Theme::Dark)));
+    ctx.set_theme(good_tools_app::gui::linux_theme::effective_preference(
+        Appearance::Light,
+        Some(egui::Theme::Dark),
+    ));
     let _ = ctx.run_headless(
         egui::RawInput {
             system_theme: Some(egui::Theme::Dark),

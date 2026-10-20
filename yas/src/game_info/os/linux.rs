@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::io::stdin;
+use std::io::{stdin, IsTerminal};
 
 use crate::game_info::{is_16x9, GameInfo, Platform, UI};
 use crate::positioning::Rect;
@@ -15,13 +15,24 @@ fn is_window_cloud(title: &str) -> bool {
 fn get_window(window_names: &[&str]) -> Result<(u32, bool)> {
     let windows = utils::enumerate_windows()?;
 
-    let candidates: Vec<&X11WindowInfo> = windows
+    let mut candidates: Vec<&X11WindowInfo> = windows
         .iter()
         .filter(|w| window_names.iter().any(|name| w.title == *name))
         .collect();
 
+    let known: Vec<_> = candidates
+        .iter()
+        .copied()
+        .filter(|w| w.class.contains("UnityWndClass") || w.class.contains("Qt5152QWindowIcon"))
+        .collect();
+    if !known.is_empty() {
+        candidates = known;
+    }
+
     if candidates.is_empty() {
-        let wayland = std::env::var("WAYLAND_DISPLAY").map(|v| !v.is_empty()).unwrap_or(false);
+        let wayland = std::env::var("WAYLAND_DISPLAY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
         let extra = if wayland {
             "\n\
              检测到 Wayland 会话：若游戏以 wine-wayland（纯 Wayland）驱动运行，其窗口对 X11 不可见。\
@@ -43,7 +54,9 @@ fn get_window(window_names: &[&str]) -> Result<(u32, bool)> {
         log_debug!(
             "匹配到窗口: title={:?}, class={:?}, id={:#x}",
             "Matched window: title={:?}, class={:?}, id={:#x}",
-            w.title, w.class, w.window,
+            w.title,
+            w.class,
+            w.window,
         );
     }
 
@@ -52,7 +65,10 @@ fn get_window(window_names: &[&str]) -> Result<(u32, bool)> {
         return Ok((w.window, is_window_cloud(&w.title)));
     }
 
-    // Ambiguous — interactive selection (CLI) or first match (GUI).
+    // Never wait on invisible stdin in a GUI worker.
+    if !stdin().is_terminal() {
+        anyhow::bail!("Multiple matching game windows; close extra clients and retry");
+    }
     println!(
         "{}",
         crate::lang::localize(

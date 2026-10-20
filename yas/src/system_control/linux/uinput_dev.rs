@@ -21,7 +21,7 @@
 use anyhow::{anyhow, Result};
 use evdev::{
     uinput::{VirtualDevice, VirtualDeviceBuilder},
-    AbsoluteAxisCode, AbsInfo, AttributeSet, BusType, InputEvent, InputId, KeyCode, PropType,
+    AbsInfo, AbsoluteAxisCode, AttributeSet, BusType, InputEvent, InputId, KeyCode, PropType,
     RelativeAxisCode, UinputAbsSetup,
 };
 
@@ -120,8 +120,8 @@ impl UinputDevices {
         rel_axes.insert(RelativeAxisCode::REL_WHEEL);
         rel_axes.insert(RelativeAxisCode::REL_HWHEEL);
 
-        let builder = VirtualDevice::builder()
-            .map_err(|e| anyhow!("无法打开 /dev/uinput: {e} / failed to open /dev/uinput: {e}"))?;
+        let builder =
+            VirtualDevice::builder().map_err(|e| anyhow!("cannot open /dev/uinput: {e}"))?;
         let pointer = builder
             .name(POINTER_NAME)
             .input_id(InputId::new(
@@ -174,6 +174,15 @@ impl UinputDevices {
         Ok(())
     }
 
+    pub fn pointer_button(&mut self, pressed: bool) -> Result<()> {
+        self.pointer.emit(&[InputEvent::new(
+            EV_KEY,
+            KeyCode::BTN_LEFT.0,
+            i32::from(pressed),
+        )])?;
+        Ok(())
+    }
+
     /// Left-click through the relative pointer.
     pub fn pointer_click(&mut self) -> Result<()> {
         self.pointer
@@ -207,7 +216,7 @@ impl UinputDevices {
     /// Absolute tap on the touchscreen. `x`/`y` are physical screen pixels.
     pub fn touch_tap(&mut self, x: i32, y: i32, screen_w: i32, screen_h: i32) -> Result<()> {
         let Some(touch) = self.touch.as_mut() else {
-            anyhow::bail!("触摸设备未创建 / touchscreen device was not created");
+            anyhow::bail!("touchscreen device was not created");
         };
         let axis_x = (x.max(0) as i64 * TOUCH_AXIS_MAX as i64 / screen_w.max(1) as i64) as i32;
         let axis_y = (y.max(0) as i64 * TOUCH_AXIS_MAX as i64 / screen_h.max(1) as i64) as i32;
@@ -219,11 +228,7 @@ impl UinputDevices {
             InputEvent::new(EV_KEY, KeyCode::BTN_TOUCH.0, 1),
         ])?;
         std::thread::sleep(std::time::Duration::from_millis(20));
-        touch.emit(&[InputEvent::new(
-            EV_KEY,
-            KeyCode::BTN_TOUCH.0,
-            0,
-        )])?;
+        touch.emit(&[InputEvent::new(EV_KEY, KeyCode::BTN_TOUCH.0, 0)])?;
         Ok(())
     }
 }

@@ -72,7 +72,9 @@ mod misc;
 pub mod packet_capture;
 pub mod request_log;
 
+#[cfg(target_os = "linux")]
 mod fonts;
+#[cfg(target_os = "linux")]
 pub use fonts::{find_cjk_font, SystemFont};
 
 pub fn sleep(ms: u32) {

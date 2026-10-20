@@ -28,7 +28,7 @@ capture = [
 ]
 
 [dependencies]
-yas = { path = "../yas", package = "yas_core", features = ["ort", "capturer_screenshots"] }
+yas = { path = "../yas", package = "yas_core", features = ["ort"] }
 anyhow = "1.0"
 log = "0.4"
 clap = { version = "4.4", features = ["derive", "cargo"] }
@@ -65,6 +65,7 @@ tar = "0.4"
 libloading = "0.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+yas = { path = "../yas", package = "yas_core", features = ["capturer_screenshots"] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
 pktmon = { version = "0.6", features = ["tokio"], optional = true }
 futures = { version = "0.3", optional = true }

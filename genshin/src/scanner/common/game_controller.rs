@@ -54,13 +54,6 @@ const PANEL_FRAME_MAX_MEAN_EXCESS_DIFF: f64 = 0.20;
 const PANEL_FRAME_MAX_CHANGED_BYTE_RATIO: f64 = 0.01;
 /// Byte deltas above this are counted by the ratio guard.
 const PANEL_FRAME_CHANGED_BYTE_DIFF: u8 = 16;
-/// Idle pause between captures while the panel still shows the old item.
-///
-/// The wait loop is time-bounded, so this only caps how many captures it can
-/// issue per timeout window; without it an unchanged panel produced hundreds of
-/// back-to-back GetImage calls.
-const PANEL_WAIT_IDLE_MS: u32 = 5;
-
 pub(crate) fn panel_frames_similar(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -91,6 +84,7 @@ impl GenshinGameController {
         let window_size = game_info.window.to_rect_usize().size();
         let scaler = CoordScaler::new(window_size.width as u32, window_size.height as u32);
         let hdr_mode = super::pixel_profile::is_hdr_mode();
+        #[cfg(target_os = "windows")]
         match (capture_method, hdr_mode) {
             (CaptureMethod::BitBlt, false) => log_info!(
                 "截图方式: BitBlt（非HDR模式，使用低开销GDI截图）",
@@ -115,11 +109,21 @@ impl GenshinGameController {
         let capturer: Rc<dyn Capturer<RgbImage>> =
             Self::create_capturer(&game_info, capture_method)?;
 
+        let mut system_control = SystemControl::new();
+        #[cfg(target_os = "linux")]
+        {
+            anyhow::ensure!(
+                !hdr_mode,
+                "Linux capture requires SDR; turn off HDR in the game and scanner settings"
+            );
+            log_info!("截图方式: X11/XWayland", "Capture method: X11/XWayland");
+            system_control.prepare()?;
+        }
         Ok(Self {
             game_info,
             scaler,
             capturer,
-            system_control: SystemControl::new(),
+            system_control,
             panel_snapshot: Vec::new(),
             cancel: CancelToken::new(),
         })
@@ -153,13 +157,17 @@ impl GenshinGameController {
         #[cfg(target_os = "linux")]
         {
             let _ = method;
-            Ok(Rc::new(yas::capture::X11Capturer::new(game_info.window_id)?))
+            Ok(Rc::new(yas::capture::X11Capturer::new(
+                game_info.window_id,
+            )?))
         }
 
         #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         {
             let _ = (game_info, method);
-            Err(anyhow!("此平台不支持截图 / capture is not supported on this platform"))
+            Err(anyhow!(
+                "此平台不支持截图 / capture is not supported on this platform"
+            ))
         }
     }
 }
@@ -183,6 +191,10 @@ impl GenshinGameController {
 
     /// Check RMB and cancel if pressed. Returns true if cancelled.
     pub fn check_rmb(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if !utils::is_window_handle_valid(self.game_info.window_id) {
+            self.cancel.cancel(yas::cancel::StopReason::GameLost);
+        }
         self.cancel.check_rmb()
     }
 }
@@ -279,7 +291,7 @@ impl GenshinGameController {
                 if settle_ms > 0 {
                     utils::sleep(settle_ms);
                 }
-                true
+                utils::is_window_foreground(window_id)
             },
             Err(e) => {
                 log_warn!(
@@ -334,9 +346,10 @@ impl GenshinGameController {
                     }
                 }
             }
+            self.cancel.cancel(yas::cancel::StopReason::GameLost);
             yas::log_error!(
-                "游戏窗口未找到，无法切换焦点；将跳过本次聚焦（点击可能落在错误窗口上）",
-                "Game window not found; skipping focus (further clicks may hit the wrong window)"
+                "游戏窗口不可用或无法获得焦点，已停止操作。",
+                "Game window unavailable or focus denied; operation stopped."
             );
             return;
         }
@@ -358,14 +371,19 @@ impl GenshinGameController {
                     if window_names.iter().any(|n| w.title == *n) {
                         if self.focus_window_id(w.window, settle_ms) {
                             self.game_info.window_id = w.window;
+                            match yas::capture::X11Capturer::new(w.window) {
+                                Ok(capturer) => self.capturer = Rc::new(capturer),
+                                Err(_) => self.cancel.cancel(yas::cancel::StopReason::GameLost),
+                            }
                             return;
                         }
                     }
                 }
             }
+            self.cancel.cancel(yas::cancel::StopReason::GameLost);
             yas::log_error!(
-                "游戏窗口未找到，无法切换焦点；将跳过本次聚焦（点击可能落在错误窗口上）",
-                "Game window not found; skipping focus (further clicks may hit the wrong window)"
+                "游戏窗口不可用或无法获得焦点，已停止操作。",
+                "Game window unavailable or focus denied; operation stopped."
             );
             return;
         }
@@ -790,12 +808,6 @@ impl GenshinGameController {
                 if cap_ms < 18 {
                     utils::sleep(18 - cap_ms);
                 }
-            } else {
-                // Still showing the previous item's content. Yield briefly
-                // instead of spinning: this branch used to issue back-to-back
-                // captures (hundreds within the timeout window), burning CPU
-                // and flooding the log while the panel never changed.
-                utils::sleep(PANEL_WAIT_IDLE_MS);
             }
         }
 

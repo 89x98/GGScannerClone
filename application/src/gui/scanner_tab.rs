@@ -24,7 +24,7 @@ pub fn show_settings(ui: &mut egui::Ui, state: &mut AppState, is_scanning: bool)
             ui.add_space(4.0);
             widgets::character_names_section(ui, state, true, state.needs_character_names());
             ui.separator();
-            ui.checkbox(&mut state.hdr_mode, l.t("游戏使用 HDR", "Game uses HDR"));
+            widgets::hdr_checkbox(ui, l, &mut state.hdr_mode);
         });
     });
 

@@ -32,8 +32,10 @@ The releases page provides two executables. Both let you switch between Genshin 
 - **`GGScanner.exe` (recommended)** — capture, OCR scanning, export, and manager flows for both games
 - `GGScannerOCR.exe` — OCR scanning, export, and manager flows, without packet capture code or dependencies
 
-The old `GOODCapture.exe` and `GOODScanner.exe` downloads remain available as
-compatibility aliases for existing auto-updaters. See the [rename rollout](docs/RENAME_RELEASE.md).
+The old `GOODCapture.exe` and `GOODScanner.exe` download names remain available
+for one month after the first release under the new names. After that transition,
+users who cannot auto-update can download a fresh copy from either companion
+website. See the [rename rollout](docs/RENAME_RELEASE.md).
 
 Download them from the [Releases](https://github.com/Anyrainel/GGScanner/releases) page. **There is no separate HSR executable to download.**
 
@@ -79,6 +81,12 @@ GGScannerOCR.exe --characters --weapons  # Combine targets
 - **16:9 resolution** recommended (1920x1080, 2560x1440, etc.)
 - Do not move the mouse during scanning
 - Artifacts below 4-star are skipped by default (adjustable via `--artifact-min-rarity`)
+
+## Linux support (experimental)
+
+The native `GGScannerOCR` uses the current shared UI for Genshin OCR scanning/management and experimental Star Rail OCR scanning/attended relic management. Games must use Wine/Proton X11/XWayland windows and SDR. Native Wayland game windows, packet capture and self-update are unsupported. No ydotool daemon is required.
+
+See [the Linux guide](docs/LINUX.md) for build dependencies, input permissions, runtime setup and validation limits. Build with `cargo build --locked --release --bin GGScannerOCR`. Linux builds are CI artifacts only; public Windows downloads are unchanged. Automated and isolated-display checks do not establish live-game compatibility.
 
 ## CLI Options
 

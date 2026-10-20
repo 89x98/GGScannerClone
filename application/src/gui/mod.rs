@@ -1,6 +1,6 @@
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", target_os = "windows"))]
 mod capture_status;
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", target_os = "windows"))]
 pub mod capture_tab;
 pub mod credits;
 pub mod data_refresh;
@@ -9,6 +9,8 @@ pub mod game_switcher;
 pub mod hsr_manager_progress;
 pub mod icons;
 pub mod layout;
+#[cfg(target_os = "linux")]
+pub mod linux_theme;
 pub mod log_bridge;
 pub mod log_panel;
 pub mod manager_progress;
@@ -19,7 +21,7 @@ mod privilege;
 pub mod restart;
 pub mod scanner_tab;
 pub mod shell;
-#[cfg(feature = "capture")]
+#[cfg(all(feature = "capture", target_os = "windows"))]
 pub mod star_rail_capture_tab;
 pub mod star_rail_exports;
 pub mod star_rail_manager_tab;
@@ -50,9 +52,9 @@ pub fn run_gui_agent_mode() {
 }
 
 fn run_gui_with_agent_mode(agent_mode: bool) {
-    #[cfg(feature = "capture")]
+    #[cfg(all(feature = "capture", target_os = "windows"))]
     const PRODUCT_NAME: &str = "GGScanner";
-    #[cfg(not(feature = "capture"))]
+    #[cfg(not(all(feature = "capture", target_os = "windows")))]
     const PRODUCT_NAME: &str = "GGScannerOCR";
 
     if let Err(error) = restart::wait_for_update_parent() {
@@ -116,9 +118,9 @@ fn run_gui_with_agent_mode(agent_mode: bool) {
     genshin_scanner::updater::cleanup_old_exe();
 
     // Kick off background update check for the executable that is running.
-    #[cfg(feature = "capture")]
+    #[cfg(all(feature = "capture", target_os = "windows"))]
     const UPDATE_ASSET: &str = genshin_scanner::updater::ASSET_CAPTURE;
-    #[cfg(not(feature = "capture"))]
+    #[cfg(not(all(feature = "capture", target_os = "windows")))]
     const UPDATE_ASSET: &str = genshin_scanner::updater::ASSET_SCANNER;
     update_banner::spawn_check(UPDATE_ASSET, &state.update_state);
 
@@ -152,7 +154,8 @@ fn run_gui_with_agent_mode(agent_mode: bool) {
     // Linux: winit cannot detect the desktop theme, so a watcher thread feeds
     // it to egui (initial value + live switches). On other platforms winit
     // follows the system theme natively and this returns None.
-    let theme_rx = theme::spawn_theme_watcher();
+    #[cfg(target_os = "linux")]
+    let theme_rx = linux_theme::spawn_theme_watcher();
     // Cloned before `state` moves into `GuiApp`: an update-triggered restart is
     // detected after `run_native` returns.
     let update_state = state.update_state.clone();
@@ -166,6 +169,7 @@ fn run_gui_with_agent_mode(agent_mode: bool) {
                 app_config,
                 &cc.egui_ctx,
                 agent_mode,
+                #[cfg(target_os = "linux")]
                 theme_rx,
             )))
         }),
@@ -269,10 +273,12 @@ struct GuiApp {
     scan_handle: Option<TaskHandle>,
     server_handle: Option<TaskHandle>,
     /// Desktop theme updates (Linux: winit cannot follow the system theme).
-    theme_rx: Option<std::sync::mpsc::Receiver<egui::Theme>>,
+    #[cfg(target_os = "linux")]
+    theme_rx: Option<std::sync::mpsc::Receiver<Option<egui::Theme>>>,
     /// Latest theme reported by the desktop (linux watcher thread).
+    #[cfg(target_os = "linux")]
     desktop_theme: Option<egui::Theme>,
-    #[cfg(feature = "capture")]
+    #[cfg(all(feature = "capture", target_os = "windows"))]
     capture_tab: capture_tab::CaptureTabState,
 }
 
@@ -282,10 +288,12 @@ impl GuiApp {
         app_config: ApplicationConfigStore,
         ctx: &egui::Context,
         agent_mode: bool,
-        theme_rx: Option<std::sync::mpsc::Receiver<egui::Theme>>,
+        #[cfg(target_os = "linux")] theme_rx: Option<
+            std::sync::mpsc::Receiver<Option<egui::Theme>>,
+        >,
     ) -> Self {
         theme::install(ctx, app_config.config.appearance);
-        #[cfg(feature = "capture")]
+        #[cfg(all(feature = "capture", target_os = "windows"))]
         let capture_tab_state =
             capture_tab::CaptureTabState::from_config(state.output_dir.clone(), &state.user_config);
         let star_rail =
@@ -301,9 +309,11 @@ impl GuiApp {
             star_rail,
             scan_handle: None,
             server_handle: None,
+            #[cfg(target_os = "linux")]
             theme_rx,
+            #[cfg(target_os = "linux")]
             desktop_theme: None,
-            #[cfg(feature = "capture")]
+            #[cfg(all(feature = "capture", target_os = "windows"))]
             capture_tab: capture_tab_state,
         };
         if agent_mode {
@@ -367,19 +377,20 @@ impl GuiApp {
 
 impl eframe::App for GuiApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Linux: winit reports no system theme, so the watcher thread supplies
-        // the desktop's real one (initial value, then live switches). It only
-        // feeds the `System` appearance — an explicit Light/Dark choice is
-        // never overridden by the desktop.
-        if let Some(rx) = &self.theme_rx {
-            while let Ok(theme) = rx.try_recv() {
-                self.desktop_theme = Some(theme);
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(rx) = &self.theme_rx {
+                while let Ok(theme) = rx.try_recv() {
+                    self.desktop_theme = theme;
+                }
             }
+            ctx.set_theme(linux_theme::effective_preference(
+                self.app_config.config.appearance,
+                self.desktop_theme,
+            ));
         }
-        ctx.set_theme(theme::effective_preference(
-            self.app_config.config.appearance,
-            self.desktop_theme,
-        ));
+        #[cfg(not(target_os = "linux"))]
+        ctx.set_theme(theme::preference(self.app_config.config.appearance));
         if self.restart_started {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -387,7 +398,7 @@ impl eframe::App for GuiApp {
         // Debounced auto-save: check if config changed and save after 300ms
         log_bridge::set_game_verbose(self.state.verbose, self.app_config.config.star_rail.verbose);
         if self.save_settings {
-            #[cfg(feature = "capture")]
+            #[cfg(all(feature = "capture", target_os = "windows"))]
             self.capture_tab.sync_to_config(&mut self.state.user_config);
             self.state.auto_save_tick();
             if let Err(error) = self.app_config.auto_save_tick() {
@@ -401,17 +412,17 @@ impl eframe::App for GuiApp {
                 log::warn!(target: yas::lang::LOCALIZED_LOG_TARGET, "{}", failure.hint_text(self.state.lang));
             }
         }
-        #[cfg(feature = "capture")]
+        #[cfg(all(feature = "capture", target_os = "windows"))]
         self.star_rail.capture.tick();
-        #[cfg(feature = "capture")]
+        #[cfg(all(feature = "capture", target_os = "windows"))]
         self.capture_tab.tick();
 
         self.data_refresh.poll();
         // Logic also runs while the viewport is hidden; keep capture/export
         // polling and debounced settings saves moving without painting a frame.
-        #[cfg(feature = "capture")]
+        #[cfg(all(feature = "capture", target_os = "windows"))]
         let capture_busy = self.capture_tab.is_busy() || self.star_rail.capture.is_busy();
-        #[cfg(not(feature = "capture"))]
+        #[cfg(not(all(feature = "capture", target_os = "windows")))]
         let capture_busy = false;
         if capture_busy
             || self.data_refresh.is_pending()
@@ -433,16 +444,16 @@ impl eframe::App for GuiApp {
             .server_handle
             .as_ref()
             .is_some_and(|handle| !handle.is_finished());
-        #[cfg(feature = "capture")]
+        #[cfg(all(feature = "capture", target_os = "windows"))]
         let is_capture_busy = self.capture_tab.is_busy();
-        #[cfg(not(feature = "capture"))]
+        #[cfg(not(all(feature = "capture", target_os = "windows")))]
         let is_capture_busy = false;
         let genshin_busy = is_scan_running || is_server_running || is_capture_busy;
         let star_rail_scan_running = self.star_rail.scan_running();
         let star_rail_manager_running = self.star_rail.manager_running();
-        #[cfg(feature = "capture")]
+        #[cfg(all(feature = "capture", target_os = "windows"))]
         let star_rail_capture_busy = self.star_rail.capture.is_busy();
-        #[cfg(not(feature = "capture"))]
+        #[cfg(not(all(feature = "capture", target_os = "windows")))]
         let star_rail_capture_busy = false;
         let star_rail_busy =
             star_rail_scan_running || star_rail_manager_running || star_rail_capture_busy;
@@ -511,7 +522,7 @@ impl eframe::App for GuiApp {
                 .server_handle
                 .as_ref()
                 .is_some_and(TaskHandle::requires_restart);
-        #[cfg(feature = "capture")]
+        #[cfg(all(feature = "capture", target_os = "windows"))]
         let restart_required = restart_required || self.capture_tab.requires_restart();
         let restart_required = restart_required || self.star_rail.requires_restart();
 
@@ -583,7 +594,7 @@ impl eframe::App for GuiApp {
                         credits::show(
                             ui,
                             l,
-                            if cfg!(feature = "capture") {
+                            if cfg!(all(feature = "capture", target_os = "windows")) {
                                 credits::CreditSet::Full
                             } else {
                                 credits::CreditSet::Scanner
@@ -759,7 +770,7 @@ impl eframe::App for GuiApp {
                                     restart_required,
                                 )
                             },
-                            #[cfg(feature = "capture")]
+                            #[cfg(all(feature = "capture", target_os = "windows"))]
                             (Game::Genshin, ToolTab::Capture, layout::Pane::Settings) => {
                                 ui.add_enabled_ui(
                                     !restart_required
@@ -779,7 +790,7 @@ impl eframe::App for GuiApp {
                                 )
                                 .inner
                             },
-                            #[cfg(feature = "capture")]
+                            #[cfg(all(feature = "capture", target_os = "windows"))]
                             (Game::Genshin, ToolTab::Capture, layout::Pane::Status) => {
                                 capture_tab::show_status(
                                     ui,
@@ -792,7 +803,7 @@ impl eframe::App for GuiApp {
                                     restart_required,
                                 )
                             },
-                            #[cfg(feature = "capture")]
+                            #[cfg(all(feature = "capture", target_os = "windows"))]
                             (Game::StarRail, ToolTab::Capture, layout::Pane::Settings) => {
                                 ui.add_enabled_ui(
                                     !restart_required
@@ -813,7 +824,7 @@ impl eframe::App for GuiApp {
                                 )
                                 .inner
                             },
-                            #[cfg(feature = "capture")]
+                            #[cfg(all(feature = "capture", target_os = "windows"))]
                             (Game::StarRail, ToolTab::Capture, layout::Pane::Status) => {
                                 star_rail_capture_tab::show_status(
                                     ui,
@@ -861,7 +872,7 @@ impl eframe::App for GuiApp {
         if !self.save_settings {
             return;
         }
-        #[cfg(feature = "capture")]
+        #[cfg(all(feature = "capture", target_os = "windows"))]
         self.capture_tab.sync_to_config(&mut self.state.user_config);
         self.state.persist_config_now();
         if let Err(error) = self.app_config.persist_now() {
@@ -881,28 +892,58 @@ impl eframe::App for GuiApp {
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
-    if let Some(font) = yas::utils::find_cjk_font() {
-        if let Ok(font_data) = std::fs::read(&font.path) {
-            let mut data = egui::FontData::from_owned(font_data);
-            // .ttc collections: use the exact face fontdb resolved.
-            data.index = font.index;
-            fonts.font_data.insert(
-                "system_cjk".to_owned(),
-                std::sync::Arc::new(data),
-            );
-            fonts
-                .families
-                .get_mut(&egui::FontFamily::Proportional)
-                .unwrap()
-                .push("system_cjk".to_owned());
-            fonts
-                .families
-                .get_mut(&egui::FontFamily::Monospace)
-                .unwrap()
-                .push("system_cjk".to_owned());
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(font) = yas::utils::find_cjk_font() {
+            if let Ok(font_data) = std::fs::read(&font.path) {
+                let mut data = egui::FontData::from_owned(font_data);
+                // .ttc collections: use the exact face fontdb resolved.
+                data.index = font.index;
+                fonts
+                    .font_data
+                    .insert("system_cjk".to_owned(), std::sync::Arc::new(data));
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Proportional)
+                    .unwrap()
+                    .push("system_cjk".to_owned());
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Monospace)
+                    .unwrap()
+                    .push("system_cjk".to_owned());
+            }
         }
     }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Try to load Microsoft YaHei from Windows system fonts
+        let cjk_font_paths = [
+            "C:\\Windows\\Fonts\\msyh.ttc",
+            "C:\\Windows\\Fonts\\msyh.ttf",
+            "C:\\Windows\\Fonts\\simsun.ttc",
+        ];
 
+        for path in &cjk_font_paths {
+            if let Ok(font_data) = std::fs::read(path) {
+                fonts.font_data.insert(
+                    "system_cjk".to_owned(),
+                    std::sync::Arc::new(egui::FontData::from_owned(font_data)),
+                );
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Proportional)
+                    .unwrap()
+                    .push("system_cjk".to_owned());
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Monospace)
+                    .unwrap()
+                    .push("system_cjk".to_owned());
+                break;
+            }
+        }
+    }
     let mut bold_fonts = Vec::new();
     for (name, path) in [
         ("system_bold", "C:\\Windows\\Fonts\\segoeuib.ttf"),

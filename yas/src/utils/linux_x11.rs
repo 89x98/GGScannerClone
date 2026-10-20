@@ -48,11 +48,7 @@ pub fn with_x11<T>(f: impl FnOnce(&RustConnection, usize) -> Result<T>) -> Resul
                 Ok((conn, screen)) => *slot = Some((conn, screen)),
                 Err(e) => {
                     return Err(anyhow!(
-                        "无法连接 X11 服务器（$DISPLAY={:?}）：{}。\
-                         Wayland 会话需要 XWayland（游戏经 Wine/Proton 运行时通常已启用）。\n\
-                         / Cannot connect to the X11 server ($DISPLAY={:?}): {}. \
-                         A Wayland session requires XWayland (usually enabled when the game runs via Wine/Proton).",
-                        display, e, display, e,
+                        "Cannot connect to X11 ($DISPLAY={display:?}): {e}. Wine/Proton must use X11/XWayland; native Wayland game windows are unsupported."
                     ))
                 },
             }
@@ -72,10 +68,7 @@ fn atom(conn: &RustConnection, name: &'static [u8]) -> Result<Atom> {
         if let Some(&a) = cache.borrow().get(name) {
             return Ok(a);
         }
-        let a = conn
-            .intern_atom(true, name)?
-            .reply()?
-            .atom;
+        let a = conn.intern_atom(false, name)?.reply()?.atom;
         cache.borrow_mut().insert(name, a);
         Ok(a)
     })
@@ -130,7 +123,11 @@ fn window_class(conn: &RustConnection, window: Window) -> String {
                 .get(1)
                 .filter(|p| !p.is_empty())
                 .map(|p| String::from_utf8_lossy(p).into_owned())
-                .or_else(|| parts.first().map(|p| String::from_utf8_lossy(p).into_owned()))
+                .or_else(|| {
+                    parts
+                        .first()
+                        .map(|p| String::from_utf8_lossy(p).into_owned())
+                })
                 .unwrap_or_default()
         },
         None => String::new(),
@@ -158,13 +155,25 @@ pub fn enumerate_windows() -> Result<Vec<X11WindowInfo>> {
 
         let mut out = Vec::new();
         for window in candidates {
+            if !conn
+                .get_window_attributes(window)?
+                .reply()
+                .ok()
+                .is_some_and(|a| a.map_state == xproto::MapState::VIEWABLE)
+            {
+                continue;
+            }
             if let Some(title) = window_title(conn, window) {
                 let title = title.trim().to_string();
                 if title.is_empty() {
                     continue;
                 }
                 let class = window_class(conn, window);
-                out.push(X11WindowInfo { window, title, class });
+                out.push(X11WindowInfo {
+                    window,
+                    title,
+                    class,
+                });
             }
         }
         Ok(out)
@@ -244,8 +253,12 @@ pub fn activate_window(window: Window) -> Result<()> {
             EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
             message,
         )?;
-        conn.configure_window(window, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
-        conn.set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)?;
+        conn.configure_window(
+            window,
+            &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
+        )?;
+        conn.set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)?
+            .check()?;
         conn.flush()?;
         Ok(())
     })
@@ -289,6 +302,10 @@ pub fn query_pointer() -> Result<PointerState> {
 /// pixmap. Out-of-window parts of the rect come back black, matching the
 /// clipping behaviour of GDI BitBlt.
 pub fn capture_window_region(window: Window, rect: Rect<i32>) -> Result<RgbImage> {
+    anyhow::ensure!(
+        rect.width > 0 && rect.height > 0,
+        "capture dimensions must be positive"
+    );
     with_x11(|conn, screen| {
         let root = root_window(conn, screen);
         let geom = conn
@@ -308,8 +325,11 @@ pub fn capture_window_region(window: Window, rect: Rect<i32>) -> Result<RgbImage
 
         let x0 = rect.left.saturating_sub(win_left);
         let y0 = rect.top.saturating_sub(win_top);
-        let x1 = (rect.left + rect.width).saturating_sub(win_left);
-        let y1 = (rect.top + rect.height).saturating_sub(win_top);
+        let x1 = rect
+            .left
+            .saturating_add(rect.width)
+            .saturating_sub(win_left);
+        let y1 = rect.top.saturating_add(rect.height).saturating_sub(win_top);
 
         let inter = (
             x0.max(0).min(win_w),
@@ -347,6 +367,17 @@ pub fn capture_window_region(window: Window, rect: Rect<i32>) -> Result<RgbImage
             iw,
             ih,
             conn.setup().image_byte_order,
+            conn.setup()
+                .pixmap_formats
+                .iter()
+                .find(|f| f.depth == reply.depth)
+                .ok_or_else(|| anyhow!("missing pixmap format for depth {}", reply.depth))?,
+            conn.setup().roots[screen]
+                .allowed_depths
+                .iter()
+                .flat_map(|d| &d.visuals)
+                .find(|v| v.visual_id == reply.visual)
+                .ok_or_else(|| anyhow!("unknown X11 visual {}", reply.visual))?,
         )?;
 
         if iw as i32 == rect.width && ih as i32 == rect.height {
@@ -359,8 +390,8 @@ pub fn capture_window_region(window: Window, rect: Rect<i32>) -> Result<RgbImage
             rect.height.max(0) as u32,
             image::Rgb([0, 0, 0]),
         );
-        let paste_x = (x0 - inter.0).max(0) as i64;
-        let paste_y = (y0 - inter.1).max(0) as i64;
+        let paste_x = (inter.0 - x0).max(0) as i64;
+        let paste_y = (inter.1 - y0).max(0) as i64;
         for dy in 0..ih as i64 {
             for dx in 0..iw as i64 {
                 let px = captured.get_pixel(dx as u32, dy as u32);
@@ -378,31 +409,109 @@ fn decode_zpixmap(
     width: u16,
     height: u16,
     byte_order: ImageOrder,
+    format: &xproto::Format,
+    visual: &xproto::Visualtype,
 ) -> Result<RgbImage> {
-    let n = width as usize * height as usize;
-    let lsb = byte_order == ImageOrder::LSB_FIRST;
-    let mut rgb = Vec::with_capacity(n * 3);
-
-    if data.len() >= n * 4 {
-        for px in data.chunks_exact(4).take(n) {
-            // 32bpp: X stores B,G,R,X (LSB) or X,R,G,B (MSB).
-            let (r, g, b) = if lsb { (px[2], px[1], px[0]) } else { (px[1], px[2], px[3]) };
-            rgb.extend_from_slice(&[r, g, b]);
+    anyhow::ensure!(
+        matches!(format.bits_per_pixel, 16 | 24 | 32),
+        "unsupported X11 pixel format: depth={depth}, bpp={}",
+        format.bits_per_pixel
+    );
+    anyhow::ensure!(
+        visual.class == xproto::VisualClass::TRUE_COLOR,
+        "X11 capture requires a TrueColor visual"
+    );
+    let bytes_per_pixel = usize::from(format.bits_per_pixel / 8);
+    let pad = usize::from(format.scanline_pad);
+    anyhow::ensure!(pad > 0 && pad % 8 == 0, "invalid X11 scanline padding");
+    let stride =
+        (usize::from(width) * usize::from(format.bits_per_pixel)).div_ceil(pad) * (pad / 8);
+    anyhow::ensure!(
+        data.len() == stride * usize::from(height),
+        "incomplete X11 image payload"
+    );
+    let component = |pixel: u32, mask: u32| -> u8 {
+        if mask == 0 {
+            return 0;
         }
-    } else if data.len() >= n * 3 {
-        for px in data.chunks_exact(3).take(n) {
-            let (r, g, b) = if lsb { (px[2], px[1], px[0]) } else { (px[0], px[1], px[2]) };
-            rgb.extend_from_slice(&[r, g, b]);
+        let shift = mask.trailing_zeros();
+        let max = mask >> shift;
+        (((pixel & mask) >> shift) as u64 * 255 / u64::from(max)) as u8
+    };
+    let mut rgb = RgbImage::new(width.into(), height.into());
+    for (y, row) in data.chunks_exact(stride).enumerate() {
+        for x in 0..usize::from(width) {
+            let bytes = &row[x * bytes_per_pixel..(x + 1) * bytes_per_pixel];
+            let pixel = if byte_order == ImageOrder::LSB_FIRST {
+                bytes
+                    .iter()
+                    .enumerate()
+                    .fold(0u32, |n, (i, b)| n | (u32::from(*b) << (i * 8)))
+            } else {
+                bytes.iter().fold(0u32, |n, b| (n << 8) | u32::from(*b))
+            };
+            rgb.put_pixel(
+                x as u32,
+                y as u32,
+                image::Rgb([
+                    component(pixel, visual.red_mask),
+                    component(pixel, visual.green_mask),
+                    component(pixel, visual.blue_mask),
+                ]),
+            );
         }
-    } else {
-        return Err(anyhow!(
-            "unsupported ZPixmap payload: depth={depth}, {} bytes for {width}x{height}",
-            data.len()
-        ));
     }
+    Ok(rgb)
+}
 
-    RgbImage::from_raw(width as u32, height as u32, rgb)
-        .ok_or_else(|| anyhow!("ZPixmap size mismatch"))
+/// Verify focus rather than assuming an EWMH activation request was granted.
+pub fn is_window_foreground(window: Window) -> bool {
+    with_x11(|conn, _| {
+        let focused = conn.get_input_focus()?.reply()?.focus;
+        Ok(focused == window)
+    })
+    .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_padded_24_bit_rows_and_rejects_truncation() {
+        let format = xproto::Format {
+            depth: 24,
+            bits_per_pixel: 24,
+            scanline_pad: 32,
+        };
+        let visual = xproto::Visualtype {
+            visual_id: 0,
+            class: xproto::VisualClass::TRUE_COLOR,
+            bits_per_rgb_value: 8,
+            colormap_entries: 256,
+            red_mask: 0xff0000,
+            green_mask: 0xff00,
+            blue_mask: 0xff,
+        };
+        let bytes = [3, 2, 1, 0, 6, 5, 4, 0];
+        let image =
+            decode_zpixmap(&bytes, 24, 1, 2, ImageOrder::LSB_FIRST, &format, &visual).unwrap();
+        assert_eq!(image.get_pixel(0, 0).0, [1, 2, 3]);
+        assert_eq!(image.get_pixel(0, 1).0, [4, 5, 6]);
+        assert!(decode_zpixmap(
+            &bytes[..7],
+            24,
+            1,
+            2,
+            ImageOrder::LSB_FIRST,
+            &format,
+            &visual
+        )
+        .is_err());
+        let image =
+            decode_zpixmap(&bytes, 24, 1, 2, ImageOrder::MSB_FIRST, &format, &visual).unwrap();
+        assert_eq!(image.get_pixel(0, 1).0, [6, 5, 4]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -425,10 +534,12 @@ pub fn xtest_available() -> bool {
 /// `detail` is keycode / button number / 0.
 pub fn fake_input(type_: u8, detail: u8, root_x: i16, root_y: i16) -> Result<()> {
     with_x11(|conn, screen| {
-        if conn.extension_information(xtest::X11_EXTENSION_NAME)?.is_none() {
+        if conn
+            .extension_information(xtest::X11_EXTENSION_NAME)?
+            .is_none()
+        {
             return Err(anyhow!(
-                "X 服务器不支持 XTEST 扩展，无法模拟输入。\n\
-                 / The X server does not provide the XTEST extension; input cannot be injected."
+                "The X server does not provide XTEST; input cannot be injected."
             ));
         }
         let root = root_window(conn, screen);
@@ -447,8 +558,13 @@ pub fn xtest_effective() -> bool {
         match query_pointer() {
             Ok(p) => {
                 let target = p.root_x + dx;
-                let ok = fake_input(xproto::MOTION_NOTIFY_EVENT, 0, target as i16, p.root_y as i16)
-                    .is_ok();
+                let ok = fake_input(
+                    xproto::MOTION_NOTIFY_EVENT,
+                    0,
+                    target as i16,
+                    p.root_y as i16,
+                )
+                .is_ok();
                 if !ok {
                     return false;
                 }
