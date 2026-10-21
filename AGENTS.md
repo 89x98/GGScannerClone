@@ -16,11 +16,14 @@
 - A routine release publishes the existing editions. Do not add public variants,
   duplicate binaries, revision-suffixed executables, or rename downloads unless
   the user specifically requests that public change. The current release asset
-  list is exactly `GOODCapture.exe`, `GOODScanner.exe`, and `update.json`.
+  Windows editions are `GGScanner.exe` (capture + OCR + manager) and
+  `GGScannerOCR.exe` (OCR + manager). `update.json` maps only to these canonical
+  names. Until 2026-11-21, releases also include temporary `GOODCapture.exe`
+  and `GOODScanner.exe` compatibility copies; remove them at the cutoff.
 - Keep build revisions in version/manifest metadata. The updater and website
   must use the same download for each edition. Preserve edition mapping when
-  handling historical names; compatibility does not justify publishing duplicate
-  binaries. Keep any necessary old-release fallback inside the updater.
+  handling historical names. New clients and websites prefer canonical names;
+  the explicitly authorized compatibility copies expire after one month.
 - Same-day publication is blocked when that day's release or tag already exists.
   Never automatically delete, overwrite, or add another public build variant.
   A replacement requires the operator to manually remove the existing release

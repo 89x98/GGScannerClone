@@ -1,6 +1,6 @@
 # GGScanner rename rollout
 
-The editions will be `GGScanner.exe` (capture, OCR, and manager) and
+The editions are `GGScanner.exe` (capture, OCR, and manager) and
 `GGScannerOCR.exe` (OCR and manager, with capture dependencies excluded).
 
 ## Same-day publication
@@ -14,11 +14,9 @@ new build's commit.
 
 ## Publish the updater bridge first
 
-The current workflow publishes the bridge under the existing `GOODScanner.exe`
-and `GOODCapture.exe` download names. The internal Cargo targets already use
-the GG names; CI copies their output to the old public names before uploading.
-Keep the repository name and published executable names unchanged during this
-stage. Website labels and application branding can already use GGScanner.
+The bridge was published under the existing `GOODScanner.exe` and
+`GOODCapture.exe` download names. Its internal Cargo targets and branding already
+used the GG names. That stage is complete.
 
 Publish this bridge before renaming the GitHub repository or public downloads.
 The bridge has already shipped in v2026.10.16. The rename can proceed before
@@ -54,8 +52,15 @@ At that cutoff, change CI's manifest roles to
 For one calendar month after the first release with the new public executable
 names, continue uploading copies under both old names
 (`GOODScanner.exe`, `GOODCapture.exe`). Record the actual first publication
-date and its one-month cutoff in this document when publishing. No cutoff date
-is set until that release exists. These aliases are temporary, not permanent.
+date and its one-month cutoff in this document when publishing.
+
+The first renamed release is v2026.10.21 (2026-10-21); compatibility downloads
+expire on 2026-11-21. `.github/release-policy.json` controls packaging and cleanup.
+The release workflow uploads canonical names first and maps `update.json` only
+to them. Once the cutoff is reached, new releases omit compatibility copies.
+The scheduled `retire-legacy-downloads.yml` workflow removes only the two old-name
+assets from transition releases on November 21 at 16:00 UTC. Its script is
+idempotent and can also be dispatched manually. These aliases are temporary.
 At the cutoff, remove the old-name assets from the transition releases and stop
 uploading them in subsequent releases. Historical pre-rename releases can retain
 their original assets; do not rewrite their manifests or tags.
@@ -74,10 +79,13 @@ are independent of the branding and should remain compatible.
 This includes the restart environment variable, `goodscanner.hsr.manager-instructions`,
 GOOD's `yas-GOODScanner` source, and Star Rail's historical `generator.name`.
 
-The companion websites display GGScanner now, while linking to the existing
-GOODScanner repository and GOODCapture/GOODScanner assets. Change those URLs
-only after the new repository and executable names are available. The old
-release URL used for manual updates can remain: GitHub redirects it.
+Both companion websites link to the GGScanner repository and canonical
+GGScanner/GGScannerOCR assets. The updater prefers canonical assets when the
+API inventory is available, including when a cached manifest names a legacy
+alias. Without inventory, the manifest remains authoritative for older releases;
+without either, canonical names are used. The old repository URL remains only
+as a compatibility discovery fallback. Keep the local checkout folder named
+GOODScanner so existing project paths and related checkouts keep working.
 
 The updater checks the API's asset inventory for the matching edition. If a
 newer release has no matching executable, it shows a manual-download notice

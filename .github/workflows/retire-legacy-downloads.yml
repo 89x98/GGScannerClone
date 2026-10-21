@@ -1,0 +1,19 @@
+name: Retire temporary Windows download aliases
+
+on:
+  schedule:
+    - cron: '0 16 21 11 *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  retire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove expired transition aliases
+        run: python3 scripts/retire_legacy_downloads.py --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

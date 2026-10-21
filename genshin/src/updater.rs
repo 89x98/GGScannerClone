@@ -24,8 +24,7 @@ use yas::{log_debug, log_info, log_warn};
 pub const ASSET_SCANNER: &str = "GGScannerOCR.exe";
 /// Asset filename for the merged packet capture + OCR/manager binary.
 pub const ASSET_CAPTURE: &str = "GGScanner.exe";
-/// Keep the original URL during the bridge; GitHub redirects it after renaming.
-pub const RELEASES_URL: &str = "https://github.com/Anyrainel/GOODScanner/releases/latest";
+pub const RELEASES_URL: &str = "https://github.com/Anyrainel/GGScanner/releases/latest";
 
 /// Download mirror prefixes, tried in order.  Empty string = direct GitHub.
 const DOWNLOAD_MIRRORS: &[&str] = &[
@@ -98,7 +97,7 @@ impl ResolvedRelease {
             ),
             _ => return Err(anyhow!("Unknown updater edition: {asset_name}")),
         };
-        let mut candidates = Vec::new();
+        let mut candidates = vec![renamed.to_owned()];
         if let Some(filename) = mapped {
             if !filename.ends_with(".exe")
                 || !filename
@@ -107,14 +106,19 @@ impl ResolvedRelease {
             {
                 return Err(anyhow!("Invalid release executable filename: {filename}"));
             }
-            candidates.push(filename.to_owned());
+            if self.published_assets.is_none() {
+                // With no API inventory, the manifest is the only evidence
+                // of what an older release actually uploaded.
+                candidates.insert(0, filename.to_owned());
+            } else {
+                candidates.push(filename.to_owned());
+            }
         }
-        // Without a manifest, prefer the still-published old names. The API
-        // inventory also allows a renamed client to update from legacy releases.
-        candidates.push(revision_asset_name(legacy, self.revision));
+        // Canonical downloads take priority even when a cached manifest maps
+        // to a compatibility alias. Legacy names only recover older releases.
         candidates.push(revision_asset_name(renamed, self.revision));
+        candidates.push(revision_asset_name(legacy, self.revision));
         candidates.push(legacy.to_owned());
-        candidates.push(renamed.to_owned());
         let filename = match &self.published_assets {
             Some(assets) => candidates
                 .iter()
@@ -674,7 +678,7 @@ mod tests {
         };
         assert_eq!(
             release.download_url("GOODScanner.exe").unwrap().unwrap(),
-            "https://github.com/Anyrainel/GOODScanner/releases/download/v2026.10.05/GOODScanner-123.exe"
+            "https://github.com/Anyrainel/GOODScanner/releases/download/v2026.10.05/GGScannerOCR.exe"
         );
     }
 
@@ -791,7 +795,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .ends_with("/GOODCapture.exe"));
-        // The redirect-only path also uses the legacy names before a role map exists.
+        // Without an inventory or manifest, new clients use canonical names.
         let release = ResolvedRelease {
             published_assets: None,
             ..release
@@ -800,7 +804,38 @@ mod tests {
             .download_url(ASSET_SCANNER)
             .unwrap()
             .unwrap()
-            .ends_with("/GOODScanner.exe"));
+            .ends_with("/GGScannerOCR.exe"));
+    }
+
+    #[test]
+    fn canonical_assets_win_over_aliases_and_cached_legacy_manifest_roles() {
+        let names = [
+            ASSET_SCANNER,
+            ASSET_CAPTURE,
+            "GOODScanner.exe",
+            "GOODCapture.exe",
+        ];
+        for has_manifest in [false, true] {
+            let mut release = release_with_inventory(&names);
+            if has_manifest {
+                release.assets = ReleaseAssets {
+                    scanner: Some("GOODScanner.exe".into()),
+                    capture: Some("GOODCapture.exe".into()),
+                };
+            }
+            for (requested, canonical) in [
+                (ASSET_SCANNER, ASSET_SCANNER),
+                (ASSET_CAPTURE, ASSET_CAPTURE),
+                ("GOODScanner.exe", ASSET_SCANNER),
+                ("GOODCapture.exe", ASSET_CAPTURE),
+            ] {
+                assert!(release
+                    .download_url(requested)
+                    .unwrap()
+                    .unwrap()
+                    .ends_with(&format!("/{canonical}")));
+            }
+        }
     }
 
     #[test]
