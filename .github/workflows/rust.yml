@@ -14,7 +14,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RELEASE_DIRECTORY: ${{ runner.temp }}/ggscanner-release
+  RELEASE_DIRECTORY: release-package
 
 permissions:
   contents: write
