@@ -31,7 +31,7 @@ pub fn show(ui: &mut egui::Ui, l: Lang, set: CreditSet) {
                         egui::RichText::new(genshin_scanner::updater::current_version_display())
                             .color(super::theme::palette(ui.visuals().dark_mode).muted),
                     );
-                    ui.hyperlink_to("GitHub", "https://github.com/Anyrainel/GOODScanner");
+                    ui.hyperlink_to("GitHub", "https://github.com/Anyrainel/GGScanner");
                 });
                 ui.add_space(8.0);
                 ui.strong(l.t("开源致谢", "Credits"));

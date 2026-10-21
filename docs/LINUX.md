@@ -3,8 +3,9 @@
 `GGScannerOCR` is the native Linux executable, with the current shared GUI and
 CLI. Linux builds are CI artifacts, not additional public release downloads.
 CI packages the executable and this guide in a tar.gz to preserve Unix executable
-permissions. The public asset inventory remains `GOODScanner.exe`, `GOODCapture.exe`, and
-`update.json`. Do not run a Windows updater asset on Linux.
+permissions. Public Windows downloads are `GGScanner.exe`, `GGScannerOCR.exe`, and
+`update.json`, plus old-name compatibility copies until 2026-11-21.
+Do not run a Windows updater asset on Linux.
 
 ## Mode boundaries
 
